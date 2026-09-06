@@ -43,11 +43,11 @@ test('completes setup login to automatic detection, save, RSS copy, and token ro
     previousRss = await rssText.inputValue();
     expect(previousRss).toMatch(/\/feeds\/.*\.xml/);
   } else {
-    await expect(page.getByRole('button', { name: '复制 RSS 地址' }).first()).toBeVisible();
+    await expect(page.getByRole('button', { name: '复制 RSS 地址', exact: true }).first()).toBeVisible();
   }
 
   const copyButton = await firstVisible([
-    page.getByRole('button', { name: '复制 RSS 地址' }),
+    page.getByRole('button', { name: '复制 RSS 地址', exact: true }),
     page.getByRole('button', { name: /复制.*RSS|复制订阅/i }),
   ]);
   await copyButton.click();
@@ -198,7 +198,7 @@ test('keeps manually cleared optional fields through re-detection and save', asy
     page.getByRole('button', { name: '保存订阅' }),
     page.getByRole('button', { name: /保存订阅|创建订阅/i }),
   ]).then((button) => button.click());
-  await expect(page.getByRole('button', { name: '复制 RSS 地址' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '复制 RSS 地址', exact: true })).toBeVisible();
 
   const headers = { 'X-FeedLantern': '1' };
   const listResponse = await page.request.get('/api/feeds', { headers });

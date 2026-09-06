@@ -22,3 +22,5 @@ button[aria-pressed="true"] { background:#d9eee4; }
 details { margin:16px 0; }
 summary { cursor:pointer; }
 @media(max-width:900px) { .feed-row { flex-wrap:wrap; gap:10px; } .feed-row .feed-identity { flex-basis:60%; } .feed-row .feed-metrics { display:none; } }
+.batch-entry { padding:14px 0; border-top:1px solid #e3e7e4; overflow-wrap:anywhere; }
+.settings-form pre { white-space:pre-wrap; overflow-wrap:anywhere; }

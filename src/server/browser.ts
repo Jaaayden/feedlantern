@@ -570,6 +570,10 @@ export class BrowserService {
     await this.closeInternal(id, false);
   }
 
+  async closeEditors(): Promise<void> {
+    for (const id of [...this.sessions.keys()]) await this.closeInternal(id, true);
+  }
+
   async dispose(): Promise<void> {
     if (this.disposing) return;
     this.disposing = true;

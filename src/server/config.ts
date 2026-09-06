@@ -13,6 +13,7 @@ export interface ServerConfig {
   cookieName: string;
   sessionTtlMs: number;
   allowedHosts: string[];
+  trustedProxies?: string[];
   browserExecutablePath?: string;
   distDir: string;
   viteOrigins: string[];
@@ -91,6 +92,7 @@ export function getConfig(overrides: ConfigInput = {}, cwd = process.cwd()): Ser
     cookieName: overrides.cookieName ?? 'feedlantern_session',
     sessionTtlMs: overrides.sessionTtlMs ?? 30 * 24 * 60 * 60 * 1000,
     allowedHosts,
+    trustedProxies: overrides.trustedProxies ?? (process.env.TRUSTED_PROXIES ?? '').split(',').map(s => s.trim()).filter(Boolean),
     browserExecutablePath: overrides.browserExecutablePath ?? process.env.BROWSER_EXECUTABLE_PATH,
     distDir,
     viteOrigins,

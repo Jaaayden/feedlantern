@@ -1,5 +1,6 @@
 import type {
   AuthState,
+  ImportJob,
   CredentialSummary,
   DetectionResult,
   ExtractedItem,
@@ -69,6 +70,18 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 }
 
 export const api = {
+  backups: {
+    export: (currentPassword: string, password: string) => request<unknown>('/api/backups/export', { method: 'POST', body: { currentPassword, password } }),
+    restore: (body: unknown, preview: boolean) => request<Record<string, unknown>>(`/api/backups/${preview ? 'preview' : 'restore'}`, { method: 'POST', body }),
+    config: () => request<unknown>('/api/backups/config'),
+    importConfig: (archive: unknown, confirm = false) => request<Record<string, unknown>>('/api/backups/config', { method: 'POST', body: { archive, confirm } }),
+  },
+  jobs: {
+    list: () => request<ImportJob[]>('/api/import-jobs'),
+    create: (entries: Array<{ url: string; credentialId: string | null }>, intervalMinutes: number) => request<ImportJob>('/api/import-jobs', { method: 'POST', body: { entries, intervalMinutes } }),
+    action: (id: string, action: 'retry' | 'cancel', entryId?: string) => request<ImportJob>(`/api/import-jobs/${id}/${action}`, { method: 'POST', body: { entryId } }),
+    confirm: (id: string, entryId: string, input: FeedInput) => request<{ feed: Feed; feedUrl: string }>(`/api/import-jobs/${id}/confirm`, { method: 'POST', body: { entryId, input } }),
+  },
   settings: {
     get: () => request<{ feedView: 'list' | 'cards' }>('/api/settings'),
     update: (feedView: 'list' | 'cards') => request<{ feedView: 'list' | 'cards' }>('/api/settings', { method: 'PUT', body: { feedView } }),

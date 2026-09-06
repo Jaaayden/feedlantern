@@ -1,3 +1,6 @@
+import { openBackup, sealBackup, snapshotSchema } from './backups.js';
+import { timingSafeEqual } from 'node:crypto';
+import { ImportJobs, normalizeSource } from './import-jobs.js';
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
@@ -36,6 +39,7 @@ import { renderRss, rssEtag } from './rss.js';
 import { Store, type CredentialValue } from './store.js';
 
 export interface BrowserServiceLike {
+  discover?(options: { url: string; cookies?: Cookie[]; waitMs: number }): Promise<{ title: string; detection: DetectionResult }>;
   open(options: { url: string; cookies?: Cookie[]; waitMs: number; waitForSelector?: string }): Promise<ScreenFrame> | ScreenFrame;
   snapshot(id: string): Promise<ScreenFrame> | ScreenFrame;
   scroll(id: string, deltaY: number): Promise<ScreenFrame> | ScreenFrame;
@@ -45,6 +49,7 @@ export interface BrowserServiceLike {
   scrape(options: { url: string; cookies?: Cookie[]; waitMs: number; waitForSelector?: string; rules: SelectionRules }): Promise<ExtractedItem[]> | ExtractedItem[];
   detect?(id: string): Promise<DetectionResult> | DetectionResult;
   close(id: string): Promise<void> | void;
+  closeEditors?(): Promise<void>;
   dispose(): Promise<void> | void;
 }
 
@@ -203,7 +208,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   await ensureDataDir(config.dataDir);
   const store = options.store ?? new Store(config);
   const browser = await makeBrowserService(config, options.browserService);
-  const app = Fastify({ logger: false, bodyLimit: 2_500_000 });
+  const app = Fastify({ logger: false, bodyLimit: 2_500_000, trustProxy: config.trustedProxies?.length ? config.trustedProxies : false });
   // Fastify captures the error handler when a route is registered.
   // Install it before plugins/routes so errors share the frontend contract.
   app.setErrorHandler((error, _request, reply) => {
@@ -224,13 +229,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   let schedulerRunning = false;
   let scheduler: NodeJS.Timeout | undefined;
   let closing = false;
+  let maintenance = false;
   let refreshQueue: Promise<void> = Promise.resolve();
   const refreshInFlight = new Map<string, Promise<Feed | null>>();
 
   // BrowserService reserves one background browser. Queue both refreshes and
   // feed mutations so an older capture cannot overwrite an edited/deleted feed.
   const enqueueRefresh = <T,>(operation: () => Promise<T> | T): Promise<T> => {
-    if (closing) return Promise.reject(new AppError(503, '服务正在关闭'));
+    if (closing || maintenance) return Promise.reject(new AppError(503, '服务正在关闭'));
     const result = refreshQueue.then(operation);
     refreshQueue = result.then(() => {}, () => {});
     return result;
@@ -299,7 +305,19 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   };
 
+  const jobs = new ImportJobs(store, enqueueRefresh, async entry => {
+    if (!browser.discover) throw new AppError(501, '当前浏览器不支持批量识别');
+    const credential = entry.credentialId ? store.getCredentialValue(entry.credentialId) : null;
+    if (entry.credentialId && !credential) throw new AppError(400, 'Cookie 凭据不存在');
+    return browser.discover({ url: entry.url, waitMs: 1000, cookies: credential ? cookiesForTarget(credential, entry.url) : [] });
+  }, async input => {
+    const credential = input.credentialId ? store.getCredentialValue(input.credentialId) : null;
+    if (input.credentialId && !credential) throw new AppError(400, 'Cookie 凭据不存在');
+    return browser.scrape({ ...input, cookies: credential ? cookiesForTarget(credential, input.url) : [] });
+  });
+
   app.addHook('onRequest', async (request) => {
+    if (maintenance) throw new AppError(503, '正在恢复备份，请稍后重试');
     if (!request.url.startsWith('/api/')) return;
     const requestHost = Array.isArray(request.headers.host) ? request.headers.host[0] : request.headers.host;
     if (!requestHost || !allowedApiHosts.has(requestHost.toLowerCase())) throw new AppError(403, '请求主机不被允许');
@@ -421,6 +439,113 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
   const feedPayload = (feed: Feed): { feed: Feed; feedUrl: string } => ({ feed, feedUrl: feedUrl(config, store, feed.id) });
   app.get('/api/feeds', async (request): Promise<Feed[]> => { feedsGuard(request); return store.listFeeds(); });
+  const backupGuard = (request: FastifyRequest, allowSetup = false) => {
+    const body = asRecord(request.body);
+    if (!limiter.allowed(request.ip)) throw new AppError(429, '验证尝试过于频繁');
+    if (!store.hasAdmin() && allowSetup) {
+      const expected = Buffer.from(store.getSetupToken() ?? '');
+      const actual = Buffer.from(typeof body.setupToken === 'string' ? body.setupToken : '');
+      if (!expected.length || expected.length !== actual.length || !timingSafeEqual(expected, actual)) {
+        limiter.registerFailure(request.ip); throw new AppError(403, '一次性设置码无效');
+      }
+    } else {
+      feedsGuard(request);
+      if (!store.authenticate(store.getAdmin()!.username, asNonEmptyString(body.currentPassword, '管理员密码', 1024))) {
+        limiter.registerFailure(request.ip); throw new AppError(403, '管理员密码无效');
+      }
+    }
+  };
+  const security = () => ({ allowedHosts: config.allowedHosts, dnsOverHttps: process.env.DNS_OVER_HTTPS === 'true' });
+  app.post('/api/backups/export', async request => {
+    backupGuard(request);
+    const password = asNonEmptyString(asRecord(request.body).password, '备份密码', 1024);
+    if (password.length < 12) throw new AppError(400, '备份密码至少 12 个字符');
+    return sealBackup(snapshotSchema.parse({ format: 'feedlantern-backup', version: 1, appVersion: config.version, createdAt: new Date().toISOString(), security: security(), tables: store.exportTables() }), password);
+  });
+  for (const action of ['preview', 'restore'] as const) app.post(`/api/backups/${action}`, { bodyLimit: 100_000_000 }, async request => {
+    backupGuard(request, true);
+    const body = asRecord(request.body);
+    let snapshot;
+    try {
+      snapshot = openBackup(body.archive, asNonEmptyString(body.password, '备份密码', 1024));
+      for (const row of snapshot.tables.feeds) parseFeedInput({ name: row.name, url: row.url, rules: JSON.parse(row.rules_json), ruleOrigins: row.rule_origins_json ? JSON.parse(row.rule_origins_json) : undefined, intervalMinutes: row.interval_minutes, waitMs: row.wait_ms, waitForSelector: row.wait_for_selector });
+      for (const row of snapshot.tables.credentials) parseCookies(JSON.parse(row.encrypted_value), row.format, row.url);
+      const ids = new Set(snapshot.tables.feeds.map(f => f.id));
+      const creds = new Set(snapshot.tables.credentials.map(c => c.id));
+      if (snapshot.tables.feed_items.some(i => !ids.has(i.feed_id)) || snapshot.tables.feeds.some(f => f.credential_id && !creds.has(f.credential_id))) throw Error();
+    } catch { limiter.registerFailure(request.ip); throw new AppError(400, '备份密码错误、文件损坏或格式不受支持'); }
+    if (action === 'preview') return { appVersion: snapshot.appVersion, createdAt: snapshot.createdAt, feeds: snapshot.tables.feeds.length, items: snapshot.tables.feed_items.length, credentials: snapshot.tables.credentials.length, username: snapshot.tables.admin[0].username, sourceSecurity: snapshot.security, targetSecurity: security() };
+    if (body.confirm !== true) throw new AppError(400, '请先预览并确认覆盖恢复');
+    maintenance = true; jobs.stop();
+    try {
+      await refreshQueue;
+      await browser.closeEditors?.();
+      store.restoreTables(snapshot.tables);
+      return { ok: true };
+    } finally { maintenance = false; jobs.recover(); }
+  });
+  app.get('/api/backups/config', async request => {
+    feedsGuard(request);
+    return { format: 'feedlantern-config', version: 1, feeds: store.listFeeds().map(f => ({ name: f.name, channelTitle: f.channelTitle, url: f.url, rules: f.rules, ruleOrigins: f.ruleOrigins, intervalMinutes: f.intervalMinutes, waitMs: f.waitMs, waitForSelector: f.waitForSelector, enabled: f.enabled, requiresCredential: !!f.credentialId })) };
+  });
+  app.post('/api/backups/config', { bodyLimit: 10_000_000 }, async request => {
+    feedsGuard(request);
+    const body = asRecord(request.body), archive = asRecord(body.archive);
+    if (archive.format !== 'feedlantern-config' || archive.version !== 1 || !Array.isArray(archive.feeds) || archive.feeds.length > 10000) throw new AppError(400, '配置格式无效');
+    const entries = archive.feeds.map(raw => {
+      const value = asRecord(raw);
+      return { input: parseFeedInput({ ...value, credentialId: null }), title: asOptionalString(value.channelTitle, '频道名称', 200), enabled: value.enabled !== false, needsCookie: value.requiresCredential === true };
+    });
+    const signature = (f: FeedInput) => JSON.stringify([normalizeSource(f.url), ...['item', 'title', 'link', 'description', 'image', 'date'].map(k => f.rules[k as keyof SelectionRules] ?? '')]);
+    if (body.confirm !== true) {
+      const seen = new Set(store.listFeeds().map(signature));
+      return { entries: entries.map(e => { const duplicate = seen.has(signature(e.input)); seen.add(signature(e.input)); return { name: e.input.name, url: e.input.url, duplicate, needsCookie: e.needsCookie }; }) };
+    }
+    return enqueueRefresh(async () => store.transaction(() => {
+      const seen = new Set(store.listFeeds().map(signature));
+      let created = 0, skipped = 0;
+      for (const entry of entries) {
+        const key = signature(entry.input);
+        if (seen.has(key)) { skipped++; continue; }
+        const { feed } = store.createFeed(entry.input);
+        if (entry.title) store.setChannelTitle(feed.id, entry.title);
+        if (!entry.enabled || entry.needsCookie) store.toggleFeed(feed.id);
+        if (entry.needsCookie) store.markFetchFailure(feed.id, '请绑定 Cookie 凭据后恢复订阅', feed.nextFetchAt);
+        seen.add(key); created++;
+      }
+      return { created, skipped };
+    }));
+  });
+  app.get('/api/import-jobs', async request => { feedsGuard(request); return store.listImportJobs(); });
+  app.post('/api/import-jobs', async request => {
+    feedsGuard(request);
+    const body = asRecord(request.body);
+    if (!Array.isArray(body.entries) || !body.entries.length || body.entries.length > 100) throw new AppError(400, '每批支持 1–100 个网址');
+    const entries = body.entries.map(raw => {
+      const entry = asRecord(raw);
+      const url = normalizeSource(parseHttpUrl(entry.url, '网址'));
+      const credentialId = entry.credentialId ? asNonEmptyString(entry.credentialId, 'credentialId', 200) : null;
+      if (credentialId) {
+        const credential = store.getCredentialValue(credentialId);
+        if (!credential) throw new AppError(400, 'Cookie 凭据不存在');
+        cookiesForTarget(credential, url);
+      }
+      return { url, credentialId, intervalMinutes: asInteger(body.intervalMinutes, '刷新间隔', 5, 1440, 60) };
+    });
+    return jobs.create(entries);
+  });
+  app.post('/api/import-jobs/:id/:action', async request => {
+    feedsGuard(request);
+    const { id, action } = request.params as { id: string; action: string };
+    const body = asRecord(request.body);
+    if (action === 'confirm') {
+      const feed = await jobs.confirm(id, asNonEmptyString(body.entryId, 'entryId', 200), parseFeedInput(body.input));
+      if (!feed) throw new AppError(404, '订阅已删除');
+      return feedPayload(feed);
+    }
+    if (action !== 'cancel' && action !== 'retry') throw new AppError(400, '任务操作无效');
+    return jobs.update(id, action, asOptionalString(body.entryId, 'entryId', 200));
+  });
   app.get('/api/settings', async request => { feedsGuard(request); return store.getSettings(); });
   app.put('/api/settings', async request => {
     feedsGuard(request);
@@ -606,12 +731,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
 
 
+  app.addHook('onReady', async () => { jobs.recover(); });
   if (options.startScheduler !== false) {
     scheduler = setInterval(() => { void refreshDue().catch(() => {}); }, 30_000);
     scheduler.unref();
     app.addHook('onReady', async () => { void refreshDue().catch(() => {}); });
   }
   app.addHook('onClose', async () => {
+    jobs.stop();
     closing = true;
     if (scheduler) clearInterval(scheduler);
     await refreshQueue;

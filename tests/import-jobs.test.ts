@@ -1,0 +1,33 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Store } from '../src/server/store.js';
+import { ImportJobs } from '../src/server/import-jobs.js';
+import type { DetectionResult } from '../src/shared/types.js';
+const result: DetectionResult = { recommendedId: 'a', warnings: [], candidates: [{ id: 'a', label: '文章', confidence: 'high', score: 100, count: 3, rects: [], warnings: [], rules: { item: 'article', title: 'h2', link: 'a' }, items: [1, 2, 3].map(i => ({ title: `文章${i}`, link: `https://example.test/${i}` })) }] };
+async function until(fn: () => boolean) { for (let i = 0; i < 200; i++) { if (fn()) return; await new Promise(r => setTimeout(r, 5)); } throw Error('任务超时'); }
+test('批量任务自动创建、歧义确认、失败重试和重启恢复不会重复创建', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fl-jobs-')), store = new Store(dir);
+  let fail = true;
+  const jobs = new ImportJobs(store, async fn => fn(), async entry => {
+    if (entry.url.includes('failed') && fail) throw Error('network');
+    return { title: '自动订阅', detection: entry.url.includes('review') ? { ...result, recommendedId: null } : result };
+  }, async () => result.candidates[0].items);
+  try {
+    const job = jobs.create(['normal', 'review', 'failed'].map(s => ({ url: `https://example.test/${s}`, credentialId: null, intervalMinutes: 60 })));
+    await until(() => !jobs.get(job.id).entries.some(e => ['queued', 'running'].includes(e.state)));
+    assert.deepEqual(jobs.get(job.id).entries.map(e => e.state), ['created', 'review', 'failed']);
+    const review = jobs.get(job.id).entries[1];
+    const input = { name: '确认', url: review.url, rules: result.candidates[0].rules, credentialId: null, intervalMinutes: 60, waitMs: 0 };
+    await jobs.confirm(job.id, review.id, input); await jobs.confirm(job.id, review.id, input);
+    assert.equal(store.listFeeds().length, 2);
+    fail = false; jobs.update(job.id, 'retry');
+    await until(() => jobs.get(job.id).entries.every(e => e.state === 'created'));
+    jobs.recover();
+    assert.equal(store.listFeeds().length, 3);
+    const duplicate = jobs.create([{ url: 'https://example.test/normal#fragment', credentialId: null, intervalMinutes: 60 }]);
+    assert.equal(duplicate.entries[0].state, 'existing');
+  } finally { jobs.stop(); store.close(); rmSync(dir, { recursive: true, force: true }); }
+});

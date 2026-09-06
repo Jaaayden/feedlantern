@@ -1,3 +1,4 @@
+import type { Tables } from './backups.js';
 import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { join } from 'node:path';
@@ -489,6 +490,40 @@ export class Store {
     return this.getFeed(id);
   }
 
+  exportTables(): Tables {
+    const tables: Record<string, unknown> = {};
+    for (const table of ['admin', 'credentials', 'feeds', 'feed_items', 'settings']) {
+      tables[table] = this.db.prepare(`SELECT * FROM ${table}`).all().map(row => {
+        if (table === 'credentials') return { ...row, encrypted_value: decrypt(this.masterKey, String(row.encrypted_value)) };
+        if (table === 'feeds') return { ...row, token_ciphertext: decrypt(this.masterKey, String(row.token_ciphertext)) };
+        return { ...row };
+      });
+    }
+    return tables as Tables;
+  }
+
+  restoreTables(tables: Tables): void {
+    this.transaction(() => {
+      for (const table of ['sessions', 'import_jobs', 'feed_items', 'feeds', 'credentials', 'admin', 'settings']) this.db.exec(`DELETE FROM ${table}`);
+      for (const table of ['admin', 'credentials', 'feeds', 'feed_items', 'settings'] as const) {
+        for (const value of tables[table]) {
+          const row: Record<string, string | number | null> = { ...value };
+          if (table === 'credentials') row.encrypted_value = encrypt(this.masterKey, String(row.encrypted_value));
+          if (table === 'feeds') { row.token_hash = hashToken(String(row.token_ciphertext)); row.token_ciphertext = encrypt(this.masterKey, String(row.token_ciphertext)); }
+          const keys = Object.keys(row);
+          this.db.prepare(`INSERT INTO ${table}(${keys.join(',')}) VALUES (${keys.map(() => '?').join(',')})`).run(...keys.map(k => row[k]));
+        }
+      }
+    });
+    this.ensureSetupToken();
+  }
+
+  transaction<T>(operation: () => T): T {
+    this.db.exec('SAVEPOINT operation');
+    try { const result = operation(); this.db.exec('RELEASE operation'); return result; }
+    catch (error) { this.db.exec('ROLLBACK TO operation; RELEASE operation'); throw error; }
+  }
+
   listImportJobs(): ImportJob[] {
     return (this.db.prepare('SELECT body FROM import_jobs ORDER BY rowid DESC LIMIT 100').all() as { body: string }[]).map(row => JSON.parse(row.body));
   }
@@ -564,7 +599,7 @@ export class Store {
       const key = hashToken(link);
       if (!unique.has(key)) unique.set(key, { ...item, link });
     }
-    this.db.exec('BEGIN');
+    this.db.exec('SAVEPOINT items');
     try {
       const firstSeenAt = nowIso();
       for (const [key, item] of unique) {
@@ -576,9 +611,9 @@ export class Store {
         }
       }
       this.db.prepare(`DELETE FROM feed_items WHERE feed_id = ? AND id NOT IN (SELECT id FROM feed_items WHERE feed_id = ? ORDER BY first_seen_at DESC, rowid ASC LIMIT 200)`).run(feed.id, feed.id);
-      this.db.exec('COMMIT');
+      this.db.exec('RELEASE items');
     } catch (error) {
-      try { this.db.exec('ROLLBACK'); } catch { /* best effort */ }
+      try { this.db.exec('ROLLBACK TO items; RELEASE items'); } catch { /* best effort */ }
       throw error;
     }
     return this.getItems(feed.id, 200);
