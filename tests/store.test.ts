@@ -77,3 +77,22 @@ test('频道名称独立于管理名称，更新不改变密钥、历史和调�
     assert.equal(store.getSettings().feedView, 'cards');
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('v0.1.0 表结构原位升级保留频道名、密钥和历史', async () => {
+  const { DatabaseSync } = await import('node:sqlite');
+  const dir = mkdtempSync(join(tmpdir(), 'fl-migration-'));
+  let store = new Store(dir);
+  try {
+    const { feed, token } = store.createFeed({ name: '旧订阅', url: 'https://example.test', rules: { item: 'article', title: 'h2', link: 'a' }, credentialId: null, intervalMinutes: 60, waitMs: 0 });
+    store.upsertItems(feed, [{ title: '旧文章', link: 'https://example.test/old' }]);
+    const items = store.getItems(feed.id);
+    store.close();
+    const db = new DatabaseSync(join(dir, 'app.db'));
+    db.exec('ALTER TABLE feeds DROP COLUMN channel_title; DROP TABLE settings; DROP TABLE import_jobs; PRAGMA user_version=0;'); db.close();
+    store = new Store(dir);
+    assert.equal(store.getFeed(feed.id)?.channelTitle, '旧订阅');
+    assert.equal(store.getFeedToken(feed.id)?.token, token);
+    assert.deepEqual(store.getItems(feed.id), items);
+    assert.equal(store.getSettings().feedView, 'list');
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});

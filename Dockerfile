@@ -1,4 +1,6 @@
 FROM node:24-bookworm-slim
+LABEL org.opencontainers.image.source="https://github.com/Jaaayden/feedlantern"
+LABEL org.opencontainers.image.licenses="MIT"
 WORKDIR /app
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN npm install --global pnpm@11.25.0

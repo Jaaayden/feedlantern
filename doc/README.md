@@ -19,3 +19,5 @@
 - [验收记录](acceptance.md)：本版本实际验证结果和待验证项目。
 
 配置文件直接引用仓库中的 [Compose](../compose.yaml)、[Nginx 示例](examples/nginx.conf)和 [Chromium seccomp 配置](../deploy/seccomp_profile.json)，避免复制多份。
+
+历史记录：[v0.1.0 本地验收](history/v0.1.0-verification.md)、[公开网站诊断过程](history/public-smoke.md)。

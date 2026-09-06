@@ -12,12 +12,14 @@
 - 原有 11 项端到端测试通过：自动识别、Cookie 隔离、恶意重定向、手动字段保持、历史保留、复制及密钥轮换。
 - Compose 语法检查、TypeScript 检查和生产构建通过。
 
-## 待完成
+## 容器与反向代理
 
+GitHub Actions [54903f9 验收](https://github.com/Jaaayden/feedlantern/actions/runs/34056092527) 在 amd64 / arm64 原生 runner 上通过：镜像构建、非 root 运行、Chromium 沙箱启动、自动识别、实际抓取、RSS 与数据库重启持久化。两架构均通过 Nginx HTTPS 的 Secure 登录 Cookie、来源校验、抓取、RSS、加密备份预览/恢复及容器重启。
 
-- amd64/arm64 原生 Docker 镜像、沙箱与持久化验证。
-- Nginx HTTPS 代理下的初始化、识别、RSS 和备份恢复。
-- 按文档从新环境部署、升级及迁移演练。
+HTTPS 验收使用 CI 自签名证书；真实域名的 DNS 与 Certbot ACME 签发依赖用户服务器，未替用户执行。ARM runner 的临时主机显式允许无特权用户命名空间，应用和 Chromium 沙箱保持启用；部署主机需要相应兼容配置。
 
+本机没有运行中的 Docker 引擎；本机容器运行未执行，上述证据来自 CI。本地已有实例已备份后原位升级，管理员初始化状态保留。
 
-本机存在 Docker CLI，但没有运行中的 Docker 引擎，亦未找到 Docker Desktop；本机容器验证尚未完成。CI 将在独立原生 runner 上验证两种架构。正式 v0.2.0 标签与镜像发布必须等待验收完成。
+## 最终发布检查
+
+待最终提交的 CI 完成：Compose 按文档启动、健康检查、强制重建后的数据卷保留，以及本版本完整检查。正式标签将在通过后创建。

@@ -62,6 +62,8 @@ jobs:
         run: |
           docker compose config --quiet
           docker run --rm --init --shm-size=1g --security-opt seccomp=deploy/seccomp_profile.json feedlantern:test pnpm exec tsx scripts/container-smoke.ts
+      - name: Validate documented Compose deployment
+        run: sh scripts/test-compose.sh
       - name: Validate Nginx HTTPS deployment
         run: |
           sudo apt-get update
