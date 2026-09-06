@@ -469,7 +469,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     try {
       snapshot = openBackup(body.archive, asNonEmptyString(body.password, '备份密码', 1024));
       for (const row of snapshot.tables.feeds) parseFeedInput({ name: row.name, url: row.url, rules: JSON.parse(row.rules_json), ruleOrigins: row.rule_origins_json ? JSON.parse(row.rule_origins_json) : undefined, intervalMinutes: row.interval_minutes, waitMs: row.wait_ms, waitForSelector: row.wait_for_selector });
-      for (const row of snapshot.tables.credentials) parseCookies(JSON.parse(row.encrypted_value), row.format, row.url);
+      for (const row of snapshot.tables.credentials) {
+        const metadata = cookieMetadata(parseCookies(JSON.parse(row.encrypted_value), row.format, row.url), row.url);
+        row.domains_json = JSON.stringify(metadata.domains); row.cookie_count = metadata.count; row.expires_at = metadata.expiresAt;
+      }
       const ids = new Set(snapshot.tables.feeds.map(f => f.id));
       const creds = new Set(snapshot.tables.credentials.map(c => c.id));
       if (snapshot.tables.feed_items.some(i => !ids.has(i.feed_id)) || snapshot.tables.feeds.some(f => f.credential_id && !creds.has(f.credential_id))) throw Error();
