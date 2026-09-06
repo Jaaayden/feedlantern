@@ -31,3 +31,24 @@ test('批量任务自动创建、歧义确认、失败重试和重启恢复不�
     assert.equal(duplicate.entries[0].state, 'existing');
   } finally { jobs.stop(); store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('实际重启恢复 running 任务，取消和恢复后保持幂等', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fl-jobs-restart-'));
+  let store = new Store(dir);
+  const stopped = new ImportJobs(store, async fn => fn(), async () => ({ title: '恢复', detection: result }), async () => result.candidates[0].items);
+  stopped.stop();
+  const job = stopped.create(['one', 'two'].map(s => ({ url: `https://example.test/${s}`, credentialId: null, intervalMinutes: 60 })));
+  job.entries[0].state = 'running'; store.saveImportJob(job);
+  stopped.update(job.id, 'cancel', job.entries[1].id);
+  store.close(); store = new Store(dir);
+  const resumed = new ImportJobs(store, async fn => fn(), async () => ({ title: '恢复', detection: result }), async () => result.candidates[0].items);
+  try {
+    resumed.recover();
+    await until(() => resumed.get(job.id).entries[0].state === 'created');
+    assert.equal(resumed.get(job.id).entries[1].state, 'canceled');
+    assert.equal(store.listFeeds().length, 1);
+    resumed.update(job.id, 'retry', job.entries[1].id);
+    await until(() => resumed.get(job.id).entries.every(e => e.state === 'created'));
+    assert.equal(store.listFeeds().length, 2);
+  } finally { resumed.stop(); store.close(); rmSync(dir, { recursive: true, force: true }); }
+});

@@ -106,7 +106,16 @@ export const api = {
   },
   feeds: {
     title: (id: string, channelTitle: string) => request<{ feed: Feed }>(`/api/feeds/${encodeURIComponent(id)}`, { method: 'PATCH', body: { channelTitle } }),
-    bulk: (ids: string[], action: string) => request<{ results: Array<{ id: string; ok: boolean; feedUrl?: string; error?: string }> }>('/api/feeds/bulk', { method: 'POST', body: { ids, action } }),
+    bulk: async (ids: string[], action: string) => {
+      const results: Array<{ id: string; ok: boolean; feedUrl?: string; error?: string }> = [];
+      const size = action === 'refresh' ? 1 : 200;
+      for (let offset = 0; offset < ids.length; offset += size) {
+        const chunk = ids.slice(offset, offset + size);
+        try { results.push(...(await request<{ results: typeof results }>('/api/feeds/bulk', { method: 'POST', body: { ids: chunk, action } })).results); }
+        catch (e) { results.push(...chunk.map(id => ({ id, ok: false, error: e instanceof Error ? e.message : '操作失败' }))); }
+      }
+      return { results };
+    },
     list: () => request<Feed[]>('/api/feeds'),
     create: (body: FeedInput) => request<{ feed: Feed; feedUrl: string }>('/api/feeds', { method: 'POST', body }),
     detail: (id: string) =>

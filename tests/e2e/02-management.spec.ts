@@ -34,3 +34,26 @@ test('列表偏好、独立频道名称、批量创建及加密备份入口', as
   await panel.getByRole('button', { name: '下载导出文件' }).click();
   expect((await download).suggestedFilename()).toMatch(/^feedlantern-backup/);
 });
+
+test('移动端列表、选择后复制和过滤清空选择', async ({ page }) => {
+  const auth = await loginAsAdmin(page.request);
+  const headers = protocolHeaders(auth.csrfToken);
+  await page.request.put('/api/settings', { headers, data: { feedView: 'list' } });
+  const created = await page.request.post('/api/feeds', { headers, data: { name: '移动端独立测试', url: FIXTURE_URLS.static, rules: { item: '.article-card', title: '.article-title', link: 'a.article-link' } } });
+  expect(created.ok()).toBeTruthy();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/');
+  await page.getByLabel('搜索订阅').fill('移动端独立测试');
+  await page.getByLabel('选择订阅 移动端独立测试').check();
+  await expect(page.getByText('已选择 1 项')).toBeVisible();
+  await page.getByRole('button', { name: '复制 RSS 地址', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('已复制 1 项');
+  await page.getByLabel('选择订阅 移动端独立测试').check();
+  await page.getByLabel('搜索订阅').fill('不匹配任何订阅');
+  await expect(page.getByText('已选择 1 项')).toHaveCount(0);
+  await page.getByLabel('搜索订阅').fill('移动端独立测试');
+  await expect(page.getByLabel('选择订阅 移动端独立测试')).not.toBeChecked();
+  const width = await page.evaluate(() => ({ scroll: document.documentElement.scrollWidth, viewport: innerWidth }));
+  expect(width.scroll).toBeLessThanOrEqual(width.viewport);
+  await page.screenshot({ path: 'test-results/mobile-management.png', fullPage: true });
+});

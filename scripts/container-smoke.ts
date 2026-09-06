@@ -5,10 +5,10 @@ import { BrowserService } from '../src/server/browser.js';
 import { createApp } from '../src/server/app.js';
 import { Store } from '../src/server/store.js';
 assert.notEqual(process.getuid?.(), 0, 'Container must run as non-root');
-const fixture = createServer((_req, res) => res.end('<main>' + [1, 2, 3, 4].map(i => `<article class="entry"><h2><a href="/article/${i}">Article number ${i}</a></h2><p>Description for article ${i}</p></article>`).join('') + '</main>'));
+const fixture = createServer((_req, res) => { res.setHeader('Content-Type', 'text/html; charset=utf-8'); res.end('<main>' + [1, 2, 3, 4].map(i => `<article class="entry"><h2><a href="/article/${i}">Article number ${i}</a></h2><p>Description for article ${i}</p></article>`).join('') + '</main>'); });
 await new Promise<void>(resolve => fixture.listen(8877, '127.0.0.1', resolve));
 const browser = new BrowserService({ allowedHosts: ['127.0.0.1:8877'] });
-const store = new Store('/app/data');
+const store = new Store(process.env.SMOKE_DATA_DIR ?? '/app/data');
 const app = await createApp({ store, browserService: browser, publicOrigin: 'http://127.0.0.1:4321', startScheduler: false });
 try {
   const discovery = await browser.discover({ url: 'http://127.0.0.1:8877', waitMs: 0 });
@@ -24,7 +24,7 @@ try {
   assert.equal(rss.statusCode, 200);
   console.log('Container non-root, sandbox browser, detection, API and RSS passed');
 } finally { await app.close(); store.close(); await new Promise<void>(resolve => fixture.close(() => resolve())); }
-const reopened = new Store('/app/data');
+const reopened = new Store(process.env.SMOKE_DATA_DIR ?? '/app/data');
 assert.equal(reopened.listFeeds()[0].itemCount, 4);
 reopened.close();
 console.log('Persistence after restart passed');

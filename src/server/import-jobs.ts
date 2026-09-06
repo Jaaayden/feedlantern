@@ -70,6 +70,14 @@ export class ImportJobs {
   private existing(url: string): Feed | undefined { return this.store.listFeeds().find(f => normalizeSource(f.url) === url); }
   private complete(job: ImportJob, entry: ImportEntry, input: FeedInput, items: import('../shared/types.js').ExtractedItem[]) {
     return this.store.transaction(() => {
+      const existing = this.existing(entry.url);
+      if (existing) {
+        entry.state = 'existing'; entry.feedId = existing.id;
+        const current = this.get(job.id);
+        current.entries = current.entries.map(e => e.id === entry.id ? entry : e);
+        this.store.saveImportJob(current);
+        return existing;
+      }
       const { feed } = this.store.createFeed(input);
       this.store.upsertItems(feed, items);
       this.store.markFetchSuccess(feed.id, feed.nextFetchAt);
@@ -101,7 +109,7 @@ export class ImportJobs {
             entry.title = title;
             const candidate = detection.candidates.find(c => c.id === detection.recommendedId && c.confidence === 'high');
             if (candidate && candidate.items.length >= 3) {
-              this.complete(current, entry, { name: title || new URL(entry.url).host, url: entry.url, credentialId: entry.credentialId, intervalMinutes: entry.intervalMinutes, waitMs: 1000, rules: candidate.rules, ruleOrigins: Object.fromEntries(Object.keys(candidate.rules).map(k => [k, 'auto'])) }, candidate.items);
+              this.complete(current, entry, { name: (title.trim() || new URL(entry.url).host).slice(0, 200), url: entry.url, credentialId: entry.credentialId, intervalMinutes: entry.intervalMinutes, waitMs: 1000, rules: candidate.rules, ruleOrigins: Object.fromEntries(Object.keys(candidate.rules).map(k => [k, 'auto'])) }, candidate.items);
               return;
             }
             entry.state = 'review'; entry.detection = detection;

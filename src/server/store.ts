@@ -525,7 +525,7 @@ export class Store {
   }
 
   listImportJobs(): ImportJob[] {
-    return (this.db.prepare('SELECT body FROM import_jobs ORDER BY rowid DESC LIMIT 100').all() as { body: string }[]).map(row => JSON.parse(row.body));
+    return (this.db.prepare('SELECT body FROM import_jobs ORDER BY rowid DESC').all() as { body: string }[]).map(row => JSON.parse(row.body));
   }
 
   saveImportJob(job: ImportJob): void {

@@ -12,7 +12,7 @@ function request(path, body, method = body ? 'POST' : 'GET') {
     }); req.on('error', reject); req.end(payload);
   });
 }
-const fixture = http.createServer((_req, res) => res.end('<main>' + [1,2,3].map(i => `<article><h2><a href="/item/${i}">Proxy article ${i}</a></h2><p>Summary ${i}</p></article>`).join('') + '</main>'));
+const fixture = http.createServer((_req, res) => { res.setHeader('Content-Type', 'text/html; charset=utf-8'); res.end('<main>' + [1,2,3].map(i => `<article><h2><a href="/item/${i}">Proxy article ${i}</a></h2><p>Summary ${i}</p></article>`).join('') + '</main>'); });
 await new Promise(r => fixture.listen(8877, '127.0.0.1', r));
 try {
   for (let i = 0; i < 60; i++) {

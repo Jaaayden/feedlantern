@@ -44,3 +44,20 @@ test('新管理 API 权限、名称缓存、批量结果、配置合并及完整
     assert.equal((await app.inject({ url: path })).statusCode, 200);
   } finally { await app.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('空实例使用本机设置码恢复，不需要临时管理员', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fl-setup-restore-'));
+  const source = await createApp({ dataDir: join(dir, 'source'), browserService: browser, startScheduler: false });
+  const target = await createApp({ dataDir: join(dir, 'target'), browserService: browser, startScheduler: false });
+  const base = { host: '127.0.0.1:4321', 'x-feedlantern': '1' };
+  try {
+    const setup = await source.inject({ method: 'POST', url: '/api/auth/setup', headers: base, payload: { setupToken: readFileSync(join(dir, 'source/setup-token'), 'utf8').trim(), username: 'source', password: 'source-password' } });
+    const headers = { ...base, cookie: `${setup.cookies[0].name}=${setup.cookies[0].value}`, 'x-csrf-token': setup.json().csrfToken };
+    const archive = (await source.inject({ method: 'POST', url: '/api/backups/export', headers, payload: { currentPassword: 'source-password', password: 'long-backup-password' } })).json();
+    const body = { archive, setupToken: readFileSync(join(dir, 'target/setup-token'), 'utf8').trim(), password: 'long-backup-password', confirm: true };
+    assert.equal((await target.inject({ method: 'POST', url: '/api/backups/restore', headers: base, payload: { ...body, setupToken: 'invalid' } })).statusCode, 403);
+    assert.equal((await target.inject({ method: 'POST', url: '/api/backups/preview', headers: base, payload: body })).statusCode, 200);
+    assert.equal((await target.inject({ method: 'POST', url: '/api/backups/restore', headers: base, payload: body })).statusCode, 200);
+    assert.equal((await target.inject({ method: 'POST', url: '/api/auth/login', headers: base, payload: { username: 'source', password: 'source-password' } })).statusCode, 200);
+  } finally { await source.close(); await target.close(); rmSync(dir, { recursive: true, force: true }); }
+});
