@@ -20,6 +20,7 @@ export interface FeedInput {
 }
 export interface Feed extends FeedInput {
   id: string;
+  channelTitle?: string;
   enabled: boolean;
   createdAt: string;
   lastFetchedAt: string | null;
@@ -71,3 +72,10 @@ export interface AuthState { setupRequired: boolean; authenticated: boolean; use
 // POST /api/browser/:id/preview {rules:SelectionRules} -> {items:ExtractedItem[]}
 // POST /api/browser/:id/detect {} -> DetectionResult
 // DELETE /api/browser/:id -> {ok:true}
+
+export interface ImportEntry {
+  id: string; url: string; credentialId: string | null; intervalMinutes: number;
+  state: 'queued' | 'running' | 'created' | 'existing' | 'review' | 'failed' | 'canceled';
+  feedId?: string; error?: string; title?: string; detection?: DetectionResult;
+}
+export interface ImportJob { id: string; createdAt: string; entries: ImportEntry[] }

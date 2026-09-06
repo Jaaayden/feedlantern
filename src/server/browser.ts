@@ -504,7 +504,15 @@ export class BrowserService {
     });
   }
 
+  async discover(options: BrowserOpenOptions): Promise<{ title: string; detection: DetectionResult }> {
+    return this.background(options, async page => ({ title: await page.title(), detection: await (await import('./detection.js')).detectPage(page) }));
+  }
+
   async scrape(options: BrowserScrapeOptions): Promise<ExtractedItem[]> {
+    return this.background(options, page => extractPage(page, options.rules));
+  }
+
+  private async background<T>(options: BrowserOpenOptions, extract: (page: Page) => Promise<T>): Promise<T> {
     if (this.scrapeSessions >= MAX_SCRAPE_SESSIONS) throw new BrowserBusyError('已有抓取任务正在运行');
     this.scrapeSessions += 1;
     let context: BrowserContext | undefined;
@@ -522,7 +530,7 @@ export class BrowserService {
       try {
         return await Promise.race([(async () => {
           await this.preparePage(page, options, true);
-          return extractPage(page, options.rules);
+          return extract(page);
         })(), deadline]);
       } finally {
         if (timeout) clearTimeout(timeout);

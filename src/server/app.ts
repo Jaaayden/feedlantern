@@ -421,6 +421,47 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
   const feedPayload = (feed: Feed): { feed: Feed; feedUrl: string } => ({ feed, feedUrl: feedUrl(config, store, feed.id) });
   app.get('/api/feeds', async (request): Promise<Feed[]> => { feedsGuard(request); return store.listFeeds(); });
+  app.get('/api/settings', async request => { feedsGuard(request); return store.getSettings(); });
+  app.put('/api/settings', async request => {
+    feedsGuard(request);
+    const view = asRecord(request.body).feedView;
+    if (view !== 'list' && view !== 'cards') throw new AppError(400, '视图必须为 list 或 cards');
+    store.setFeedView(view);
+    return store.getSettings();
+  });
+  app.patch('/api/feeds/:id', async request => {
+    feedsGuard(request);
+    const title = asNonEmptyString(asRecord(request.body).channelTitle, '阅读器中的订阅名称', 200);
+    const feed = store.setChannelTitle(String((request.params as { id: string }).id), title);
+    if (!feed) throw new AppError(404, 'Feed 不存在');
+    return feedPayload(feed);
+  });
+  app.post('/api/feeds/bulk', async request => {
+    feedsGuard(request);
+    const body = asRecord(request.body);
+    if (!Array.isArray(body.ids) || !body.ids.length || body.ids.length > 200 || !body.ids.every(id => typeof id === 'string')) throw new AppError(400, '请选择 1–200 个订阅');
+    const action = body.action;
+    if (!['copy', 'pause', 'resume', 'refresh', 'delete'].includes(String(action))) throw new AppError(400, '操作无效');
+    const results = [];
+    for (const id of new Set(body.ids as string[])) {
+      try {
+        const result = await enqueueRefresh(async () => {
+          const feed = store.getFeed(id);
+          if (!feed) throw new AppError(404, '订阅不存在');
+          if (action === 'copy') return { id, ok: true, feedUrl: feedUrl(config, store, id) };
+          if (action === 'delete') store.deleteFeed(id);
+          if (action === 'pause' && feed.enabled || action === 'resume' && !feed.enabled) store.toggleFeed(id);
+          if (action === 'refresh') {
+            const refreshed = await refreshOnce(id);
+            if (refreshed?.lastError) return { id, ok: false, error: refreshed.lastError };
+          }
+          return { id, ok: true };
+        });
+        results.push(result);
+      } catch (error) { results.push({ id, ok: false, error: friendlyError(error, '操作失败') }); }
+    }
+    return { results };
+  });
   app.post('/api/feeds', async (request) => {
     feedsGuard(request);
     const input = parseFeedInput(request.body);

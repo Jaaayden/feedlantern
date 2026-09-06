@@ -2,7 +2,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSy
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import type { CredentialSummary, ExtractedItem, Feed, FeedInput, FeedItem, RuleOrigins, SelectionRules } from '../shared/types.js';
+import type { CredentialSummary, ExtractedItem, Feed, FeedInput, FeedItem, ImportJob, RuleOrigins, SelectionRules } from '../shared/types.js';
 import type { ServerConfig } from './config.js';
 
 export interface CredentialValue {
@@ -122,6 +122,7 @@ function rowToFeed(row: Record<string, unknown>): Feed {
   return {
     id: String(row.id),
     name: String(row.name),
+    channelTitle: String(row.channel_title ?? row.name),
     url: String(row.url),
     rules: parseJson<SelectionRules>(row.rules_json, { item: '', title: '', link: '' }),
     ruleOrigins: parseJson<RuleOrigins | undefined>(row.rule_origins_json, undefined),
@@ -233,6 +234,16 @@ export class Store {
       CREATE INDEX IF NOT EXISTS feeds_due_idx ON feeds(enabled, next_fetch_at);
       CREATE INDEX IF NOT EXISTS feed_items_feed_idx ON feed_items(feed_id, first_seen_at DESC);
     `);
+    const version = Number((this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
+    if (version < 1) {
+      this.db.exec(`BEGIN;
+        ALTER TABLE feeds ADD COLUMN channel_title TEXT;
+        UPDATE feeds SET channel_title = name;
+        CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        PRAGMA user_version = 1;
+        COMMIT;`);
+    }
+    if (version < 2) this.db.exec(`BEGIN; CREATE TABLE import_jobs (id TEXT PRIMARY KEY, body TEXT NOT NULL); PRAGMA user_version = 2; COMMIT;`);
     this.ensureSetupToken();
   }
 
@@ -459,6 +470,7 @@ export class Store {
       last_error, item_count, token_ciphertext, token_hash
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL, NULL, ?, NULL, 0, ?, ?)`)
       .run(id, input.name, input.url, JSON.stringify(input.rules), input.ruleOrigins ? JSON.stringify(input.ruleOrigins) : null, input.credentialId, input.intervalMinutes, input.waitMs, input.waitForSelector ?? null, timestamp, nextFetchAt, encrypt(this.masterKey, token), hashToken(token));
+    this.db.prepare("UPDATE feeds SET channel_title = ? WHERE id = ?").run(input.name, id);
     return { feed: this.getFeed(id)!, token };
   }
 
@@ -470,6 +482,28 @@ export class Store {
     this.db.prepare(`UPDATE feeds SET name = ?, url = ?, rules_json = ?, rule_origins_json = ?, credential_id = ?, interval_minutes = ?, wait_ms = ?, wait_for_selector = ?, next_fetch_at = ?, last_error = NULL WHERE id = ?`)
       .run(input.name, input.url, JSON.stringify(input.rules), origins ? JSON.stringify(origins) : null, input.credentialId, input.intervalMinutes, input.waitMs, input.waitForSelector ?? null, nextFetchAt, id);
     return this.getFeed(id);
+  }
+
+  setChannelTitle(id: string, title: string): Feed | null {
+    this.db.prepare('UPDATE feeds SET channel_title = ? WHERE id = ?').run(title, id);
+    return this.getFeed(id);
+  }
+
+  listImportJobs(): ImportJob[] {
+    return (this.db.prepare('SELECT body FROM import_jobs ORDER BY rowid DESC LIMIT 100').all() as { body: string }[]).map(row => JSON.parse(row.body));
+  }
+
+  saveImportJob(job: ImportJob): void {
+    this.db.prepare('INSERT INTO import_jobs(id,body) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body').run(job.id, JSON.stringify(job));
+  }
+
+  getSettings(): { feedView: 'list' | 'cards' } {
+    const row = this.db.prepare("SELECT value FROM settings WHERE key = 'feedView'").get();
+    return { feedView: row?.value === 'cards' ? 'cards' : 'list' };
+  }
+
+  setFeedView(view: 'list' | 'cards'): void {
+    this.db.prepare("INSERT INTO settings(key,value) VALUES ('feedView',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(view);
   }
 
   getFeed(id: string): Feed | null {

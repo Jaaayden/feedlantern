@@ -56,3 +56,24 @@ test('历史保留 200 条、RSS 输出 100 条，重复刷新保留条目 ID �
     rmSync(dataDir, { recursive: true, force: true });
   }
 });
+
+test('频道名称独立于管理名称，更新不改变密钥、历史和调度，偏好重启后保留', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'feedlantern-title-'));
+  let store = new Store(dir);
+  try {
+    const { feed, token } = store.createFeed({ name: '管理名称', url: 'https://example.test', rules: { item: 'article', title: 'h2', link: 'a' }, credentialId: null, intervalMinutes: 60, waitMs: 0 });
+    store.upsertItems(feed, [{ title: '文章', link: 'https://example.test/1' }]);
+    const before = store.getFeed(feed.id)!;
+    const items = store.getItems(feed.id);
+    const after = store.setChannelTitle(feed.id, '阅读器 & 名称')!;
+    assert.deepEqual({ ...after, channelTitle: before.channelTitle }, before);
+    assert.deepEqual(store.getItems(feed.id), items);
+    assert.equal(store.getFeedToken(feed.id)?.token, token);
+    assert.equal(new XMLParser().parse(renderRss(after, items, 'https://example.test/rss')).rss.channel.title, '阅读器 & 名称');
+    assert.equal(store.getSettings().feedView, 'list');
+    store.setFeedView('cards');
+    store.close(); store = new Store(dir);
+    assert.equal(store.getFeed(feed.id)?.channelTitle, '阅读器 & 名称');
+    assert.equal(store.getSettings().feedView, 'cards');
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});

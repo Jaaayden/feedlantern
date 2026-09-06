@@ -69,6 +69,10 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 }
 
 export const api = {
+  settings: {
+    get: () => request<{ feedView: 'list' | 'cards' }>('/api/settings'),
+    update: (feedView: 'list' | 'cards') => request<{ feedView: 'list' | 'cards' }>('/api/settings', { method: 'PUT', body: { feedView } }),
+  },
   auth: {
     status: () => request<AuthState>('/api/auth/status'),
     setup: (body: { setupToken: string; username: string; password: string }) =>
@@ -88,6 +92,8 @@ export const api = {
     remove: (id: string) => request<void>(`/api/credentials/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   },
   feeds: {
+    title: (id: string, channelTitle: string) => request<{ feed: Feed }>(`/api/feeds/${encodeURIComponent(id)}`, { method: 'PATCH', body: { channelTitle } }),
+    bulk: (ids: string[], action: string) => request<{ results: Array<{ id: string; ok: boolean; feedUrl?: string; error?: string }> }>('/api/feeds/bulk', { method: 'POST', body: { ids, action } }),
     list: () => request<Feed[]>('/api/feeds'),
     create: (body: FeedInput) => request<{ feed: Feed; feedUrl: string }>('/api/feeds', { method: 'POST', body }),
     detail: (id: string) =>
