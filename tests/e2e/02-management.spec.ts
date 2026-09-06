@@ -4,7 +4,8 @@ test('列表偏好、独立频道名称、批量创建及加密备份入口', as
   const auth = await loginAsAdmin(page.request);
   const headers = protocolHeaders(auth.csrfToken);
   await page.request.put('/api/settings', { headers, data: { feedView: 'list' } });
-  await loginInPage(page);
+  await page.request.post('/api/feeds', { headers, data: { name: 'Management fixture', url: FIXTURE_URLS.static, rules: { item: '.article-card', title: '.article-title', link: 'a.article-link' } } });
+  await page.goto('/');
   await expect(page.getByRole('button', { name: '列表', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await page.getByRole('button', { name: '卡片', exact: true }).click();
   await page.reload();
@@ -17,7 +18,7 @@ test('列表偏好、独立频道名称、批量创建及加密备份入口', as
   await dialog.getByLabel('阅读器中的订阅名称').fill('阅读器专用名称 & v2');
   await dialog.getByRole('button', { name: '保存订阅名称' }).click();
   await expect(page.getByRole('status')).toContainText('订阅名称已保存');
-  expect((await page.request.get(rss)).text()).resolves.toContain('阅读器专用名称 &amp; v2');
+  await expect((await page.request.get(rss)).text()).resolves.toContain('阅读器专用名称 &amp; v2');
   await dialog.getByRole('button', { name: '关闭' }).click();
   await page.getByRole('button', { name: '批量添加', exact: true }).click();
   await page.getByLabel('每行一个网址（最多 100 个）').fill(`${FIXTURE_URLS.static}?batch=v2\n${FIXTURE_URLS.ambiguous}?batch=v2`);

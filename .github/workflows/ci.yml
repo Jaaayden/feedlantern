@@ -5,6 +5,7 @@ on:
     branches: [main]
     tags: ['v*']
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -37,3 +38,69 @@ jobs:
         run: pnpm test
       - name: Browser acceptance tests
         run: pnpm test:e2e
+
+  containers:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Permit sandbox namespaces on ephemeral ARM runner
+        if: matrix.arch == 'arm64'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Build native image
+        run: docker build -t feedlantern:test .
+      - name: Validate Compose and container
+        run: |
+          docker compose config --quiet
+          docker run --rm --init --shm-size=1g --security-opt seccomp=deploy/seccomp_profile.json feedlantern:test pnpm exec tsx scripts/container-smoke.ts
+      - name: Save verified image
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: docker save feedlantern:test | gzip > image-${{ matrix.arch }}.tar.gz
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          name: image-${{ matrix.arch }}
+          path: image-${{ matrix.arch }}.tar.gz
+          retention-days: 2
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [verify, containers]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: image-*
+          merge-multiple: true
+      - name: Publish verified images and deployment bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          version="${RELEASE_TAG#v}"
+          test "$(node -p 'require("./package.json").version')" = "$version"
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          for arch in amd64 arm64; do
+            gunzip -c "image-$arch.tar.gz" | docker load
+            docker tag feedlantern:test "ghcr.io/jaaayden/feedlantern:$version-$arch"
+            docker push "ghcr.io/jaaayden/feedlantern:$version-$arch"
+          done
+          docker manifest create "ghcr.io/jaaayden/feedlantern:$version" "ghcr.io/jaaayden/feedlantern:$version-amd64" "ghcr.io/jaaayden/feedlantern:$version-arm64"
+          docker manifest push "ghcr.io/jaaayden/feedlantern:$version"
+          tar -czf deployment.tar.gz compose.yaml deploy doc scripts/install.sh
+          sha256sum deployment.tar.gz > SHA256SUMS
+          gh release create "$RELEASE_TAG" deployment.tar.gz SHA256SUMS --verify-tag --generate-notes

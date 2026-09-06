@@ -1,0 +1,30 @@
+import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import { readFileSync } from 'node:fs';
+import { BrowserService } from '../src/server/browser.js';
+import { createApp } from '../src/server/app.js';
+import { Store } from '../src/server/store.js';
+assert.notEqual(process.getuid?.(), 0, 'Container must run as non-root');
+const fixture = createServer((_req, res) => res.end('<main>' + [1, 2, 3, 4].map(i => `<article class="entry"><h2><a href="/article/${i}">Article number ${i}</a></h2><p>Description for article ${i}</p></article>`).join('') + '</main>'));
+await new Promise<void>(resolve => fixture.listen(8877, '127.0.0.1', resolve));
+const browser = new BrowserService({ allowedHosts: ['127.0.0.1:8877'] });
+const store = new Store('/app/data');
+const app = await createApp({ store, browserService: browser, publicOrigin: 'http://127.0.0.1:4321', startScheduler: false });
+try {
+  const discovery = await browser.discover({ url: 'http://127.0.0.1:8877', waitMs: 0 });
+  assert.ok(discovery.detection.candidates.some(c => c.count >= 3));
+  const base = { host: '127.0.0.1:4321', 'x-feedlantern': '1' };
+  const setup = await app.inject({ method: 'POST', url: '/api/auth/setup', headers: base, payload: { setupToken: readFileSync(store.setupTokenPath, 'utf8').trim(), username: 'smoke', password: 'container-test-password' } });
+  assert.equal(setup.statusCode, 200);
+  const headers = { ...base, cookie: `${setup.cookies[0].name}=${setup.cookies[0].value}`, 'x-csrf-token': setup.json().csrfToken };
+  const created = await app.inject({ method: 'POST', url: '/api/feeds', headers, payload: { name: 'smoke', url: 'http://127.0.0.1:8877', rules: { item: 'article', title: 'h2', link: 'a' } } });
+  assert.equal(created.statusCode, 200);
+  assert.equal(created.json().feed.itemCount, 4);
+  const rss = await app.inject({ url: new URL(created.json().feedUrl).pathname });
+  assert.equal(rss.statusCode, 200);
+  console.log('Container non-root, sandbox browser, detection, API and RSS passed');
+} finally { await app.close(); store.close(); await new Promise<void>(resolve => fixture.close(() => resolve())); }
+const reopened = new Store('/app/data');
+assert.equal(reopened.listFeeds()[0].itemCount, 4);
+reopened.close();
+console.log('Persistence after restart passed');
