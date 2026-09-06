@@ -379,7 +379,7 @@ export class Store {
       updatedAt,
       metadata.expiresAt,
     );
-    return { id, name: input.name, domains: metadata.domains, count: metadata.count, updatedAt, expiresAt: metadata.expiresAt };
+    return { id, name: input.name, url: input.url, format: input.format, domains: metadata.domains, count: metadata.count, updatedAt, expiresAt: metadata.expiresAt };
   }
 
   updateCredential(id: string, input: CredentialValue, metadata: { domains: string[]; count: number; expiresAt: string | null }): CredentialSummary | null {
@@ -411,11 +411,13 @@ export class Store {
   }
 
   getCredentialSummary(id: string): CredentialSummary | null {
-    const row = this.db.prepare('SELECT id, name, domains_json, cookie_count, updated_at, expires_at FROM credentials WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    const row = this.db.prepare('SELECT id, name, url, format, domains_json, cookie_count, updated_at, expires_at FROM credentials WHERE id = ?').get(id) as Record<string, unknown> | undefined;
     if (!row) return null;
     return {
       id: String(row.id),
       name: String(row.name),
+      url: String(row.url),
+      format: String(row.format) as 'header' | 'json',
       domains: parseJson<string[]>(row.domains_json, []),
       count: Number(row.cookie_count),
       updatedAt: String(row.updated_at),
@@ -424,10 +426,12 @@ export class Store {
   }
 
   listCredentialSummaries(): CredentialSummary[] {
-    const rows = this.db.prepare('SELECT id, name, domains_json, cookie_count, updated_at, expires_at FROM credentials ORDER BY updated_at DESC').all() as Array<Record<string, unknown>>;
+    const rows = this.db.prepare('SELECT id, name, url, format, domains_json, cookie_count, updated_at, expires_at FROM credentials ORDER BY updated_at DESC').all() as Array<Record<string, unknown>>;
     return rows.map((row) => ({
       id: String(row.id),
       name: String(row.name),
+      url: String(row.url),
+      format: String(row.format) as 'header' | 'json',
       domains: parseJson<string[]>(row.domains_json, []),
       count: Number(row.cookie_count),
       updatedAt: String(row.updated_at),

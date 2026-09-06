@@ -36,7 +36,7 @@ export interface ExtractedItem {
   publishedAt?: string;
 }
 export interface FeedItem extends ExtractedItem { id: string; firstSeenAt: string }
-export interface CredentialSummary { id: string; name: string; domains: string[]; count: number; updatedAt: string; expiresAt: string | null }
+export interface CredentialSummary { id: string; name: string; url: string; format: 'header' | 'json'; domains: string[]; count: number; updatedAt: string; expiresAt: string | null }
 export interface ScreenFrame { sessionId: string; image: string; width: number; height: number; url: string; title: string }
 export interface Rect { x: number; y: number; width: number; height: number }
 export interface PickRequest { x: number; y: number; target: 'item' | FieldName; itemSelector?: string; ancestorLevel?: number }
