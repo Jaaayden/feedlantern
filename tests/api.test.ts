@@ -27,6 +27,7 @@ test('API setup/login/CSRF 与 RSS token 流程', async () => {
     assert.equal(status.headers['x-content-type-options'], 'nosniff');
     const wrongHost = await app.inject({ method: 'GET', url: '/api/auth/status', headers: { host: 'evil.example:4321' } });
     assert.equal(wrongHost.statusCode, 403);
+    assert.deepEqual(wrongHost.json(), { error: '请求主机不被允许' });
     const setupToken = readFileSync(join(dataDir, 'setup-token'), 'utf8').trim();
     const setup = await app.inject({ method: 'POST', url: '/api/auth/setup', headers: { host, 'x-feedlantern': '1' }, payload: { setupToken, username: 'admin', password: 'password123' } });
     assert.equal(setup.statusCode, 200);

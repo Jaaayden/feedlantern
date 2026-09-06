@@ -7,7 +7,17 @@ import {
   createRestrictedForwardProxy,
   NetworkPolicy,
   NetworkPolicyError,
+  resolveDnsOverHttps,
 } from '../src/server/network';
+
+test('加密 DNS 只接受有效地址，查询失败不会回退为不受检验的连接', async () => {
+  const fetcher = (async (url: string | URL | Request) => {
+    assert.match(String(url), /^https:\/\/cloudflare-dns\.com\/dns-query/);
+    return new Response(JSON.stringify({ Status: 0, Answer: [{ type: 5, data: 'alias.example' }, { type: 1, data: '93.184.215.14' }] }));
+  }) as typeof fetch;
+  assert.deepEqual(await resolveDnsOverHttps('example.com', fetcher), ['93.184.215.14']);
+  await assert.rejects(resolveDnsOverHttps('example.com', (async () => new Response('{}', { status: 500 })) as typeof fetch), /加密 DNS 查询失败/);
+});
 
 async function listen(handler: RequestListener): Promise<Server> {
   const server = createServer(handler);

@@ -11,6 +11,8 @@ import ipaddr from 'ipaddr.js';
 import type { BrowserContext } from 'playwright';
 
 export interface NetworkPolicyOptions {
+  /** Opt in for hosts using a local fake-IP DNS proxy. Results remain checked. */
+  dnsOverHttps?: boolean;
   /** Exact URL host values, normally supplied as host:port fixture allowlists. */
   allowedHosts?: readonly string[];
   /** DNS results are cached briefly to avoid resolving every image/script twice. */
@@ -153,6 +155,21 @@ async function resolveHostAddresses(hostname: string): Promise<string[]> {
   }
 }
 
+export async function resolveDnsOverHttps(hostname: string, fetcher: typeof fetch = fetch): Promise<string[]> {
+  try {
+    const response = await fetcher(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(hostname)}&type=A`, {
+      headers: { accept: 'application/dns-json' }, signal: AbortSignal.timeout(10_000), redirect: 'error',
+    });
+    if (!response.ok) throw new Error('DNS response failed');
+    const data = await response.json() as { Status?: number; Answer?: Array<{ type: number; data: string }> };
+    const addresses = data.Answer?.filter(record => record.type === 1 && ipaddr.isValid(record.data)).map(record => record.data) ?? [];
+    if (data.Status !== 0 || !addresses.length) throw new Error('No DNS addresses');
+    return addresses;
+  } catch {
+    throw new NetworkPolicyError('加密 DNS 查询失败，请检查网络连接或关闭 DNS_OVER_HTTPS 设置');
+  }
+}
+
 /**
  * Validates the initial navigation URL and request URLs. The restricted proxy
  * below uses the same policy and connects to the checked address directly;
@@ -161,10 +178,12 @@ async function resolveHostAddresses(hostname: string): Promise<string[]> {
 export class NetworkPolicy {
   private readonly allowedHosts: Set<string>;
   private readonly dnsCacheTtlMs: number;
+  private readonly dnsOverHttps: boolean;
   private readonly cache = new Map<string, { expiresAt: number; addresses: string[] }>();
 
   constructor(options: NetworkPolicyOptions = {}) {
     this.allowedHosts = normalizeAllowedHosts(options.allowedHosts);
+    this.dnsOverHttps = options.dnsOverHttps ?? process.env.DNS_OVER_HTTPS === 'true';
     this.dnsCacheTtlMs = Math.max(0, options.dnsCacheTtlMs ?? 30_000);
   }
 
@@ -173,7 +192,9 @@ export class NetworkPolicy {
     const now = Date.now();
     const cached = this.cache.get(normalized);
     if (cached && cached.expiresAt > now) return cached.addresses;
-    const addresses = await resolveHostAddresses(normalized);
+    const addresses = this.dnsOverHttps && !ipaddr.isValid(normalized) && !BLOCKED_HOSTNAMES.has(normalized) && !normalized.endsWith('.localhost')
+      ? await resolveDnsOverHttps(normalized)
+      : await resolveHostAddresses(normalized);
     this.cache.set(normalized, { expiresAt: now + this.dnsCacheTtlMs, addresses });
     return addresses;
   }
@@ -189,7 +210,10 @@ export class NetworkPolicy {
 
     const addresses = await this.lookupCached(hostname);
     if (addresses.length === 0 || addresses.some(address => isPrivateOrSpecialAddress(address))) {
-      throw new NetworkPolicyError(`目标主机解析到私网或特殊地址，已阻止：${hostname}`, rawUrl);
+      const fakeIp = addresses.some(address => ipaddr.isValid(address) && ipaddr.parse(address).kind() === 'ipv4' && matchesBlockedRange(address, [['198.18.0.0', 15]]));
+      throw new NetworkPolicyError(fakeIp
+        ? `目标域名被本机 DNS 解析到保留地址（可能启用了代理 Fake-IP）：${hostname}。可设置 DNS_OVER_HTTPS=true 后重启服务`
+        : `目标主机解析到私网或特殊地址，已阻止：${hostname}`, rawUrl);
     }
     return url;
   }
@@ -376,6 +400,7 @@ export async function createRestrictedForwardProxy(
       if (upstream && !upstream.destroyed) upstream.destroy();
     };
     client.once('close', closeBoth);
+    client.on('error', closeBoth);
     try {
       const authority = request.url ?? '';
       target = new URL(`https://${authority}/`);
@@ -400,7 +425,7 @@ export async function createRestrictedForwardProxy(
         client.pipe(tunnel);
         tunnel.pipe(client);
       });
-      tunnel.once('error', closeBoth);
+      tunnel.on('error', closeBoth);
       tunnel.once('close', () => {
         sockets.delete(tunnel);
         closeBoth();
@@ -412,6 +437,7 @@ export async function createRestrictedForwardProxy(
 
   server.on('connection', socket => {
     sockets.add(socket);
+    socket.on('error', () => socket.destroy());
     socket.on('close', () => sockets.delete(socket));
   });
   server.on('clientError', (_error, socket) => socket.destroy());

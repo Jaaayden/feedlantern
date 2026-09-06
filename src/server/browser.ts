@@ -16,6 +16,7 @@ import {
   allowedHostListFromEnv,
   createRestrictedForwardProxy,
   installNetworkPolicy,
+  NetworkPolicy,
   type NetworkPolicyOptions,
   type RestrictedForwardProxy,
 } from './network';
@@ -230,6 +231,9 @@ function cleanError(error: unknown, fallback: string): BrowserServiceError {
 
 function normalizeSelectorError(error: unknown, fallback: string): BrowserServiceError {
   const message = error instanceof Error ? error.message : String(error);
+  if (/ERR_BLOCKED_BY_CLIENT/.test(message)) return new BrowserServiceError('网页或重定向被网络安全策略阻止，请检查目标 DNS 是否解析到私网或保留地址');
+  if (/Timeout|timed out/i.test(message)) return new BrowserServiceError('网页加载超时，请检查网络连接或调整等待条件');
+  if (/ERR_CERT/.test(message)) return new BrowserServiceError('目标网站的 HTTPS 证书无效，无法安全加载');
   if (/selector|queryselector|syntaxerror|strict mode/i.test(message)) return new BrowserServiceError(`CSS selector 无效：${message}`);
   return new BrowserServiceError(`${fallback}：${message}`);
 }
@@ -289,6 +293,7 @@ export class BrowserService {
   }
 
   private async createContext(cookies: Cookie[] | undefined, url: string): Promise<BrowserContext> {
+    await new NetworkPolicy(this.networkOptions).assertAllowed(url);
     const browser = await this.ensureBrowser();
     const context = await browser.newContext({
       viewport: VIEWPORT,

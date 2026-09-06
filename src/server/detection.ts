@@ -59,7 +59,7 @@ export async function detectPage(page: Page): Promise<DetectionResult> {
       const tokenPattern = /^[a-zA-Z_][a-zA-Z0-9_-]{0,42}$/;
       const dynamicTokenPattern = /(?:^|[-_])(?:[a-f0-9]{6,}|\d{3,})(?:$|[-_])/i;
       const semanticWords = /(?:title|headline|subject|name|story|article|post|entry|card|item|result|row|thing|content|summary|excerpt|description|abstract|date|time|published|created|author)/i;
-      const blockedWords = /(?:^|[-_\s])(?:ad|ads|advert|advertisement|sponsor|promoted|share|social|breadcrumb|pagination|pager|cookie|consent|newsletter|related)(?:$|[-_\s])/i;
+      const blockedWords = /(?:^|[-_\s])(?:ad|ads|advert|advertisement|sponsor|promoted|share|social|breadcrumb|path|pos|position|pagination|pager|cookie|consent|newsletter|related)(?:$|[-_\s])/i;
       const datePattern = /(?:\b(?:19|20)\d{2}[./-]\d{1,2}(?:[./-]\d{1,2})?\b|\b\d{1,2}[./-]\d{1,2}[./-](?:19|20)?\d{2}\b|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b|\b\d{1,2}\s+(?:小时|天|周|月|年前|minutes?|hours?|days?|weeks?|months?)\b|\b\d{4}年\d{1,2}月)/i;
 
       const helpers = {
@@ -75,6 +75,7 @@ export async function detectPage(page: Page): Promise<DetectionResult> {
         stableClassNames(element: Element): string[] {
           return Array.from(element.classList)
             .filter((name) => tokenPattern.test(name) && !dynamicTokenPattern.test(name))
+            .filter((name) => !/^(?:n|item|row|post|news)[-_]?\d+$/i.test(name))
             .filter((name) => name.length <= 42)
             .slice(0, 6);
         },
@@ -176,9 +177,12 @@ export async function detectPage(page: Page): Promise<DetectionResult> {
 
         selectorMatchesGroup(selector: string, group: Element[]): Element[] {
         try {
-          return Array.from(document.querySelectorAll(selector))
-            .filter((element) => !blockedByContext(element) && visible(element))
-            .slice(0, limits.maxItems);
+          const all = Array.from(document.querySelectorAll(selector));
+          // Saved selectors are replayed by the shared extractor without
+          // discovery's visibility/context filter. Reject selectors that
+          // would expand into a footer or hidden panel when replayed.
+          if (all.some(element => blockedByContext(element) || !visible(element))) return [];
+          return all.slice(0, limits.maxItems);
         } catch {
           return [];
         }
@@ -263,7 +267,18 @@ export async function detectPage(page: Page): Promise<DetectionResult> {
           depth += 1;
         }
         if (current !== item || segments.length === 0) return null;
-        return `:scope > ${segments.join(' > ')}`;
+        const selector = `:scope > ${segments.join(' > ')}`;
+        if (item.querySelector(selector) === target) return selector;
+        // Identical classless siblings (for example date then summary <p>)
+        // must not collapse to a selector that always returns the first one.
+        const precise: string[] = [];
+        current = target;
+        while (current && current !== item) {
+          const siblings = Array.from(current.parentElement?.children ?? []).filter(sibling => sibling.tagName === current!.tagName);
+          precise.unshift(`${selectorSegment(current)}:nth-of-type(${siblings.indexOf(current) + 1})`);
+          current = current.parentElement;
+        }
+        return `:scope > ${precise.join(' > ')}`;
         },
 
         isDateLike(element: Element): boolean {
@@ -298,6 +313,7 @@ export async function detectPage(page: Page): Promise<DetectionResult> {
           return /^https?:|^\//i.test(href) ? (/title|story|headline|item|link/i.test(signal) ? 12 : 9) : 3;
         }
         if (field === 'description') {
+          if (isDateLike(element) || /title|headline|meta|author|byline|category/i.test(signal)) return -1;
           if (/description|summary|excerpt|abstract|dek|lead/i.test(signal)) return 11;
           if (tag === 'p') return value.length >= 15 ? 9 : 5;
           if (tag === 'a' || /^h[1-6]$/.test(tag)) return -1;
@@ -308,6 +324,7 @@ export async function detectPage(page: Page): Promise<DetectionResult> {
           return element.querySelector('img,source') ? 7 : -1;
         }
         if (field === 'date') {
+          if (element.querySelector('time,[datetime],h1,h2,h3,p,a')) return -1;
           if ((tag === 'a' || /^h[1-6]$/.test(tag)) && !/date|time|publish|created|updated/i.test(signal)) return -1;
           return isDateLike(element) ? (tag === 'time' || element.getAttribute('datetime') ? 12 : 8) : -1;
         }
@@ -555,13 +572,15 @@ export async function detectPage(page: Page): Promise<DetectionResult> {
     const titleDistinctRatio = titleValues.length === 0 ? 0 : uniqueTitles / titleValues.length;
     const countScore = Math.min(1, items.length / 8);
     const repetitionPenalty = titleDistinctRatio < 0.5 ? 0.15 : titleDistinctRatio < 0.75 ? 0.05 : 0;
+    const bareLinksPenalty = discovery.rules.title === ':scope' && discovery.rules.link === ':scope'
+      && !discovery.rules.date && !discovery.rules.image && !discovery.rules.description ? 0.15 : 0;
     const score = Math.max(0, Math.min(1,
       discovery.score * 0.35 +
       titleCoverage * 0.25 +
       linkCoverage * 0.25 +
       uniqueRatio * 0.1 +
       countScore * 0.05 -
-      repetitionPenalty,
+      repetitionPenalty - bareLinksPenalty,
     ));
     const warnings = [...discovery.warnings];
     if (items.length < 3) warnings.push('匹配条目少于 3 个，建议人工确认');

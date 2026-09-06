@@ -204,6 +204,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const store = options.store ?? new Store(config);
   const browser = await makeBrowserService(config, options.browserService);
   const app = Fastify({ logger: false, bodyLimit: 2_500_000 });
+  // Fastify captures the error handler when a route is registered.
+  // Install it before plugins/routes so errors share the frontend contract.
+  app.setErrorHandler((error, _request, reply) => {
+    if (error instanceof AppError) return reply.code(error.statusCode).send({ error: error.message });
+    const status = (error as { statusCode?: number }).statusCode;
+    if (status === 400 || status === 413 || status === 415) return reply.code(status).send({ error: '请求格式无效或内容过大' });
+    return reply.code(500).send({ error: '服务器内部错误' });
+  });
   await app.register(cookie);
   const allowedApiHosts = new Set([
     new URL(config.publicOrigin).host.toLowerCase(),
@@ -556,11 +564,6 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return reply.type('text/html; charset=utf-8').send('<!doctype html><meta charset="utf-8"><title>FeedLantern</title><p>FeedLantern 服务已启动，请先构建或启动前端。</p>');
   });
 
-  app.setErrorHandler((error, _request, reply) => {
-    if (error instanceof AppError) return reply.code(error.statusCode).send({ error: error.message });
-    if ((error as { validation?: unknown }).validation) return reply.code(400).send({ error: '请求格式无效' });
-    return reply.code(500).send({ error: '服务器内部错误' });
-  });
 
   if (options.startScheduler !== false) {
     scheduler = setInterval(() => { void refreshDue().catch(() => {}); }, 30_000);

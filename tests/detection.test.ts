@@ -54,6 +54,21 @@ const semanticFixture = `
     <article class="post card"><h2 class="title"><a href="/story/4">第四篇新闻</a></h2><p class="summary">第四篇摘要内容足够长，可以被识别为摘要。</p><img data-src="/images/4.jpg"><time datetime="2026-09-04">2026-09-04</time></article>
   </main>`;
 
+test('保存的列表规则不扩展到页脚，摘要与同级日期段落分别提取', async (t) => {
+  const page = await newPage(t);
+  if (!page) return;
+  try {
+    const cards = [1, 2, 3, 4].map(n => `<a class="card" href="/post/${n}"><div><h2>Article ${n}</h2><p class="date">2026年9月${n}日</p><p>This is the full article summary number ${n}.</p></div></a>`).join('');
+    await setFixture(page, `<main>${cards}<section><p><a href="/one">one</a></p><p><a href="/two">two</a></p><p><a href="/three">three</a></p></section></main><footer><p><a href="/theme">Theme author</a></p></footer>`, 'https://example.test/');
+    const result = await detectPage(page);
+    assert.ok(result.candidates.every(candidate => candidate.items.every(item => item.title !== 'Theme author')));
+    const candidate = result.candidates.find(entry => entry.items[0]?.title === 'Article 1')!;
+    assert.ok(candidate);
+    assert.equal(candidate.items[0].description, 'This is the full article summary number 1.');
+    assert.equal(candidate.items[0].publishedAt, '2026-09-01T00:00:00.000Z');
+  } finally { await page.close(); }
+});
+
 test('自动识别语义化文章列表并提取可选字段', async (t) => {
   const page = await newPage(t);
   if (!page) return;
