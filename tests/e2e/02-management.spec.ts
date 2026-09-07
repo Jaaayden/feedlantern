@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { loginInPage, loginAsAdmin, protocolHeaders, FIXTURE_URLS, TEST_ACCOUNT } from './support';
-test('列表偏好、独立频道名称、批量创建及加密备份入口', async ({ page }) => {
+test('列表偏好、统一订阅名称、批量创建及加密备份入口', async ({ page }) => {
   const auth = await loginAsAdmin(page.request);
   const headers = protocolHeaders(auth.csrfToken);
   await page.request.put('/api/settings', { headers, data: { feedView: 'list' } });
@@ -15,11 +15,12 @@ test('列表偏好、独立频道名称、批量创建及加密备份入口', as
   const dialog = page.getByRole('dialog');
   const rss = await dialog.locator('input[readonly]').inputValue();
   await dialog.getByText('订阅设置', { exact: true }).click();
-  await dialog.getByLabel('阅读器中的订阅名称').fill('阅读器专用名称 & v2');
+  await dialog.getByLabel('订阅名称').fill('阅读器专用名称 & v2');
   await dialog.getByRole('button', { name: '保存订阅名称' }).click();
   await expect(page.getByRole('status')).toContainText('订阅名称已保存');
   await expect((await page.request.get(rss)).text()).resolves.toContain('阅读器专用名称 &amp; v2');
   await dialog.getByRole('button', { name: '关闭' }).click();
+  await expect(page.getByRole('button', { name: '查看订阅 阅读器专用名称 & v2', exact: true })).toBeVisible();
   await page.getByRole('button', { name: '批量添加', exact: true }).click();
   await page.getByLabel('每行一个网址（最多 100 个）').fill(`${FIXTURE_URLS.static}?batch=v2\n${FIXTURE_URLS.ambiguous}?batch=v2`);
   await page.getByRole('button', { name: '开始批量识别' }).click();

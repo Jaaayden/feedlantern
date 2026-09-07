@@ -57,7 +57,7 @@ test('历史保留 200 条、RSS 输出 100 条，重复刷新保留条目 ID �
   }
 });
 
-test('频道名称独立于管理名称，更新不改变密钥、历史和调度，偏好重启后保留', () => {
+test('频道名称与管理名称保持一致，更新不改变密钥、历史和调度，偏好重启后保留', () => {
   const dir = mkdtempSync(join(tmpdir(), 'feedlantern-title-'));
   let store = new Store(dir);
   try {
@@ -66,7 +66,8 @@ test('频道名称独立于管理名称，更新不改变密钥、历史和调�
     const before = store.getFeed(feed.id)!;
     const items = store.getItems(feed.id);
     const after = store.setChannelTitle(feed.id, '阅读器 & 名称')!;
-    assert.deepEqual({ ...after, channelTitle: before.channelTitle }, before);
+    assert.deepEqual({ ...after, name: before.name, channelTitle: before.channelTitle }, before);
+    assert.equal(after.name, after.channelTitle);
     assert.deepEqual(store.getItems(feed.id), items);
     assert.equal(store.getFeedToken(feed.id)?.token, token);
     assert.equal(new XMLParser().parse(renderRss(after, items, 'https://example.test/rss')).rss.channel.title, '阅读器 & 名称');
@@ -94,5 +95,28 @@ test('v0.1.0 表结构原位升级保留频道名、密钥和历史', async () =
     assert.equal(store.getFeedToken(feed.id)?.token, token);
     assert.deepEqual(store.getItems(feed.id), items);
     assert.equal(store.getSettings().feedView, 'list');
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+
+test('v0.2.0 自定义频道名升级后统一，编辑名称继续同步 RSS', async () => {
+  const { DatabaseSync } = await import('node:sqlite');
+  const dir = mkdtempSync(join(tmpdir(), 'fl-name-migration-'));
+  let store = new Store(dir);
+  try {
+    const { feed, token } = store.createFeed({ name: '旧管理名称', url: 'https://example.test', rules: { item: 'article', title: 'h2', link: 'a' }, credentialId: null, intervalMinutes: 60, waitMs: 0 });
+    store.close();
+    const db = new DatabaseSync(join(dir, 'app.db'));
+    db.prepare('UPDATE feeds SET channel_title = ?').run('已自定义频道名称');
+    db.exec('PRAGMA user_version=2'); db.close();
+    store = new Store(dir);
+    const migrated = store.getFeed(feed.id)!;
+    assert.equal(migrated.name, '已自定义频道名称');
+    assert.equal(migrated.channelTitle, migrated.name);
+    assert.equal(migrated.nextFetchAt, feed.nextFetchAt);
+    assert.equal(store.getFeedToken(feed.id)?.token, token);
+    const edited = store.updateFeed(feed.id, { ...migrated, name: '编辑器新名称' })!;
+    assert.equal(edited.channelTitle, edited.name);
+    assert.equal(new XMLParser().parse(renderRss(edited, [], 'https://example.test/rss')).rss.channel.title, '编辑器新名称');
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });

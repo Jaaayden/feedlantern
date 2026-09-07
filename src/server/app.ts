@@ -559,7 +559,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
   app.patch('/api/feeds/:id', async request => {
     feedsGuard(request);
-    const title = asNonEmptyString(asRecord(request.body).channelTitle, '阅读器中的订阅名称', 200);
+    const title = asNonEmptyString(asRecord(request.body).channelTitle, '订阅名称', 200);
     const feed = store.setChannelTitle(String((request.params as { id: string }).id), title);
     if (!feed) throw new AppError(404, 'Feed 不存在');
     return feedPayload(feed);

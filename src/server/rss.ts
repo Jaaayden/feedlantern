@@ -65,7 +65,7 @@ export function renderRss(feed: Feed, items: FeedItem[], feedUrl: string): strin
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">',
     '<channel>',
-    `<title>${escapeXml(feed.channelTitle ?? feed.name)}</title>`,
+    `<title>${escapeXml(feed.name)}</title>`,
     `<link>${escapeXml(feed.url)}</link>`,
     `<description>${escapeXml(`FeedLantern feed: ${feed.name}`)}</description>`,
     `<atom:link href="${escapeAttribute(feedUrl)}" rel="self" type="application/rss+xml"/>`,
@@ -80,7 +80,7 @@ export function rssEtag(feed: Feed, items: FeedItem[]): string {
   const material = JSON.stringify({
     id: feed.id,
     name: feed.name,
-    channelTitle: feed.channelTitle ?? feed.name,
+    channelTitle: feed.name,
     url: feed.url,
     lastSuccessAt: feed.lastSuccessAt,
     items: items.slice(0, 100),

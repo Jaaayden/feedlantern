@@ -245,6 +245,10 @@ export class Store {
         COMMIT;`);
     }
     if (version < 2) this.db.exec(`BEGIN; CREATE TABLE import_jobs (id TEXT PRIMARY KEY, body TEXT NOT NULL); PRAGMA user_version = 2; COMMIT;`);
+    if (version < 3) this.db.exec(`BEGIN;
+      UPDATE feeds SET name = COALESCE(NULLIF(TRIM(channel_title), ''), name);
+      UPDATE feeds SET channel_title = name;
+      PRAGMA user_version = 3; COMMIT;`);
     this.ensureSetupToken();
   }
 
@@ -480,13 +484,13 @@ export class Store {
     if (!existing) return null;
     const origins = mergeRuleOrigins(existing.ruleOrigins, input.ruleOrigins);
     const nextFetchAt = new Date(Date.now() + input.intervalMinutes * 60_000).toISOString();
-    this.db.prepare(`UPDATE feeds SET name = ?, url = ?, rules_json = ?, rule_origins_json = ?, credential_id = ?, interval_minutes = ?, wait_ms = ?, wait_for_selector = ?, next_fetch_at = ?, last_error = NULL WHERE id = ?`)
-      .run(input.name, input.url, JSON.stringify(input.rules), origins ? JSON.stringify(origins) : null, input.credentialId, input.intervalMinutes, input.waitMs, input.waitForSelector ?? null, nextFetchAt, id);
+    this.db.prepare(`UPDATE feeds SET name = ?, channel_title = ?, url = ?, rules_json = ?, rule_origins_json = ?, credential_id = ?, interval_minutes = ?, wait_ms = ?, wait_for_selector = ?, next_fetch_at = ?, last_error = NULL WHERE id = ?`)
+      .run(input.name, input.name, input.url, JSON.stringify(input.rules), origins ? JSON.stringify(origins) : null, input.credentialId, input.intervalMinutes, input.waitMs, input.waitForSelector ?? null, nextFetchAt, id);
     return this.getFeed(id);
   }
 
   setChannelTitle(id: string, title: string): Feed | null {
-    this.db.prepare('UPDATE feeds SET channel_title = ? WHERE id = ?').run(title, id);
+    this.db.prepare('UPDATE feeds SET name = ?, channel_title = ? WHERE id = ?').run(title, title, id);
     return this.getFeed(id);
   }
 
@@ -509,7 +513,7 @@ export class Store {
         for (const value of tables[table]) {
           const row: Record<string, string | number | null> = { ...value };
           if (table === 'credentials') row.encrypted_value = encrypt(this.masterKey, String(row.encrypted_value));
-          if (table === 'feeds') { row.token_hash = hashToken(String(row.token_ciphertext)); row.token_ciphertext = encrypt(this.masterKey, String(row.token_ciphertext)); }
+          if (table === 'feeds') { row.name = String(row.channel_title ?? '').trim() || row.name; row.channel_title = row.name; row.token_hash = hashToken(String(row.token_ciphertext)); row.token_ciphertext = encrypt(this.masterKey, String(row.token_ciphertext)); }
           const keys = Object.keys(row);
           this.db.prepare(`INSERT INTO ${table}(${keys.join(',')}) VALUES (${keys.map(() => '?').join(',')})`).run(...keys.map(k => row[k]));
         }

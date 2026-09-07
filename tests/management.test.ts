@@ -26,6 +26,9 @@ test('新管理 API 权限、名称缓存、批量结果、配置合并及完整
     assert.equal((await app.inject({ method: 'PATCH', url: `/api/feeds/${feed.id}`, headers, payload: { channelTitle: 'reader & title' } })).statusCode, 200);
     const after = await app.inject({ url: path, headers: { 'if-none-match': before.headers.etag as string } });
     assert.equal(after.statusCode, 200); assert.match(after.body, /reader &amp; title/);
+    const detail = (await app.inject({ url: `/api/feeds/${feed.id}`, headers })).json();
+    assert.equal(detail.feed.name, 'reader & title');
+    assert.equal(detail.feed.name, detail.feed.channelTitle);
     const bulk = await app.inject({ method: 'POST', url: '/api/feeds/bulk', headers, payload: { ids: [feed.id, 'missing'], action: 'pause' } });
     assert.deepEqual(bulk.json().results.map((r: { ok: boolean }) => r.ok), [true, false]);
     const config = (await app.inject({ url: '/api/backups/config', headers })).json();

@@ -21,11 +21,13 @@ test('完整备份跨密钥恢复管理员、凭据、频道名称和历史，�
     assert.throws(() => openBackup({ ...encrypted, version: 999 }, 'long-backup-password'));
     assert.equal(b.getAdmin()?.username, 'target');
     const restored = openBackup(encrypted, 'long-backup-password');
+    restored.tables.feeds[0].name = '旧管理名称';
     b.restoreTables(restored.tables);
     assert.equal(b.authenticate('admin', 'source-password'), true);
     assert.equal(b.getCredentialValue(credential.id)?.value, 'secret=private');
     assert.equal(b.getFeedToken(feed.id)?.token, token);
     assert.equal(b.getFeed(feed.id)?.channelTitle, '阅读器名称');
+    assert.equal(b.getFeed(feed.id)?.name, '阅读器名称');
     assert.deepEqual(b.getItems(feed.id), a.getItems(feed.id));
     assert.equal(b.getSettings().feedView, 'cards');
     const bad = structuredClone(restored.tables); bad.feed_items[0].feed_id = 'missing';
