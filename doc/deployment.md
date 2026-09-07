@@ -16,30 +16,21 @@ Docker Desktop 也可以用于本机试用。仅有 Docker CLI 不足以启动�
 
 ## 2. 选择安装方式
 
-### 一行安装
+### Docker Compose 部署（推荐）
 
-在希望保存部署目录的位置执行，脚本会新建 `feedlantern/`：
+新建目录，下载 [docker-compose.yml](../docker-compose.yml) 和配套沙箱规则，然后直接启动。无需安装脚本或下载源码：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Jaaayden/feedlantern/v0.2.0/scripts/install.sh | sh
+mkdir feedlantern
 cd feedlantern
-```
-
-脚本检查 Docker/Compose，下载指定版本部署包并校验 SHA-256，再启动服务。已有同名目录会停止，不覆盖配置或数据。可以先下载脚本检查内容再运行。脚本不会安装 Docker，也不会修改宿主机 Nginx。
-
-### 手动部署正式版本
-
-从 [Releases](https://github.com/Jaaayden/feedlantern/releases)下载同一版本的 `deployment.tar.gz` 和 `SHA256SUMS`，放入一个新目录：
-
-```sh
-sha256sum --check SHA256SUMS
-tar -xzf deployment.tar.gz
-printf 'FEEDLANTERN_VERSION=0.2.0\nPUBLIC_ORIGIN=http://127.0.0.1:4321\n' > .env
-chmod 600 .env
+curl -fLO https://raw.githubusercontent.com/Jaaayden/feedlantern/v0.2.1/docker-compose.yml -fLO https://raw.githubusercontent.com/Jaaayden/feedlantern/v0.2.1/seccomp_profile.json
 docker compose up -d --wait
+docker compose logs feedlantern
 ```
 
-镜像只有在对应版本发布流程通过后才可下载。部署文件中的 seccomp 配置必须保留，不能用 `--privileged` 或关闭 Chromium 沙箱代替。
+两个配置文件放在同一目录。Compose 默认使用文件中指定的版本化镜像，自动配置持久化卷、健康检查、重启策略和日志轮转。`seccomp_profile.json` 用于保留 Chromium 沙箱，不能删除或用特权模式替代。
+
+需要固定部署版本时，把下载地址中的 `v0.2.1` 替换为已发布的版本标签。旧版本文件布局以对应标签的文档为准。域名等自定义配置写入此目录的 `.env`，见[配置参考](configuration.md)。
 
 ### 源码构建
 
@@ -59,10 +50,9 @@ FEEDLANTERN_VERSION=local docker compose up -d --wait
 ```sh
 docker compose ps
 docker compose logs --tail=50 feedlantern
-docker compose exec feedlantern cat /app/data/setup-token
 ```
 
-打开 `http://127.0.0.1:4321`，填写设置码和管理员账号密码。没有默认密码；初始化后设置码被删除。已有完整备份时可选择“从备份恢复”，无需先创建管理员。
+打开 `http://127.0.0.1:4321`，填写日志中的一次性设置码和管理员账号密码。没有默认密码；初始化后设置码被删除。已有完整备份时可选择“从备份恢复”，无需先创建管理员。
 
 默认端口仅绑定宿主机回环地址。远程服务器可以先建立 SSH 隧道：
 

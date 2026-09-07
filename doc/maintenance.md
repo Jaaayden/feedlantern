@@ -14,7 +14,7 @@ docker compose start
 
 1. 从网页导出完整备份，并保存当前 `.env` 和部署文件。
 2. 阅读目标版本 CHANGELOG；检查数据库兼容说明。
-3. 下载并校验新版本部署包，在临时目录解压，对照更新 Compose、seccomp 和文档，保留现有 `.env`。
+3. 下载新版本的 `docker-compose.yml` 和 `seccomp_profile.json`，对照更新部署配置，保留现有 `.env`。从 v0.2.0 升级时先备份并移走旧 `compose.yaml`，避免 Compose 优先读取旧文件；项目名和数据卷名不变。
 4. 修改 `.env` 的 `FEEDLANTERN_VERSION`，然后运行：
 
 ```sh

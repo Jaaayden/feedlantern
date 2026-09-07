@@ -61,7 +61,7 @@ jobs:
       - name: Validate Compose and container
         run: |
           docker compose config --quiet
-          docker run --rm --init --shm-size=1g --security-opt seccomp=deploy/seccomp_profile.json feedlantern:test pnpm exec tsx scripts/container-smoke.ts
+          docker run --rm --init --shm-size=1g --security-opt seccomp=seccomp_profile.json feedlantern:test pnpm exec tsx scripts/container-smoke.ts
       - name: Validate documented Compose deployment
         run: sh scripts/test-compose.sh
       - name: Validate Nginx HTTPS deployment
@@ -108,6 +108,6 @@ jobs:
           done
           docker manifest create "ghcr.io/jaaayden/feedlantern:$version" "ghcr.io/jaaayden/feedlantern:$version-amd64" "ghcr.io/jaaayden/feedlantern:$version-arm64"
           docker manifest push "ghcr.io/jaaayden/feedlantern:$version"
-          tar -czf deployment.tar.gz compose.yaml deploy doc scripts/install.sh
-          sha256sum deployment.tar.gz > SHA256SUMS
-          gh release create "$RELEASE_TAG" deployment.tar.gz SHA256SUMS --verify-tag --generate-notes
+          tar -czf deployment.tar.gz docker-compose.yml seccomp_profile.json doc
+          sha256sum deployment.tar.gz docker-compose.yml seccomp_profile.json > SHA256SUMS
+          gh release create "$RELEASE_TAG" deployment.tar.gz docker-compose.yml seccomp_profile.json SHA256SUMS --verify-tag --generate-notes

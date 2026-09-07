@@ -4,22 +4,24 @@
 
 - 单管理员登录，独立 RSS 订阅密钥，Cookie 加密保存。
 - 自动匹配标题、链接、图片、摘要与日期，支持动态页面。
-- 列表/卡片视图、批量创建与管理、自定义阅读器频道名称。
+- 列表/卡片视图、批量创建与管理、统一的订阅名称。
 - 加密备份与跨服务器恢复，轻量配置导入导出。
 
-## 快速开始
+## Docker Compose 部署
 
-先安装 [Docker Engine](https://docs.docker.com/engine/install/) 和 [Compose](https://docs.docker.com/compose/install/linux/)。正式镜像随版本 Release 发布；尚未发布的开发版本请使用[源码构建](doc/deployment.md#源码构建)。
+先安装 [Docker Engine](https://docs.docker.com/engine/install/) 和 [Compose](https://docs.docker.com/compose/install/linux/)，然后新建目录、下载配置并启动：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Jaaayden/feedlantern/v0.2.0/scripts/install.sh | sh
+mkdir feedlantern
 cd feedlantern
-docker compose exec feedlantern cat /app/data/setup-token
+curl -fLO https://raw.githubusercontent.com/Jaaayden/feedlantern/v0.2.1/docker-compose.yml -fLO https://raw.githubusercontent.com/Jaaayden/feedlantern/v0.2.1/seccomp_profile.json
+docker compose up -d --wait
+docker compose logs feedlantern
 ```
 
-打开 **http://127.0.0.1:4321**，输入一次性设置码并创建管理员。默认没有账号密码，也不开放注册。
+打开 **http://127.0.0.1:4321**，用日志中的一次性设置码创建管理员。没有默认账号密码。下载的两个文件分别是 Compose 配置和 Chromium 沙箱规则；数据自动保存在 Docker 卷中。
 
-远程服务器及 HTTPS 域名访问，请按[部署步骤](doc/deployment.md)和 [Nginx 配置指南](doc/nginx.md)操作。
+远程服务器、固定版本部署及 HTTPS 域名访问，见[部署步骤](doc/deployment.md)和 [Nginx 配置指南](doc/nginx.md)。
 
 ## 文档
 

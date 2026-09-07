@@ -1,13 +1,13 @@
 name: feedlantern
 services:
   feedlantern:
-    image: ghcr.io/jaaayden/feedlantern:${FEEDLANTERN_VERSION:-0.2.0}
+    image: ghcr.io/jaaayden/feedlantern:${FEEDLANTERN_VERSION:-0.2.1}
     init: true
     restart: unless-stopped
     stop_grace_period: 90s
     shm_size: 1gb
     security_opt:
-      - seccomp=./deploy/seccomp_profile.json
+      - seccomp=./seccomp_profile.json
     ports:
       - "127.0.0.1:4321:4321"
     environment:

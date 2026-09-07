@@ -26,7 +26,7 @@ pnpm build
 
 React/Vite 前端；Fastify API；SQLite Store；Playwright BrowserService；共享 DOM 提取器和规则发现。后台刷新与批量识别串行排队，编辑会话独立且有存活上限。
 
-SQLite `PRAGMA user_version` 记录迁移：版本 1 增加频道名称与设置表，版本 2 增加持久化任务。已有 v0.1.0 数据在首次启动时迁移，旧名称填入频道名称。更改迁移前必须考虑已有数据库和备份格式兼容。
+SQLite `PRAGMA user_version` 记录迁移：版本 1 增加频道名称与设置表，版本 2 增加持久化任务，版本 3 将频道名称与管理名称统一（保留已设置的频道名称）。已有 v0.1.0 数据在首次启动时迁移，旧名称填入频道名称。更改迁移前必须考虑已有数据库和备份格式兼容。
 
 ## API 摘要
 
@@ -38,7 +38,7 @@ SQLite `PRAGMA user_version` 记录迁移：版本 1 增加频道名称与设置
 | `/api/credentials` | 凭据元数据及导入更新 |
 | `/api/browser/*` | 打开页面、截图、自动发现、点选、预览 |
 | `/api/feeds` | 单个订阅创建及管理 |
-| `PATCH /api/feeds/:id` | `{channelTitle}`，独立更新 RSS 频道标题 |
+| `PATCH /api/feeds/:id` | `{channelTitle}`，同时更新订阅名称和 RSS 频道标题；保留 channelTitle 字段以兼容旧客户端 |
 | `GET/PUT /api/settings` | `{feedView:'list'|'cards'}` |
 | `POST /api/feeds/bulk` | `{ids,action}`；copy/pause/resume/refresh/delete，逐项结果 |
 | `GET/POST /api/import-jobs` | 列出/创建批量任务，创建参数 entries 与 intervalMinutes |

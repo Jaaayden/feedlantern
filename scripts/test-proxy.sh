@@ -13,5 +13,5 @@ s=s.replace('/etc/letsencrypt/live/localhost/fullchain.pem', str(root/'cert.pem'
 PY
 sudo nginx -t -c "$proxy_tmp/nginx.conf"
 sudo nginx -c "$proxy_tmp/nginx.conf"
-docker run -d --name feedlantern-proxy-test --network host --init --shm-size=1g --security-opt seccomp=deploy/seccomp_profile.json -e PUBLIC_ORIGIN=https://localhost:8443 -e ALLOWED_TARGET_HOSTS=127.0.0.1:8877 -e TRUSTED_PROXIES=127.0.0.1,::1 feedlantern:test >/dev/null
+docker run -d --name feedlantern-proxy-test --network host --init --shm-size=1g --security-opt seccomp=seccomp_profile.json -e PUBLIC_ORIGIN=https://localhost:8443 -e ALLOWED_TARGET_HOSTS=127.0.0.1:8877 -e TRUSTED_PROXIES=127.0.0.1,::1 feedlantern:test >/dev/null
 node scripts/proxy-smoke.mjs

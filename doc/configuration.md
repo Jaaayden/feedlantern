@@ -1,6 +1,6 @@
 # 配置参考
 
-源码运行读取 `.env`；Compose 读取部署目录的 `.env` 并将 [compose.yaml](../compose.yaml) 中声明的字段传入容器。环境变量改变后需要重建容器配置：`docker compose up -d`，仅 `restart` 不会加载新环境变量。
+源码运行读取 `.env`；Compose 读取部署目录的 `.env` 并将 [docker-compose.yml](../docker-compose.yml) 中声明的字段传入容器。环境变量改变后需要重建容器配置：`docker compose up -d`，仅 `restart` 不会加载新环境变量。
 
 | 变量 | 默认与用途 |
 |---|---|
