@@ -314,7 +314,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const credential = input.credentialId ? store.getCredentialValue(input.credentialId) : null;
     if (input.credentialId && !credential) throw new AppError(400, 'Cookie 凭据不存在');
     return browser.scrape({ ...input, cookies: credential ? cookiesForTarget(credential, input.url) : [] });
-  });
+  }, error => friendlyError(error, '识别失败：请检查网址、网络或 Cookie，然后重试或手动调整。'));
 
   app.addHook('onRequest', async (request) => {
     if (maintenance) throw new AppError(503, '正在恢复备份，请稍后重试');

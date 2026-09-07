@@ -15,7 +15,8 @@ export class ImportJobs {
   private stopped = false;
   constructor(private store: Store, private enqueue: <T>(fn: () => Promise<T>) => Promise<T>,
     private discover: (entry: ImportEntry) => Promise<{ title: string; detection: DetectionResult }>,
-    private scrape: (input: FeedInput) => Promise<import('../shared/types.js').ExtractedItem[]>) {}
+    private scrape: (input: FeedInput) => Promise<import('../shared/types.js').ExtractedItem[]>,
+    private describeError: (error: unknown) => string = () => '识别失败：请检查网址、网络或 Cookie，然后重试或手动调整。') {}
 
   recover() {
     this.stopped = false;
@@ -113,7 +114,7 @@ export class ImportJobs {
               return;
             }
             entry.state = 'review'; entry.detection = detection;
-          } catch { entry.state = 'failed'; entry.error = '识别失败：请检查网址、网络或 Cookie，然后重试或手动调整。'; }
+          } catch (error) { entry.state = 'failed'; entry.error = this.describeError(error); }
           const latest = this.get(job.id);
           latest.entries = latest.entries.map(e => e.id === entry.id ? entry : e);
           this.store.saveImportJob(latest);
