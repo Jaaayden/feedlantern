@@ -14,7 +14,7 @@
 ```sh
 mkdir feedlantern
 cd feedlantern
-curl -fLO https://raw.githubusercontent.com/Jaaayden/feedlantern/v0.2.1/docker-compose.yml -fLO https://raw.githubusercontent.com/Jaaayden/feedlantern/v0.2.1/seccomp_profile.json
+curl -fLO https://raw.githubusercontent.com/Jaaayden/feedlantern/v0.2.2/docker-compose.yml -fLO https://raw.githubusercontent.com/Jaaayden/feedlantern/v0.2.2/seccomp_profile.json
 docker compose up -d --wait
 docker compose logs feedlantern
 ```

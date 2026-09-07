@@ -23,14 +23,14 @@ Docker Desktop 也可以用于本机试用。仅有 Docker CLI 不足以启动�
 ```sh
 mkdir feedlantern
 cd feedlantern
-curl -fLO https://raw.githubusercontent.com/Jaaayden/feedlantern/v0.2.1/docker-compose.yml -fLO https://raw.githubusercontent.com/Jaaayden/feedlantern/v0.2.1/seccomp_profile.json
+curl -fLO https://raw.githubusercontent.com/Jaaayden/feedlantern/v0.2.2/docker-compose.yml -fLO https://raw.githubusercontent.com/Jaaayden/feedlantern/v0.2.2/seccomp_profile.json
 docker compose up -d --wait
 docker compose logs feedlantern
 ```
 
 两个配置文件放在同一目录。Compose 默认使用文件中指定的版本化镜像，自动配置持久化卷、健康检查、重启策略和日志轮转。`seccomp_profile.json` 用于保留 Chromium 沙箱，不能删除或用特权模式替代。
 
-需要固定部署版本时，把下载地址中的 `v0.2.1` 替换为已发布的版本标签。旧版本文件布局以对应标签的文档为准。域名等自定义配置写入此目录的 `.env`，见[配置参考](configuration.md)。
+需要固定部署版本时，把下载地址中的 `v0.2.2` 替换为已发布的版本标签。旧版本文件布局以对应标签的文档为准。域名直接填写在 [Nginx 模板](nginx.md)，无需 `.env`。
 
 ### 源码构建
 

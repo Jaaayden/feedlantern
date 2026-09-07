@@ -5,8 +5,8 @@
 | Docker 无法连接 | 执行 `docker info`；CLI 存在不代表引擎已启动 |
 | 镜像 manifest unknown | 检查该版本 Release 是否成功发布，开发版本使用源码构建 |
 | Nginx 502 | `docker compose ps` 检查健康状态；确认代理在宿主机运行且指向 127.0.0.1:4321 |
-| 请求来源/主机不允许 | 浏览器地址、PUBLIC_ORIGIN、Host 转发必须一致；改环境后执行 compose up -d |
-| HTTPS 后无法登录 | 确认 PUBLIC_ORIGIN 使用 https，浏览器 Cookie 为 Secure；不要用旧 HTTP 地址访问管理页 |
+| 请求来源/主机不允许 | 升级至 v0.2.2，按 Nginx 模板覆盖 Host、X-Forwarded-Host 和 X-Forwarded-Proto；无需配置 PUBLIC_ORIGIN |
+| HTTPS 后无法登录 | 确认 Nginx 转发 X-Forwarded-Proto 为 https，浏览器 Cookie 为 Secure |
 | 识别超时 | 检查目标可达性、等待设置、Cookie；Nginx 等待时间不能短于实际排队与抓取时间 |
 | 没有列表或歧义 | 使用候选预览和调整匹配；页面改版需修复已保存规则 |
 | Cookie 无效 | 从已登录浏览器重新导入，检查域名、路径及过期时间 |

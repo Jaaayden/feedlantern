@@ -64,3 +64,30 @@ test('空实例使用本机设置码恢复，不需要临时管理员', async ()
     assert.equal((await target.inject({ method: 'POST', url: '/api/auth/login', headers: base, payload: { username: 'source', password: 'source-password' } })).statusCode, 200);
   } finally { await source.close(); await target.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('无需域名配置的本机反代：来源校验、HTTPS Cookie、RSS 地址及并发隔离', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fl-proxy-'));
+  const app = await createApp({ dataDir: dir, browserService: browser, startScheduler: false });
+  const headers = { host: 'feeds.example.test', 'x-forwarded-host': 'feeds.example.test', 'x-forwarded-proto': 'https', origin: 'https://feeds.example.test', 'x-feedlantern': '1' };
+  try {
+    assert.equal((await app.inject({ url: '/api/auth/status', headers })).statusCode, 200);
+    assert.equal((await app.inject({ url: '/api/auth/status', headers, remoteAddress: '8.8.8.8' })).statusCode, 403);
+    assert.equal((await app.inject({ url: '/api/auth/status', headers: { ...headers, origin: 'https://evil.test' } })).statusCode, 403);
+    assert.equal((await app.inject({ url: '/api/auth/status', headers: { host: 'evil.test' } })).statusCode, 403);
+    assert.equal((await app.inject({ url: '/api/auth/status', headers: { ...headers, 'x-forwarded-host': 'feeds.example.test,evil.test' } })).statusCode, 400);
+    const setup = await app.inject({ method: 'POST', url: '/api/auth/setup', headers, payload: { setupToken: readFileSync(join(dir, 'setup-token'), 'utf8').trim(), username: 'proxy', password: 'test-proxy-password' } });
+    assert.equal(setup.statusCode, 200);
+    assert.match(String(setup.headers['set-cookie']), /Secure/);
+    const auth = { ...headers, cookie: `${setup.cookies[0].name}=${setup.cookies[0].value}`, 'x-csrf-token': setup.json().csrfToken };
+    const created = await app.inject({ method: 'POST', url: '/api/feeds', headers: auth, payload: { name: 'proxy', url: 'https://example.test', rules: { item: 'article', title: 'h2', link: 'a' } } });
+    assert.equal(created.statusCode, 200);
+    assert.equal(new URL(created.json().feedUrl).origin, 'https://feeds.example.test');
+    const id = created.json().feed.id;
+    const [proxied, local] = await Promise.all([
+      app.inject({ url: `/api/feeds/${id}`, headers: auth }),
+      app.inject({ url: `/api/feeds/${id}`, headers: { host: '127.0.0.1:4321', cookie: auth.cookie } }),
+    ]);
+    assert.equal(new URL(proxied.json().feedUrl).origin, 'https://feeds.example.test');
+    assert.equal(new URL(local.json().feedUrl).origin, 'http://127.0.0.1:4321');
+  } finally { await app.close(); rmSync(dir, { recursive: true, force: true }); }
+});

@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
+import ipaddr from 'ipaddr.js';
 import { openBackup, sealBackup, snapshotSchema } from './backups.js';
 import { timingSafeEqual } from 'node:crypto';
 import { ImportJobs, normalizeSource } from './import-jobs.js';
@@ -225,6 +227,24 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }).filter(Boolean),
   ]);
 
+  const requestConfigs = new AsyncLocalStorage<ServerConfig>();
+  const currentConfig = () => requestConfigs.getStore() ?? config;
+  // The default published port is loopback-only. Forwarding headers are accepted
+  // only from a local proxy (including the Docker bridge), never a public peer.
+  app.addHook('onRequest', (request, _reply, done) => {
+    const forwardedHost = request.headers['x-forwarded-host'];
+    const forwardedProto = request.headers['x-forwarded-proto'];
+    let localPeer = false;
+    try { localPeer = ['loopback', 'private', 'uniqueLocal'].includes(ipaddr.process(request.socket.remoteAddress ?? '').range()); } catch {}
+    if (!localPeer || forwardedHost === undefined) return requestConfigs.run(config, done);
+    try {
+      if (typeof forwardedHost !== 'string' || !/^[a-zA-Z0-9.:[\]-]+$/.test(forwardedHost) || !['http', 'https'].includes(String(forwardedProto))) throw Error();
+      const origin = new URL(`${forwardedProto}://${forwardedHost}`).origin;
+      if (new URL(origin).host.toLowerCase() !== forwardedHost.toLowerCase()) throw Error();
+      requestConfigs.run({ ...config, publicOrigin: origin, cookieSecure: config.cookieSecure || forwardedProto === 'https' }, done);
+    } catch { done(new AppError(400, '反向代理转发头无效')); }
+  });
+
   const limiter = new LoginRateLimiter();
   let schedulerRunning = false;
   let scheduler: NodeJS.Timeout | undefined;
@@ -320,9 +340,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (maintenance) throw new AppError(503, '正在恢复备份，请稍后重试');
     if (!request.url.startsWith('/api/')) return;
     const requestHost = Array.isArray(request.headers.host) ? request.headers.host[0] : request.headers.host;
-    if (!requestHost || !allowedApiHosts.has(requestHost.toLowerCase())) throw new AppError(403, '请求主机不被允许');
+    if (!requestHost || !allowedApiHosts.has(requestHost.toLowerCase()) && requestHost.toLowerCase() !== new URL(currentConfig().publicOrigin).host.toLowerCase()) throw new AppError(403, '请求主机不被允许');
     const origin = Array.isArray(request.headers.origin) ? request.headers.origin[0] : request.headers.origin;
-    if (!isAllowedOrigin(origin, config)) throw new AppError(403, '请求来源不被允许');
+    if (!isAllowedOrigin(origin, currentConfig())) throw new AppError(403, '请求来源不被允许');
     if (request.method !== 'GET' && request.method !== 'HEAD' && request.method !== 'OPTIONS' && !authHeaders(request).marker) {
       throw new AppError(400, '缺少 X-FeedLantern: 1 请求头');
     }
@@ -360,7 +380,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     limiter.clear(request.ip);
     try { store.createAdmin(username, password); } catch { throw new AppError(409, '管理员已经完成初始化'); }
     const session = store.createSession(username, config.sessionTtlMs);
-    setSessionCookie(reply, config, session.id);
+    setSessionCookie(reply, currentConfig(), session.id);
     return authState(store, config, { sessionId: session.id, username, expiresAt: session.expiresAt }, session.csrfToken);
   });
 
@@ -376,7 +396,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
     limiter.clear(key);
     const session = store.createSession(username, config.sessionTtlMs);
-    setSessionCookie(reply, config, session.id);
+    setSessionCookie(reply, currentConfig(), session.id);
     return authState(store, config, { sessionId: session.id, username, expiresAt: session.expiresAt }, session.csrfToken);
   });
 
@@ -384,7 +404,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const context = authenticated(request);
     requireCsrf(request, store, context);
     store.destroySession(context.sessionId);
-    clearSessionCookie(reply, config);
+    clearSessionCookie(reply, currentConfig());
     return authState(store, config, null);
   });
 
@@ -397,7 +417,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (typeof currentPassword !== 'string' || !store.authenticate(context.username, currentPassword)) throw new AppError(400, '当前密码错误');
     if (!validatePassword(newPassword)) throw new AppError(400, '新密码长度必须为 8 到 1024 个字符');
     store.changePassword(newPassword);
-    clearSessionCookie(reply, config);
+    clearSessionCookie(reply, currentConfig());
     return authState(store, config, null);
   });
 
@@ -437,7 +457,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (request.method !== 'GET' && request.method !== 'HEAD') requireCsrf(request, store, context);
   };
 
-  const feedPayload = (feed: Feed): { feed: Feed; feedUrl: string } => ({ feed, feedUrl: feedUrl(config, store, feed.id) });
+  const feedPayload = (feed: Feed): { feed: Feed; feedUrl: string } => ({ feed, feedUrl: feedUrl(currentConfig(), store, feed.id) });
   app.get('/api/feeds', async (request): Promise<Feed[]> => { feedsGuard(request); return store.listFeeds(); });
   const backupGuard = (request: FastifyRequest, allowSetup = false) => {
     const body = asRecord(request.body);
@@ -576,7 +596,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         const result = await enqueueRefresh(async () => {
           const feed = store.getFeed(id);
           if (!feed) throw new AppError(404, '订阅不存在');
-          if (action === 'copy') return { id, ok: true, feedUrl: feedUrl(config, store, id) };
+          if (action === 'copy') return { id, ok: true, feedUrl: feedUrl(currentConfig(), store, id) };
           if (action === 'delete') store.deleteFeed(id);
           if (action === 'pause' && feed.enabled || action === 'resume' && !feed.enabled) store.toggleFeed(id);
           if (action === 'refresh') {
@@ -717,7 +737,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const feed = store.getFeed(params.id);
     if (!feed) throw new AppError(404, 'Feed 不存在');
     const items = store.getItems(feed.id, 100);
-    const publicUrl = `${config.publicOrigin}/feeds/${encodeURIComponent(feed.id)}/${encodeURIComponent(token)}.xml`;
+    const publicUrl = `${currentConfig().publicOrigin}/feeds/${encodeURIComponent(feed.id)}/${encodeURIComponent(token)}.xml`;
     const etag = rssEtag(feed, items);
     reply.header('Cache-Control', 'private, max-age=60');
     reply.header('Referrer-Policy', 'no-referrer');
