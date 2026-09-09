@@ -1,7 +1,7 @@
 name: feedlantern
 services:
   feedlantern:
-    image: ghcr.io/jaaayden/feedlantern:${FEEDLANTERN_VERSION:-0.2.2}
+    image: ghcr.io/jaaayden/feedlantern:${FEEDLANTERN_VERSION:-latest}
     init: true
     restart: unless-stopped
     stop_grace_period: 90s

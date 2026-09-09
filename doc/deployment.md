@@ -23,18 +23,18 @@ Docker Desktop 也可以用于本机试用。仅有 Docker CLI 不足以启动�
 ```sh
 mkdir feedlantern
 cd feedlantern
-curl -fLO https://raw.githubusercontent.com/Jaaayden/feedlantern/v0.2.2/docker-compose.yml -fLO https://raw.githubusercontent.com/Jaaayden/feedlantern/v0.2.2/seccomp_profile.json
+curl -fLO https://raw.githubusercontent.com/Jaaayden/feedlantern/main/docker-compose.yml -fLO https://raw.githubusercontent.com/Jaaayden/feedlantern/main/seccomp_profile.json
 docker compose up -d --wait
 docker compose logs feedlantern
 ```
 
-两个配置文件放在同一目录。Compose 默认使用文件中指定的版本化镜像，自动配置持久化卷、健康检查、重启策略和日志轮转。`seccomp_profile.json` 用于保留 Chromium 沙箱，不能删除或用特权模式替代。
+两个配置文件放在同一目录。Compose 默认使用 `latest` 镜像（`main` 分支通过全部 CI 及双架构容器验证后的构建），自动配置持久化卷、健康检查、重启策略和日志轮转。`seccomp_profile.json` 用于保留 Chromium 沙箱，不能删除或用特权模式替代。
 
-需要固定部署版本时，把下载地址中的 `v0.2.2` 替换为已发布的版本标签。旧版本文件布局以对应标签的文档为准。域名直接填写在 [Nginx 模板](nginx.md)，无需 `.env`。
+日常更新只需拉取镜像并重建容器，无需修改版本号或每次下载配置，见[升级维护](maintenance.md)。域名直接填写在 [Nginx 模板](nginx.md)，无需 `.env`。高级用户仍可通过 `FEEDLANTERN_VERSION` 选择特定标签用于复现或回退。
 
 ### 源码构建
 
-开发中的版本尚未发布镜像时：
+需要在 CI 镜像发布前试用源码时：
 
 ```sh
 git clone https://github.com/Jaaayden/feedlantern.git

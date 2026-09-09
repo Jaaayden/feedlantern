@@ -4,7 +4,7 @@
 
 | 变量 | 默认与用途 |
 |---|---|
-| `FEEDLANTERN_VERSION` | Compose 镜像版本，正式部署固定具体版本 |
+| `FEEDLANTERN_VERSION` | Compose 镜像标签，默认 `latest`；跟随通过全部 CI 的 `main`，可按需覆盖 |
 | `PUBLIC_ORIGIN` | `http://127.0.0.1:4321`；本机反代请求自动使用转发域名，无需配置 |
 | `HOST` / `PORT` | 源码 `127.0.0.1` / `4321`；容器内监听 `0.0.0.0:4321` |
 | `DATA_DIR` | 源码 `data/`；容器 `/app/data` |

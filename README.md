@@ -14,14 +14,25 @@
 ```sh
 mkdir feedlantern
 cd feedlantern
-curl -fLO https://raw.githubusercontent.com/Jaaayden/feedlantern/v0.2.2/docker-compose.yml -fLO https://raw.githubusercontent.com/Jaaayden/feedlantern/v0.2.2/seccomp_profile.json
+curl -fLO https://raw.githubusercontent.com/Jaaayden/feedlantern/main/docker-compose.yml -fLO https://raw.githubusercontent.com/Jaaayden/feedlantern/main/seccomp_profile.json
 docker compose up -d --wait
 docker compose logs feedlantern
 ```
 
 打开 **http://127.0.0.1:4321**，用日志中的一次性设置码创建管理员。没有默认账号密码。下载的两个文件分别是 Compose 配置和 Chromium 沙箱规则；数据自动保存在 Docker 卷中。
 
-远程服务器、固定版本部署及 HTTPS 域名访问，见[部署步骤](doc/deployment.md)和 [Nginx 配置指南](doc/nginx.md)。
+远程服务器及 HTTPS 域名访问，见[部署步骤](doc/deployment.md)和 [Nginx 配置指南](doc/nginx.md)。
+
+## Docker 更新
+
+默认使用 `latest`，由 `main` 分支通过全部 CI 和双架构容器验证后发布。在原部署目录执行：
+
+```sh
+docker compose pull feedlantern
+docker compose up -d --wait feedlantern
+```
+
+首次从旧版切换时，将 Compose 的 `image` 改为 `ghcr.io/jaaayden/feedlantern:latest`；保留现有端口、环境配置和数据卷。如果继续使用 `FEEDLANTERN_VERSION` 变量，将其设为 `latest`。无需每次下载配置，运行中的容器也不会自行升级。完整步骤见[升级维护](doc/maintenance.md)。
 
 ## 文档
 

@@ -52,6 +52,6 @@ SQLite `PRAGMA user_version` 记录迁移：版本 1 增加频道名称与设置
 
 ## 发布
 
-普通提交运行 CI。里程碑更新 package.json、CHANGELOG，完成验收后创建语义化版本标签。版本发布流程依次运行检查、两个架构的原生容器验证，再推送多架构 GHCR 镜像及 Release 部署包。未通过验证不发布正式版。
+普通提交运行 CI；`main` 通过检查、两个架构的原生容器验证后，将同一批已验证镜像发布为多架构 GHCR `sha-<完整提交 SHA>` 和 `latest`。PR 不发布镜像；重跑旧提交不会覆盖已前进的 `main` 对应的 `latest`。镜像记录 `org.opencontainers.image.revision` 便于核对源码。里程碑仍可更新 package.json、CHANGELOG 并创建语义化版本标签；标签流程发布版本化镜像及 Release 部署包，不覆盖跟随 `main` 的 `latest`。
 
 seccomp 配置来自 Playwright v1.63.0，保留上游配置；更新 Playwright 时同步检查浏览器安装和沙箱行为。容器设计参考 [Playwright Docker 文档](https://playwright.dev/docs/docker)。
