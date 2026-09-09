@@ -200,3 +200,24 @@ test('设置更新排在进行中的抓取之后，旧的定时待办不会覆�
     }
   } finally { release(); await app.close(); store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('并发 2 允许跨站刷新，同站互斥，重复请求共享结果', async () => {
+  const dir = mkdtempSync(join(tmpdir(),'fl-parallel-')), store = new Store(dir);
+  const input = { name:'parallel',url:'https://a.test/one',rules:{item:'article',title:'h2',link:'a'},intervalMinutes:60,waitMs:0,credentialId:null };
+  const feeds = [input,{...input,url:'https://b.test/two'},{...input,url:'https://a.test/three'}].map(value=>store.createFeed(value).feed);
+  let active=0, peak=0, calls=0; const hosts = new Set<string>();
+  const app = await createApp({dataDir:dir,store,backgroundConcurrency:2,startScheduler:false,browserService:{...fakeBrowser,async scrape(options){
+    const host=new URL(options.url).hostname;
+    assert.equal(hosts.has(host),false); hosts.add(host); active++; calls++; peak=Math.max(peak,active);
+    await new Promise(resolve=>setTimeout(resolve,80));
+    active--; hosts.delete(host); return [{title:'item',link:`${options.url}/item`}];
+  }}});
+  try {
+    const base={host:'127.0.0.1:4321','x-feedlantern':'1'};
+    const setup=await app.inject({method:'POST',url:'/api/auth/setup',headers:base,payload:{setupToken:readFileSync(join(dir,'setup-token'),'utf8').trim(),username:'admin',password:'test-password'}});
+    const headers={...base,cookie:`${setup.cookies[0].name}=${setup.cookies[0].value}`,'x-csrf-token':setup.json().csrfToken};
+    const results=await Promise.all([...feeds,feeds[0]].map(feed=>app.inject({method:'POST',url:`/api/feeds/${feed.id}/refresh`,headers,payload:{}})));
+    assert.ok(results.every(r=>r.statusCode===200)); assert.equal(peak,2); assert.equal(calls,3);
+    assert.ok(feeds.every(feed=>store.getItems(feed.id).length===1));
+  } finally {await app.close();store.close();rmSync(dir,{recursive:true,force:true});}
+});

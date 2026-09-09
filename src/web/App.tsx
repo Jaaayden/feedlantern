@@ -121,11 +121,91 @@ export function Editor({ initial, draft, submitFeed, saved, cancel }: { initial?
   const [error, setError] = useState('');
   const [note, setNote] = useState('');
   const sessionRef = useRef<string | null>(null);
+  const mountedRef = useRef(false);
   const previewSeq = useRef(0);
+  const previewInFlight = useRef(0);
   const imageRef = useRef<HTMLImageElement>(null);
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
+  const scrollingRef = useRef(false);
+  useEffect(() => {
+    const image = imageRef.current;
+    if (!adjusting || !image || !frame) return;
+    const { sessionId, width, height } = frame;
+    let disposed = false;
+    let pending = 0;
+    let point = { x: width / 2, y: height / 2 };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    async function flush() {
+      timer = undefined;
+      if (disposed || !pending || (busyRef.current && !scrollingRef.current)) {
+        pending = 0;
+        scrollingRef.current = false;
+        if (!disposed) setBusy(previous => previous === '正在滚动网页' ? '' : previous);
+        return;
+      }
+      setBusy('正在滚动网页');
+      setError('');
+      setRects([]);
+      try {
+        while (!disposed && pending) {
+          const delta = pending;
+          pending = 0;
+          const result = await api.browser.scroll(sessionId, delta, point);
+          if (!disposed && sessionRef.current === sessionId) setFrame(result);
+        }
+      } catch (error) {
+        pending = 0;
+        if (!disposed) setError(messageOf(error));
+      } finally {
+        scrollingRef.current = false;
+        if (sessionRef.current === sessionId) setBusy(previous => previous === '正在滚动网页' ? '' : previous);
+        else if (disposed) void api.browser.close(sessionId).catch(() => {});
+      }
+    }
+    function wheel(event: WheelEvent) {
+      // Ctrl+wheel belongs to browser zoom. A non-passive native listener is
+      // required: React's delegated wheel listener cannot prevent page scroll.
+      if (event.ctrlKey) return;
+      event.preventDefault();
+      if ((busyRef.current && !scrollingRef.current) || previewInFlight.current) return;
+      const bounds = image!.getBoundingClientRect();
+      const scale = height / bounds.height;
+      const unit = event.deltaMode === 1 ? 16 * scale : event.deltaMode === 2 ? height : scale;
+      pending = Math.max(-100_000, Math.min(100_000, pending + event.deltaY * unit));
+      point = { x: Math.max(0, Math.min(width, (event.clientX - bounds.left) * width / bounds.width)), y: Math.max(0, Math.min(height, (event.clientY - bounds.top) * scale)) };
+      if (!scrollingRef.current && pending) {
+        scrollingRef.current = true;
+        setBusy('正在滚动网页');
+        timer = setTimeout(() => void flush(), 50);
+      }
+    }
+    image.addEventListener('wheel', wheel, { passive: false });
+    return () => {
+      disposed = true;
+      pending = 0;
+      if (timer) {
+        clearTimeout(timer);
+        scrollingRef.current = false;
+        setBusy(previous => previous === '正在滚动网页' ? '' : previous);
+      }
+      image.removeEventListener('wheel', wheel);
+    };
+  }, [adjusting, frame?.sessionId]);
   const currentKey = JSON.stringify([url, credentialId, waitMs, waitForSelector]);
   const sourceUnchanged = sourceKey === currentKey;
-  useEffect(() => { void api.credentials.list().then(setCredentials).catch(error => setError(messageOf(error))); return () => { if (sessionRef.current) void api.browser.close(sessionRef.current).catch(() => {}); }; }, []);
+  useEffect(() => {
+    mountedRef.current = true;
+    void api.credentials.list().then(setCredentials).catch(error => setError(messageOf(error)));
+    const close = () => {
+      const id = sessionRef.current;
+      sessionRef.current = null;
+      previewSeq.current++;
+      if (id) void api.browser.close(id).catch(() => {});
+    };
+    window.addEventListener('pagehide', close);
+    return () => { mountedRef.current = false; window.removeEventListener('pagehide', close); close(); };
+  }, []);
 
   async function preview(nextRules: SelectionRules, id = sessionRef.current) {
     const seq = ++previewSeq.current;
@@ -136,6 +216,7 @@ export function Editor({ initial, draft, submitFeed, saved, cancel }: { initial?
     setItems([]);
     setPreviewSignature('');
     if (!id || !nextRules.item || !nextRules.title || !nextRules.link) return;
+    previewInFlight.current++;
     try {
       const result = await api.browser.preview(id, nextRules);
       if (seq === previewSeq.current) {
@@ -149,7 +230,7 @@ export function Editor({ initial, draft, submitFeed, saved, cancel }: { initial?
         setPreviewSignature('');
         setError(messageOf(error));
       }
-    }
+    } finally { previewInFlight.current--; }
   }
   async function applyCandidate(candidate: DetectionCandidate, replaceManual = false, id = sessionRef.current) {
     let next = { ...candidate.rules };
@@ -177,6 +258,7 @@ export function Editor({ initial, draft, submitFeed, saved, cancel }: { initial?
     try {
       if (sessionRef.current) { await api.browser.close(sessionRef.current).catch(() => {}); sessionRef.current = null; }
       const result = await api.browser.open({ url, credentialId: credentialId || null, waitMs, waitForSelector: waitForSelector || undefined });
+      if (!mountedRef.current) { await api.browser.close(result.sessionId).catch(() => {}); return; }
       sessionRef.current = result.sessionId; setFrame(result); setSourceKey(currentKey); setRects([]);
       if (!name) setName(result.title || hostLabel(url));
       if (initial) { await preview(rules, result.sessionId); setNote('已载入保存的匹配规则。需要时可以重新识别。'); }
@@ -207,7 +289,7 @@ export function Editor({ initial, draft, submitFeed, saved, cancel }: { initial?
     try { const result = await operation(); setFrame(result); setRects([]); } catch (error) { setError(messageOf(error)); } finally { setBusy(''); }
   }
   async function clickImage(event: React.MouseEvent<HTMLImageElement>) {
-    if (!frame || busy) return;
+    if (!frame || busy || scrollingRef.current) return;
     const bounds = event.currentTarget.getBoundingClientRect();
     const x = (event.clientX - bounds.left) * frame.width / bounds.width;
     const y = (event.clientY - bounds.top) * frame.height / bounds.height;
@@ -236,9 +318,9 @@ export function Editor({ initial, draft, submitFeed, saved, cancel }: { initial?
     <form className="source-panel" onSubmit={open}><div className="source-row"><Field label="源网址"><div className="input-icon"><Globe2 size={18} /><input required type="url" placeholder="https://example.com/articles" value={url} onChange={e => setUrl(e.target.value)} /></div></Field><Field label="Cookie 凭据"><select value={credentialId} onChange={e => setCredentialId(e.target.value)}><option value="">公开网页，无需 Cookie</option>{credentials.map(item => <option value={item.id} key={item.id}>{item.name}</option>)}</select></Field><button className="button primary source-submit" disabled={!!busy}>{busy ? <Busy label="处理中" /> : <><Sparkles size={17} />打开并自动识别</>}</button></div><details className="advanced"><summary>加载设置<ChevronDown size={14} /></summary><div className="form-row"><Field label="额外等待时间（毫秒）"><input type="number" min={0} max={10000} step={100} value={waitMs} onChange={e => setWaitMs(Number(e.target.value))} /></Field><Field label="等待元素（可选）"><input value={waitForSelector} onChange={e => setWaitForSelector(e.target.value)} placeholder="CSS 选择器，例如 .article-list" /></Field></div></details></form>
     <ErrorNote error={error} />{busy && <div className="progress-strip" role="status"><Busy label={busy} /></div>}
     {!frame && !busy && <div className="editor-welcome"><div className="welcome-step"><span>01</span><Globe2 size={23} /><h3>打开网页</h3><p>支持动态内容与 Cookie 登录态</p></div><div className="welcome-step"><span>02</span><Sparkles size={23} /><h3>自动识别</h3><p>找到列表，匹配标题、图片与摘要</p></div><div className="welcome-step"><span>03</span><Rss size={23} /><h3>持续关注</h3><p>复制 RSS 地址到你喜欢的阅读器</p></div></div>}
-    {frame && <><div className="result-toolbar"><div><span className={`badge ${chosen?.confidence === 'high' ? 'good' : ''}`}><Sparkles size={13} />{chosen?.confidence === 'high' ? '已自动匹配' : '匹配结果'}</span><span className="muted">{items.length} 条内容</span></div><div className="inline"><button type="button" className="button small" onClick={() => void rescan()} disabled={!!busy}><RefreshCw size={14} />重新识别</button><button type="button" className="button small" onClick={() => setAdjusting(!adjusting)}><MousePointer2 size={14} />{adjusting ? '收起调整' : '调整匹配'}</button></div></div>{note && <div className="notice"><CircleHelp size={16} /><span>{note}</span></div>}{!sourceUnchanged && <div className="notice">网址或加载设置已变化，请重新打开网页后保存。</div>}
+    {frame && <><div className="result-toolbar"><div><span className={`badge ${chosen?.confidence === 'high' ? 'good' : ''}`}><Sparkles size={13} />{chosen?.confidence === 'high' ? '已自动匹配' : '匹配结果'}</span><span className="muted">{items.length} 条内容</span></div><div className="inline"><button type="button" className="button small" onClick={() => void rescan()} disabled={!!busy}><RefreshCw size={14} />重新识别</button><button type="button" className="button small" disabled={!!busy} onClick={() => setAdjusting(!adjusting)}><MousePointer2 size={14} />{adjusting ? '收起调整' : '调整匹配'}</button></div></div>{note && <div className="notice"><CircleHelp size={16} /><span>{note}</span></div>}{!sourceUnchanged && <div className="notice">网址或加载设置已变化，请重新打开网页后保存。</div>}
     {!!detection?.candidates.length && (detection.candidates.length > 1 || !candidateId) && <div className="candidate-grid">{detection.candidates.map(candidate => <button key={candidate.id} className={`candidate ${candidate.id === candidateId ? 'selected' : ''}`} disabled={!!busy} onClick={() => void applyCandidate(candidate)}><span className="inline"><Radio size={15} />{candidate.label}<span className="muted">{candidate.count} 条</span></span><strong>{candidate.items[0]?.title ?? '查看候选内容'}</strong><small>{candidate.confidence === 'high' ? '匹配明确' : '请检查样例'}</small></button>)}</div>}
-    {adjusting && <section className="adjust-panel"><div className="adjust-heading"><h2>在网页上调整匹配</h2><div className="inline"><button className={`button small ${browsing ? 'active' : ''}`} onClick={() => setBrowsing(!browsing)}>{browsing ? '浏览模式' : '选择模式'}</button><button className="icon-button" aria-label="向上滚动网页" disabled={!!busy} onClick={() => void frameAction(() => api.browser.scroll(frame.sessionId, -500))}><ArrowUp size={17} /></button><button className="icon-button" aria-label="向下滚动网页" disabled={!!busy} onClick={() => void frameAction(() => api.browser.scroll(frame.sessionId, 500))}><ArrowDown size={17} /></button><button className="icon-button" aria-label="更新网页画面" disabled={!!busy} onClick={() => void frameAction(() => api.browser.frame(frame.sessionId))}><RefreshCw size={16} /></button></div></div><div className="field-tabs">{keys.map(key => <button className={target === key ? 'selected' : ''} key={key} onClick={() => { setTarget(key); setBrowsing(false); }}>{fieldLabels[key]}{rules[key] && <Check size={12} />}</button>)}<label className="ancestor">父级层数<select value={ancestorLevel} onChange={e => setAncestorLevel(Number(e.target.value))}>{[-1, 0, 1, 2, 3, 4, 5].map(n => <option key={n} value={n}>{n < 0 ? "自动" : n}</option>)}</select></label></div><p className="hint">{browsing ? '点击会与目标网页交互。浏览操作不保存为抓取步骤。' : `点击网页中的${fieldLabels[target]}，选择模式不会触发网页链接。`}</p><div className="browser-bar"><span /><span /><span /><code>{frame.url}</code></div><div className={`browser-screen ${browsing ? 'browse' : ''}`}><img ref={imageRef} src={frame.image} alt="目标网页预览" onClick={event => void clickImage(event)} draggable={false} />{rects.map((rect, index) => <span className="selection-rect" key={index} style={{ left: `${rect.x / frame.width * 100}%`, top: `${rect.y / frame.height * 100}%`, width: `${rect.width / frame.width * 100}%`, height: `${rect.height / frame.height * 100}%` }} />)}</div><details className="advanced"><summary>高级：编辑匹配规则<ChevronDown size={14} /></summary><div className="selector-grid">{keys.map(key => <Field key={key} label={`${fieldLabels[key]}选择器`} hint={origins[key] === 'manual' ? '手动配置 · 重新识别时保留' : '自动配置'}><input value={rules[key] ?? ''} onChange={e => changeRule(key, e.target.value)} placeholder={key === 'item' ? 'article' : key === 'title' || key === 'link' ? 'h2 a' : '可留空'} spellCheck={false} /></Field>)}</div>{chosen && <button type="button" className="button small" onClick={() => { if (confirm('使用此候选替换全部匹配规则，包括你手动修改的字段？')) void applyCandidate(chosen, true); }}>替换全部匹配</button>}</details></section>}
+    {adjusting && <section className="adjust-panel"><div className="adjust-heading"><h2>在网页上调整匹配</h2><div className="inline"><button className={`button small ${browsing ? 'active' : ''}`} onClick={() => setBrowsing(!browsing)}>{browsing ? '浏览模式' : '选择模式'}</button><button className="icon-button" aria-label="向上滚动网页" disabled={!!busy} onClick={() => void frameAction(() => api.browser.scroll(frame.sessionId, -500))}><ArrowUp size={17} /></button><button className="icon-button" aria-label="向下滚动网页" disabled={!!busy} onClick={() => void frameAction(() => api.browser.scroll(frame.sessionId, 500))}><ArrowDown size={17} /></button><button className="icon-button" aria-label="更新网页画面" disabled={!!busy} onClick={() => void frameAction(() => api.browser.frame(frame.sessionId))}><RefreshCw size={16} /></button></div></div><div className="field-tabs">{keys.map(key => <button className={target === key ? 'selected' : ''} key={key} onClick={() => { setTarget(key); setBrowsing(false); }}>{fieldLabels[key]}{rules[key] && <Check size={12} />}</button>)}<label className="ancestor">父级层数<select value={ancestorLevel} onChange={e => setAncestorLevel(Number(e.target.value))}>{[-1, 0, 1, 2, 3, 4, 5].map(n => <option key={n} value={n}>{n < 0 ? "自动" : n}</option>)}</select></label></div><p className="hint">{browsing ? '点击会与目标网页交互。浏览操作不保存为抓取步骤。' : `点击网页中的${fieldLabels[target]}，选择模式不会触发网页链接。`}</p><p className="hint">在网页画面上使用鼠标滚轮或触控板滚动，也可使用上方按钮。</p><div className="browser-bar"><span /><span /><span /><code>{frame.url}</code></div><div className={`browser-screen ${browsing ? 'browse' : ''}`}><img ref={imageRef} src={frame.image} alt="目标网页预览" onClick={event => void clickImage(event)} draggable={false} />{rects.map((rect, index) => <span className="selection-rect" key={index} style={{ left: `${rect.x / frame.width * 100}%`, top: `${rect.y / frame.height * 100}%`, width: `${rect.width / frame.width * 100}%`, height: `${rect.height / frame.height * 100}%` }} />)}</div><details className="advanced"><summary>高级：编辑匹配规则<ChevronDown size={14} /></summary><div className="selector-grid">{keys.map(key => <Field key={key} label={`${fieldLabels[key]}选择器`} hint={origins[key] === 'manual' ? '手动配置 · 重新识别时保留' : '自动配置'}><input value={rules[key] ?? ''} onChange={e => changeRule(key, e.target.value)} placeholder={key === 'item' ? 'article' : key === 'title' || key === 'link' ? 'h2 a' : '可留空'} spellCheck={false} /></Field>)}</div>{chosen && <button type="button" className="button small" onClick={() => { if (confirm('使用此候选替换全部匹配规则，包括你手动修改的字段？')) void applyCandidate(chosen, true); }}>替换全部匹配</button>}</details></section>}
     <div className="editor-results"><section className="panel"><div className="panel-heading"><h2>订阅预览</h2><span className="muted">与后台抓取使用相同规则</span></div><ItemPreview items={items} empty={detection?.candidates.length ? '选择候选列表，或调整匹配以查看内容' : '没有找到可靠列表，可以手动点选条目与字段'} /></section><form className="save-panel panel" onSubmit={save}><div className="panel-heading"><h2>保存订阅</h2><Rss size={18} /></div><Field label="订阅名称"><input required value={name} onChange={e => setName(e.target.value)} /></Field><Field label="刷新间隔（分钟）"><input type="number" required min={5} max={1440} value={intervalMinutes} onChange={e => setIntervalMinutes(Number(e.target.value))} /></Field><p className="hint">保存后会在后台定时更新。页面关闭不影响运行中的服务。</p><button className="button primary full" disabled={!!busy || !items.length || !sourceUnchanged || previewSignature !== rulesSignature(rules)}>{busy === '正在保存订阅' ? <Busy /> : <><Check size={16} />保存订阅</>}</button></form></div></>}
   </>;
 }

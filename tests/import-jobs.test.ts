@@ -52,3 +52,21 @@ test('实际重启恢复 running 任务，取消和恢复后保持幂等', async
     assert.equal(store.listFeeds().length, 2);
   } finally { resumed.stop(); store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('批量识别与刷新共享容量，跨站并行且同站不重入', async () => {
+  const { TaskPool, siteKey } = await import('../src/server/task-pool');
+  const dir=mkdtempSync(join(tmpdir(),'fl-jobs-pool-')), store=new Store(dir), pool=new TaskPool(2);
+  let active=0,peak=0;const hosts=new Set<string>();
+  const work=async(url:string)=>{
+    const key=siteKey(url); assert.equal(hosts.has(key),false);hosts.add(key);active++;peak=Math.max(peak,active);
+    await new Promise(resolve=>setTimeout(resolve,30));active--;hosts.delete(key);
+    return {title:'parallel',detection:result};
+  };
+  const jobs=new ImportJobs(store,(fn,keys)=>pool.enqueue(fn,keys),entry=>work(entry.url),async()=>result.candidates[0].items,undefined,2);
+  try {
+    const refresh=pool.enqueue(()=>work('https://a.test/refresh'),[siteKey('https://a.test')]);
+    const job=jobs.create(['https://a.test/one','https://b.test/two','https://b.test/three'].map(url=>({url,credentialId:null,intervalMinutes:60})));
+    await refresh;await until(()=>jobs.get(job.id).entries.every(e=>e.state==='created'));await pool.drain();
+    assert.equal(peak,2); assert.equal(store.listFeeds().length,3);
+  } finally {jobs.stop();await pool.drain();store.close();rmSync(dir,{recursive:true,force:true});}
+});

@@ -27,3 +27,28 @@ test('短页面提前结束；长页面和持续增长页面有界且恢复原�
     }
   } finally { await browser.close(); }
 });
+
+test('预滚动保留延迟揭示页面的内容', async () => {
+  const browser = await chromium.launch({headless:true});
+  try {
+    const page = await browser.newPage({viewport:{width:1280,height:800}});
+    await page.setContent(`<style>body{margin:0}.row{height:640px}</style>${Array.from({length:8},(_,n)=>`<div class="row" data-index="${n}"></div>`).join('')}<script>
+      addEventListener('scroll',()=>{
+        for (const row of document.querySelectorAll('.row')) {
+          if (row.textContent || row.dataset.pending) continue;
+          const box=row.getBoundingClientRect();
+          if(box.top>=0 && box.top<innerHeight) {
+            row.dataset.pending='1';
+            setTimeout(()=>{
+              const current=row.getBoundingClientRect();
+              if(current.top>=0 && current.top<innerHeight) row.textContent='loaded '+row.dataset.index;
+              delete row.dataset.pending;
+            },250);
+          }
+        }
+      });
+    </script>`);
+    await prepareScrollContent(page);
+    assert.deepEqual(await page.locator('.row').allTextContents(), Array.from({length:8},(_,n)=>`loaded ${n}`));
+  } finally {await browser.close();}
+});

@@ -619,15 +619,18 @@ export class Store {
     this.db.exec('SAVEPOINT items');
     try {
       const firstSeenAt = nowIso();
+      const findItem = this.db.prepare('SELECT id, published_at, published_at_source FROM feed_items WHERE feed_id = ? AND normalized_key = ?');
+      const updateItem = this.db.prepare('UPDATE feed_items SET title = ?, link = ?, description = ?, image = ?, published_at = ?, published_at_source = ? WHERE id = ?');
+      const insertItem = this.db.prepare('INSERT INTO feed_items(id, feed_id, normalized_key, title, link, description, image, published_at, published_at_source, first_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
       for (const [key, item] of unique) {
-        const existing = this.db.prepare('SELECT id, published_at, published_at_source FROM feed_items WHERE feed_id = ? AND normalized_key = ?').get(feed.id, key) as Record<string, unknown> | undefined;
+        const existing = findItem.get(feed.id, key) as Record<string, unknown> | undefined;
         const useIncomingDate = Boolean(item.publishedAt) && (!existing?.published_at || item.publishedAtSource !== 'relative');
         const publishedAt = useIncomingDate ? item.publishedAt! : (existing?.published_at as string | null | undefined) ?? null;
         const publishedAtSource = publishedAt ? (useIncomingDate ? item.publishedAtSource ?? 'absolute' : existing?.published_at_source ?? 'absolute') : null;
         if (existing) {
-          this.db.prepare('UPDATE feed_items SET title = ?, link = ?, description = ?, image = ?, published_at = ?, published_at_source = ? WHERE id = ?').run(item.title.trim(), item.link, item.description ?? null, item.image ?? null, publishedAt, publishedAtSource as string | null, String(existing.id));
+          updateItem.run(item.title.trim(), item.link, item.description ?? null, item.image ?? null, publishedAt, publishedAtSource as string | null, String(existing.id));
         } else {
-          this.db.prepare('INSERT INTO feed_items(id, feed_id, normalized_key, title, link, description, image, published_at, published_at_source, first_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(randomId('item'), feed.id, key, item.title.trim(), item.link, item.description ?? null, item.image ?? null, publishedAt, publishedAtSource as string | null, firstSeenAt);
+          insertItem.run(randomId('item'), feed.id, key, item.title.trim(), item.link, item.description ?? null, item.image ?? null, publishedAt, publishedAtSource as string | null, firstSeenAt);
         }
       }
       this.db.prepare(`DELETE FROM feed_items WHERE feed_id = ? AND id NOT IN (SELECT id FROM feed_items WHERE feed_id = ? ORDER BY first_seen_at DESC, rowid ASC LIMIT 200)`).run(feed.id, feed.id);

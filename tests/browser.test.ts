@@ -113,3 +113,19 @@ test('裸文本日期点选保留容器选择器，展示解析结果并与自�
     await new Promise<void>(resolve => server.close(() => resolve()));
   }
 });
+
+test('滚轮坐标支持独立滚动区域，截图保持完整视口', async () => {
+  const server = createServer((_req,res) => { res.setHeader('Content-Type','text/html'); res.end(`<style>body{margin:0}#inner{position:absolute;left:100px;top:100px;width:300px;height:300px;overflow:auto}</style><title>0</title><div id="inner"><div style="height:3000px">nested content</div></div><script>inner.addEventListener('scroll',()=>document.title=String(inner.scrollTop))</script>`); });
+  await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const host = `127.0.0.1:${(server.address() as AddressInfo).port}`, browser = new BrowserService({allowedHosts:[host]});
+  try {
+    const frame = await browser.open({url:`http://${host}`,waitMs:0});
+    assert.equal(frame.width,1280); assert.equal(frame.height,800);
+    const moved = await browser.scroll(frame.sessionId,400,{x:200,y:200});
+    assert.ok(Number(moved.title)>0);
+    const back = await browser.scroll(frame.sessionId,-400,{x:200,y:200});
+    assert.equal(back.title,'0');
+    await assert.rejects(browser.scroll(frame.sessionId,10,{x:NaN,y:0}), /有限数字/);
+    await assert.rejects(browser.scroll(frame.sessionId,10,{x:1281,y:0}), /超出/);
+  } finally { await browser.dispose(); server.closeAllConnections(); await new Promise<void>(resolve=>server.close(()=>resolve())); }
+});

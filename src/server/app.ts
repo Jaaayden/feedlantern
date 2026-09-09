@@ -1,3 +1,4 @@
+import { TaskPool, siteKey } from './task-pool.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import ipaddr from 'ipaddr.js';
 import { openBackup, sealBackup, snapshotSchema } from './backups.js';
@@ -45,7 +46,7 @@ export interface BrowserServiceLike {
   discover?(options: { url: string; cookies?: Cookie[]; waitMs: number }): Promise<{ title: string; detection: DetectionResult }>;
   open(options: { url: string; cookies?: Cookie[]; waitMs: number; waitForSelector?: string }): Promise<ScreenFrame> | ScreenFrame;
   snapshot(id: string): Promise<ScreenFrame> | ScreenFrame;
-  scroll(id: string, deltaY: number): Promise<ScreenFrame> | ScreenFrame;
+  scroll(id: string, deltaY: number, point?: { x: number; y: number }): Promise<ScreenFrame> | ScreenFrame;
   click(id: string, x: number, y: number): Promise<ScreenFrame> | ScreenFrame;
   pick(id: string, request: PickRequest): Promise<PickResult> | PickResult;
   extract(id: string, rules: SelectionRules): Promise<ExtractedItem[]> | ExtractedItem[];
@@ -202,8 +203,8 @@ function cookieMetadata(cookies: readonly Cookie[], url: string): { domains: str
 async function makeBrowserService(config: ServerConfig, injected?: BrowserServiceLike): Promise<BrowserServiceLike> {
   if (injected) return injected;
   const module = await import('./browser.js');
-  const BrowserService = module.BrowserService as new (options: { allowedHosts?: string[]; executablePath?: string }) => BrowserServiceLike;
-  return new BrowserService({ allowedHosts: config.allowedHosts, executablePath: config.browserExecutablePath });
+  const BrowserService = module.BrowserService as new (options: { allowedHosts?: string[]; executablePath?: string; backgroundConcurrency?: number }) => BrowserServiceLike;
+  return new BrowserService({ allowedHosts: config.allowedHosts, backgroundConcurrency: config.backgroundConcurrency, executablePath: config.browserExecutablePath });
 }
 
 export async function createApp(options: CreateAppOptions = {}): Promise<FastifyInstance> {
@@ -251,16 +252,17 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   let scheduler: NodeJS.Timeout | undefined;
   let closing = false;
   let maintenance = false;
-  let refreshQueue: Promise<void> = Promise.resolve();
-  const refreshInFlight = new Map<string, Promise<Feed | null>>();
+  const pool = new TaskPool(config.backgroundConcurrency);
+  const refreshInFlight = new Map<string, { promise: Promise<Feed | null>; force: boolean }>();
 
-  // BrowserService reserves one background browser. Queue both refreshes and
-  // feed mutations so an older capture cannot overwrite an edited/deleted feed.
-  const enqueueRefresh = <T,>(operation: () => Promise<T> | T): Promise<T> => {
+  // Unkeyed mutations form barriers; independent captures share bounded slots.
+  const enqueueRefresh = <T,>(operation: () => Promise<T> | T, keys?: string[] | (() => string[])): Promise<T> => {
     if (closing || maintenance) return Promise.reject(new AppError(503, '服务正在关闭'));
-    const result = refreshQueue.then(operation);
-    refreshQueue = result.then(() => {}, () => {});
-    return result;
+    return pool.enqueue(operation, keys);
+  };
+  const refreshKeys = (id: string) => {
+    const feed = store.getFeed(id);
+    return [`feed:${id}`, ...(feed ? [siteKey(feed.url)] : [])];
   };
 
   const currentSession = (request: FastifyRequest): ReturnType<typeof sessionFromRequest> => sessionFromRequest(request, store, config);
@@ -305,28 +307,33 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   };
 
-  const doRefresh = (id: string): Promise<Feed | null> => {
+  const doRefresh = (id: string, dueOnly = false): Promise<Feed | null> => {
     const active = refreshInFlight.get(id);
-    if (active) return active;
-    const promise = enqueueRefresh(() => refreshOnce(id)).finally(() => refreshInFlight.delete(id));
-    refreshInFlight.set(id, promise);
-    return promise;
+    if (active) { if (!dueOnly) active.force = true; return active.promise; }
+    const job = { force: !dueOnly, promise: Promise.resolve<Feed | null>(null) };
+    job.promise = enqueueRefresh(() => {
+      const current = store.getFeed(id);
+      if (!current) return null;
+      if (job.force || current.enabled && current.nextFetchAt <= new Date().toISOString()) return refreshOnce(id);
+      return current;
+    }, () => refreshKeys(id)).finally(() => refreshInFlight.delete(id));
+    refreshInFlight.set(id, job);
+    return job.promise;
   };
 
   const refreshDue = async (): Promise<void> => {
     if (schedulerRunning || closing) return;
     schedulerRunning = true;
     try {
-      for (const feed of store.dueFeeds()) {
-        if (closing) break;
-        await enqueueRefresh(() => {
-          // Recheck inside the queue: a settings save or manual refresh may
-          // have moved this feed's deadline since the due list was read.
-          const current = store.getFeed(feed.id);
-          if (current?.enabled && current.nextFetchAt <= new Date().toISOString()) return refreshOnce(feed.id);
-          return null;
-        });
-      }
+      const due = store.dueFeeds();
+      await Promise.all(Array.from({ length: config.backgroundConcurrency }, async () => {
+        while (!closing && !maintenance) {
+          const feed = due.shift();
+          if (!feed) break;
+          // Recheck deadlines at execution; manual refreshes share this job.
+          await doRefresh(feed.id, true);
+        }
+      }));
     } finally {
       schedulerRunning = false;
     }
@@ -341,7 +348,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const credential = input.credentialId ? store.getCredentialValue(input.credentialId) : null;
     if (input.credentialId && !credential) throw new AppError(400, 'Cookie 凭据不存在');
     return browser.scrape({ ...input, cookies: credential ? cookiesForTarget(credential, input.url) : [] });
-  }, error => friendlyError(error, '识别失败：请检查网址、网络或 Cookie，然后重试或手动调整。'));
+  }, error => friendlyError(error, '识别失败：请检查网址、网络或 Cookie，然后重试或手动调整。'), config.backgroundConcurrency);
 
   app.addHook('onRequest', async (request) => {
     if (maintenance) throw new AppError(503, '正在恢复备份，请稍后重试');
@@ -508,7 +515,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (body.confirm !== true) throw new AppError(400, '请先预览并确认覆盖恢复');
     maintenance = true; jobs.stop();
     try {
-      await refreshQueue;
+      await pool.drain();
       await browser.closeEditors?.();
       store.restoreTables(snapshot.tables);
       return { ok: true };
@@ -608,6 +615,16 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (!Array.isArray(body.ids) || !body.ids.length || body.ids.length > 200 || !body.ids.every(id => typeof id === 'string')) throw new AppError(400, '请选择 1–200 个订阅');
     const action = body.action;
     if (!['copy', 'pause', 'resume', 'refresh', 'delete'].includes(String(action))) throw new AppError(400, '操作无效');
+    if (action === 'refresh') {
+      const results = await Promise.all([...new Set(body.ids as string[])].map(async id => {
+        try {
+          const feed = await doRefresh(id);
+          if (!feed) return { id, ok: false, error: '订阅不存在' };
+          return feed.lastError ? { id, ok: false, error: feed.lastError } : { id, ok: true };
+        } catch (error) { return { id, ok: false, error: friendlyError(error, '操作失败') }; }
+      }));
+      return { results };
+    }
     const results = [];
     for (const id of new Set(body.ids as string[])) {
       try {
@@ -617,10 +634,6 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
           if (action === 'copy') return { id, ok: true, feedUrl: feedUrl(currentConfig(), store, id) };
           if (action === 'delete') store.deleteFeed(id);
           if (action === 'pause' && feed.enabled || action === 'resume' && !feed.enabled) store.toggleFeed(id);
-          if (action === 'refresh') {
-            const refreshed = await refreshOnce(id);
-            if (refreshed?.lastError) return { id, ok: false, error: refreshed.lastError };
-          }
           return { id, ok: true };
         });
         results.push(result);
@@ -708,9 +721,15 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
   app.post('/api/browser/:id/scroll', async (request) => {
     browserGuard(request);
-    const deltaY = Number(asRecord(request.body).deltaY);
+    const body = asRecord(request.body);
+    const deltaY = Number(body.deltaY);
+    let point: { x: number; y: number } | undefined;
+    if (body.x !== undefined || body.y !== undefined) {
+      if (typeof body.x !== 'number' || typeof body.y !== 'number' || !Number.isFinite(body.x) || !Number.isFinite(body.y)) throw new AppError(400, '滚动坐标无效');
+      point = { x: body.x, y: body.y };
+    }
     if (!Number.isFinite(deltaY) || Math.abs(deltaY) > 100_000) throw new AppError(400, 'deltaY 无效');
-    try { return await browser.scroll(String((request.params as { id: string }).id), deltaY); } catch (error) { throw frameError(error); }
+    try { return await browser.scroll(String((request.params as { id: string }).id), deltaY, point); } catch (error) { throw frameError(error); }
   });
   app.post('/api/browser/:id/click', async (request) => {
     browserGuard(request);
@@ -782,7 +801,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     jobs.stop();
     closing = true;
     if (scheduler) clearInterval(scheduler);
-    await refreshQueue;
+    await pool.drain();
     await browser.dispose();
     if (!options.store) store.close();
   });

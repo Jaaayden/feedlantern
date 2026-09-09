@@ -16,6 +16,7 @@
 ## 开发
 
 - [开发与接口](development.md)：本地启动、架构、迁移、检查和发布。
+- [性能验证](performance.md)：双路径优化、可复现基准与并发配置取舍。
 - [验收记录](acceptance.md)：本版本实际验证结果和待验证项目。
 
 配置文件直接引用仓库中的 [Compose](../docker-compose.yml)、[Nginx 示例](examples/nginx.conf)和 [Chromium seccomp 配置](../seccomp_profile.json)，避免复制多份。

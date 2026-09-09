@@ -4,6 +4,7 @@ import { resolve, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 export interface ServerConfig {
+  backgroundConcurrency: number;
   port: number;
   host: string;
   publicOrigin: string;
@@ -82,7 +83,10 @@ export function getConfig(overrides: ConfigInput = {}, cwd = process.cwd()): Ser
   const viteOrigins = overrides.viteOrigins ?? (process.env.NODE_ENV === 'development' ? ['http://127.0.0.1:5173', 'http://localhost:5173'] : []);
   const allowedHosts = overrides.allowedHosts ?? parseAllowedHosts(process.env.ALLOWED_TARGET_HOSTS);
 
+  const backgroundConcurrency = Number(overrides.backgroundConcurrency ?? process.env.BACKGROUND_CONCURRENCY ?? 1);
+  if (!Number.isInteger(backgroundConcurrency) || backgroundConcurrency < 1 || backgroundConcurrency > 4) throw new Error('BACKGROUND_CONCURRENCY 必须是 1–4 的整数');
   return {
+    backgroundConcurrency,
     port: overrides.port ?? parsePort(process.env.PORT),
     host: overrides.host ?? process.env.HOST ?? '127.0.0.1',
     publicOrigin,

@@ -110,7 +110,21 @@ export const api = {
     title: (id: string, channelTitle: string) => request<{ feed: Feed }>(`/api/feeds/${encodeURIComponent(id)}`, { method: 'PATCH', body: { channelTitle } }),
     bulk: async (ids: string[], action: string) => {
       const results: Array<{ id: string; ok: boolean; feedUrl?: string; error?: string }> = [];
-      const size = action === 'refresh' ? 1 : 200;
+      if (action === 'refresh') {
+        // Keep requests short for reverse proxies while allowing the server's
+        // bounded pool to overlap independent subscriptions.
+        let next = 0;
+        const ordered: typeof results = new Array(ids.length);
+        await Promise.all(Array.from({ length: Math.min(4, ids.length) }, async () => {
+          while (next < ids.length) {
+            const index = next++, id = ids[index];
+            try { ordered[index] = (await request<{ results: typeof results }>('/api/feeds/bulk', { method: 'POST', body: { ids: [id], action } })).results[0]; }
+            catch (e) { ordered[index] = { id, ok: false, error: e instanceof Error ? e.message : '操作失败' }; }
+          }
+        }));
+        return { results: ordered };
+      }
+      const size = 200;
       for (let offset = 0; offset < ids.length; offset += size) {
         const chunk = ids.slice(offset, offset + size);
         try { results.push(...(await request<{ results: typeof results }>('/api/feeds/bulk', { method: 'POST', body: { ids: chunk, action } })).results); }
@@ -134,8 +148,8 @@ export const api = {
     open: (body: { url: string; credentialId: string | null; waitMs: number; waitForSelector?: string }) =>
       request<ScreenFrame>('/api/browser', { method: 'POST', body }),
     frame: (id: string) => request<ScreenFrame>(`/api/browser/${encodeURIComponent(id)}`),
-    scroll: (id: string, deltaY: number) =>
-      request<ScreenFrame>(`/api/browser/${encodeURIComponent(id)}/scroll`, { method: 'POST', body: { deltaY } }),
+    scroll: (id: string, deltaY: number, point?: { x: number; y: number }) =>
+      request<ScreenFrame>(`/api/browser/${encodeURIComponent(id)}/scroll`, { method: 'POST', body: { deltaY, ...point } }),
     click: (id: string, x: number, y: number) =>
       request<ScreenFrame>(`/api/browser/${encodeURIComponent(id)}/click`, { method: 'POST', body: { x, y } }),
     pick: (id: string, body: PickRequest) =>
@@ -144,7 +158,7 @@ export const api = {
       request<DetectionResult>(`/api/browser/${encodeURIComponent(id)}/detect`, { method: 'POST', body: {} }),
     preview: (id: string, rules: FeedInput['rules']) =>
       request<{ items: ExtractedItem[] }>(`/api/browser/${encodeURIComponent(id)}/preview`, { method: 'POST', body: { rules } }),
-    close: (id: string) => request<{ ok: true }>(`/api/browser/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    close: (id: string) => request<{ ok: true }>(`/api/browser/${encodeURIComponent(id)}`, { method: 'DELETE', keepalive: true }),
   },
 };
 

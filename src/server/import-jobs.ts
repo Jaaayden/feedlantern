@@ -1,3 +1,4 @@
+import { siteKey } from './task-pool.js';
 import { randomUUID } from 'node:crypto';
 import type { DetectionResult, Feed, FeedInput, ImportEntry, ImportJob } from '../shared/types.js';
 import type { Store } from './store.js';
@@ -13,13 +14,17 @@ export function normalizeSource(value: string): string {
 export class ImportJobs {
   private running = false;
   private stopped = false;
-  constructor(private store: Store, private enqueue: <T>(fn: () => Promise<T>) => Promise<T>,
+  private claimed = new Set<string>();
+  private restartRequested = false;
+  constructor(private store: Store, private enqueue: <T>(fn: () => Promise<T>, keys?: string[]) => Promise<T>,
     private discover: (entry: ImportEntry) => Promise<{ title: string; detection: DetectionResult }>,
     private scrape: (input: FeedInput) => Promise<import('../shared/types.js').ExtractedItem[]>,
-    private describeError: (error: unknown) => string = () => '识别失败：请检查网址、网络或 Cookie，然后重试或手动调整。') {}
+    private describeError: (error: unknown) => string = () => '识别失败：请检查网址、网络或 Cookie，然后重试或手动调整。',
+    private concurrency = 1) {}
 
   recover() {
     this.stopped = false;
+    this.restartRequested = this.running;
     for (const job of this.store.listImportJobs()) {
       for (const entry of job.entries) if (entry.state === 'running') entry.state = 'queued';
       this.store.saveImportJob(job);
@@ -66,7 +71,7 @@ export class ImportJobs {
       const items = await this.scrape(input);
       if (!items.length) throw new AppError(400, '未匹配到有效条目，请调整规则');
       return this.complete(job, entry, input, items);
-    });
+    }, [siteKey(input.url)]);
   }
   private existing(url: string): Feed | undefined { return this.store.listFeeds().find(f => normalizeSource(f.url) === url); }
   private complete(job: ImportJob, entry: ImportEntry, input: FeedInput, items: import('../shared/types.js').ExtractedItem[]) {
@@ -94,11 +99,19 @@ export class ImportJobs {
   private async run() {
     this.running = true;
     try {
+      await Promise.allSettled(Array.from({ length: this.concurrency }, () => this.worker()));
+    } finally {
+      this.running = false;
+      if (this.restartRequested) { this.restartRequested = false; this.wake(); }
+    }
+  }
+  private async worker() {
       while (!this.stopped) {
-        const job = this.store.listImportJobs().reverse().find(j => j.entries.some(e => e.state === 'queued'));
-        const pending = job?.entries.find(e => e.state === 'queued');
+        const job = this.store.listImportJobs().reverse().find(j => j.entries.some(e => e.state === 'queued' && !this.claimed.has(e.id)));
+        const pending = job?.entries.find(e => e.state === 'queued' && !this.claimed.has(e.id));
         if (!job || !pending) break;
-        await this.enqueue(async () => {
+        this.claimed.add(pending.id);
+        try { await this.enqueue(async () => {
           if (this.stopped) return;
           const current = this.get(job.id), entry = current.entries.find(e => e.id === pending.id)!;
           if (entry.state !== 'queued') return;
@@ -118,8 +131,8 @@ export class ImportJobs {
           const latest = this.get(job.id);
           latest.entries = latest.entries.map(e => e.id === entry.id ? entry : e);
           this.store.saveImportJob(latest);
-        });
+        }, [siteKey(pending.url)]);
+        } finally { this.claimed.delete(pending.id); }
       }
-    } finally { this.running = false; }
   }
 }

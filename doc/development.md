@@ -24,7 +24,7 @@ pnpm build
 
 ## 架构
 
-React/Vite 前端；Fastify API；SQLite Store；Playwright BrowserService；共享 DOM 提取器和规则发现。后台刷新与批量识别串行排队，编辑会话独立且有存活上限。
+React/Vite 前端；Fastify API；SQLite Store；Playwright BrowserService；共享 DOM 提取器和规则发现。后台刷新与批量识别共享有界任务池（默认 1，可配置至 4），同一来源 hostname 串行，编辑会话独立且有存活上限。无键的编辑、删除等任务形成全局屏障，等待先前抓取结束后执行；抓取的站点锁在执行前重新计算，避免修改网址后沿用旧锁。
 
 SQLite `PRAGMA user_version` 记录迁移：版本 1 增加频道名称与设置表，版本 2 增加持久化任务，版本 3 将频道名称与管理名称统一（保留已设置的频道名称）。已有 v0.1.0 数据在首次启动时迁移，旧名称填入频道名称。更改迁移前必须考虑已有数据库和备份格式兼容。
 
@@ -47,6 +47,8 @@ SQLite `PRAGMA user_version` 记录迁移：版本 1 增加频道名称与设置
 | `/api/backups/preview`、`restore` | 预览/覆盖恢复；初始化场景使用 setupToken |
 | `GET/POST /api/backups/config` | 轻量配置导出/预览与确认导入 |
 | `/feeds/:id/:token.xml` | 无管理员登录的密钥授权 RSS 2.0 |
+
+`POST /api/browser/:id/scroll` 接受 `{deltaY,x?,y?}`，坐标须同时提供并位于远端视口内；省略时使用视口中心。截图仍为 data URL，编码改用 JPEG 质量 80。显式关闭编辑会话会取消进行中的操作并释放容量。
 
 完整备份格式版本为 1，独立于数据库迁移版本；敏感值只在加密包内部携带可迁移明文，目标实例使用自己的主密钥重新加密。
 

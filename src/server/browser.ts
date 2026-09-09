@@ -25,7 +25,6 @@ import {
 
 const VIEWPORT = { width: 1280, height: 800 } as const;
 const MAX_EDITOR_SESSIONS = 2;
-const MAX_SCRAPE_SESSIONS = 1;
 const SESSION_IDLE_MS = 5 * 60 * 1000;
 const NAVIGATION_TIMEOUT_MS = 30_000;
 const SELECTOR_TIMEOUT_MS = 15_000;
@@ -44,6 +43,7 @@ export interface BrowserScrapeOptions extends BrowserOpenOptions {
 }
 
 export interface BrowserServiceOptions {
+  backgroundConcurrency?: number;
   allowedHosts?: string[];
   executablePath?: string;
 }
@@ -69,6 +69,7 @@ interface BrowserSession {
   busy: boolean;
   lastUsedAt: number;
   idleTimer?: NodeJS.Timeout;
+  pointer?: { x: number; y: number };
 }
 
 interface RawPickResult {
@@ -251,8 +252,11 @@ export class BrowserService {
   private openingSessions = 0;
   private scrapeSessions = 0;
   private disposing = false;
+  private readonly backgroundConcurrency: number;
 
   constructor(options: BrowserServiceOptions = {}) {
+    this.backgroundConcurrency = options.backgroundConcurrency ?? 1;
+    if (!Number.isInteger(this.backgroundConcurrency) || this.backgroundConcurrency < 1 || this.backgroundConcurrency > 4) throw new BrowserServiceError('后台并发必须是 1–4 的整数');
     this.networkOptions = {
       allowedHosts: options.allowedHosts ?? allowedHostListFromEnv(),
     };
@@ -403,11 +407,11 @@ export class BrowserService {
 
   private async frame(session: BrowserSession): Promise<ScreenFrame> {
     try {
-      const image = await session.page.screenshot({ type: 'png', scale: 'css', timeout: 10_000 });
+      const image = await session.page.screenshot({ type: 'jpeg', quality: 80, scale: 'css', timeout: 10_000 });
       const viewport = session.page.viewportSize() ?? VIEWPORT;
       return {
         sessionId: session.id,
-        image: `data:image/png;base64,${image.toString('base64')}`,
+        image: `data:image/jpeg;base64,${image.toString('base64')}`,
         width: viewport.width,
         height: viewport.height,
         url: session.page.url(),
@@ -434,7 +438,9 @@ export class BrowserService {
         if (popup !== page) void popup.close().catch(() => undefined);
       });
       await this.preparePage(page, options);
-      const session: BrowserSession = { id, context, page, busy: false, lastUsedAt: Date.now() };
+      const pointer = { x: VIEWPORT.width / 2, y: VIEWPORT.height / 2 };
+      await page.mouse.move(pointer.x, pointer.y);
+      const session: BrowserSession = { id, context, page, busy: false, lastUsedAt: Date.now(), pointer };
       this.sessions.set(id, session);
       this.scheduleIdle(session);
       return await this.frame(session);
@@ -452,10 +458,18 @@ export class BrowserService {
     return this.withSession(id, session => this.frame(session));
   }
 
-  async scroll(id: string, deltaY: number): Promise<ScreenFrame> {
+  async scroll(id: string, deltaY: number, point?: { x: number; y: number }): Promise<ScreenFrame> {
     finiteNumber(deltaY, 'deltaY');
     const boundedDelta = Math.max(-100_000, Math.min(100_000, deltaY));
     return this.withSession(id, async session => {
+      const viewport = session.page.viewportSize() ?? VIEWPORT;
+      const x = finiteNumber(point?.x ?? viewport.width / 2, 'x');
+      const y = finiteNumber(point?.y ?? viewport.height / 2, 'y');
+      if (x < 0 || y < 0 || x > viewport.width || y > viewport.height) throw new BrowserServiceError('滚动坐标超出页面视口');
+      if (session.pointer?.x !== x || session.pointer?.y !== y) {
+        await session.page.mouse.move(x, y);
+        session.pointer = { x, y };
+      }
       await session.page.mouse.wheel(0, boundedDelta);
       await session.page.waitForTimeout(ACTION_SETTLE_MS);
       return this.frame(session);
@@ -469,6 +483,7 @@ export class BrowserService {
       const viewport = session.page.viewportSize() ?? VIEWPORT;
       if (x < 0 || y < 0 || x > viewport.width || y > viewport.height) throw new BrowserServiceError('点击坐标超出页面视口');
       await session.page.mouse.click(x, y);
+      session.pointer = { x, y };
       // A click can synchronously start a navigation. Wait briefly for the
       // DOMContentLoaded signal, while leaving long-polling pages responsive.
       await session.page.waitForLoadState('domcontentloaded', { timeout: 2_000 }).catch(() => undefined);
@@ -520,7 +535,7 @@ export class BrowserService {
   }
 
   private async background<T>(options: BrowserOpenOptions, extract: (page: Page) => Promise<T>): Promise<T> {
-    if (this.scrapeSessions >= MAX_SCRAPE_SESSIONS) throw new BrowserBusyError('已有抓取任务正在运行');
+    if (this.scrapeSessions >= this.backgroundConcurrency) throw new BrowserBusyError('已有抓取任务正在运行');
     this.scrapeSessions += 1;
     let context: BrowserContext | undefined;
     try {
@@ -546,9 +561,9 @@ export class BrowserService {
       if (error instanceof BrowserServiceError) throw error;
       throw cleanError(error, '抓取页面失败');
     } finally {
-      this.scrapeSessions -= 1;
       if (context) this.activeContexts.delete(context);
       await context?.close().catch(() => undefined);
+      this.scrapeSessions -= 1;
     }
   }
 
@@ -574,7 +589,8 @@ export class BrowserService {
   }
 
   async close(id: string): Promise<void> {
-    await this.closeInternal(id, false);
+    // Explicit user cancellation must release the slot even during a capture.
+    await this.closeInternal(id, true);
   }
 
   async closeEditors(): Promise<void> {
