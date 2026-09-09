@@ -218,3 +218,24 @@ test('keeps manually cleared optional fields through re-detection and save', asy
   expect(detail.items[0]).toMatchObject({ title: 'Fixture article one', link: expect.stringMatching(/\/article\/one$/) });
   await page.screenshot({ path: 'test-results/visual-qa/editor-manual-preserve.png', fullPage: true });
 });
+
+test('日期裸文本点选显示时间片段和估算值，保存后仍可见', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await loginInPage(page);
+  await page.getByRole('button', { name: '新建订阅', exact: true }).click();
+  await (await locatorForUrl(page)).fill(FIXTURE_URLS.relativeDates);
+  await page.getByRole('button', { name: '打开并自动识别', exact: true }).click();
+  await expect(page.locator('.preview-item')).toHaveCount(3, { timeout: 45000 });
+  await expect(page.locator('.preview-item time').first()).toContainText('估算');
+  await page.getByRole('button', { name: '调整匹配', exact: true }).click();
+  await page.getByRole('button', { name: '日期', exact: true }).click();
+  const image = page.locator('.browser-screen img');
+  const box = await image.boundingBox();
+  expect(box).not.toBeNull();
+  await image.click({ position: { x: box!.width * 170 / 1280, y: box!.height * 45 / 800 } });
+  await expect(page.getByText(/已从选中区域提取时间.*3分前.*估算/)).toBeVisible();
+  await expect(page.locator('.preview-item')).toHaveCount(3);
+  await page.locator('.save-panel .field input').first().fill('相对日期回归');
+  await page.getByRole('button', { name: '保存订阅', exact: true }).click();
+  await expect(page.locator('.modal .preview-item time').first()).toContainText('估算');
+});

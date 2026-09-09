@@ -78,3 +78,38 @@ test('滚动揭示正文列表，编辑器与批量识别、后台刷新保持�
     await new Promise<void>(resolve => server.close(() => resolve()));
   }
 });
+
+test('裸文本日期点选保留容器选择器，展示解析结果并与自动识别一致', async () => {
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    response.end(`<!doctype html><style>body{margin:0}.frow{display:block;height:70px}.fttl,.fmeta{display:block;height:25px}</style>
+      ${[1, 2, 3].map(n => `<a class="frow" href="/post-${n}"><span class="fttl">论坛新鲜事标题 ${n}</span><span class="fmeta"><span>猎奇</span><span>NodeSeek</span> · 3分前</span></a>`).join('')}`);
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const host = `127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const browser = new BrowserService({ allowedHosts: [host] });
+  try {
+    const options = { url: `http://${host}`, waitMs: 0 };
+    const frame = await browser.open(options);
+    const pick = await browser.pick(frame.sessionId, { x: 150, y: 36, target: 'date', itemSelector: 'a.frow' });
+    assert.equal(pick.count, 3);
+    assert.ok(pick.selector.includes('.fmeta'));
+    assert.equal(pick.datePreview?.dateText, '3分前');
+    assert.equal(pick.datePreview?.publishedAtSource, 'relative');
+    assert.match(pick.warning!, /已从选中区域提取时间/);
+    const rules = { item: 'a.frow', title: '.fttl', link: ':scope', date: pick.selector };
+    const preview = await browser.extract(frame.sessionId, rules);
+    assert.equal(preview[0].publishedAt, pick.datePreview?.publishedAt);
+    assert.deepEqual(await browser.extract(frame.sessionId, rules), preview, '同一页面重复预览保持基准不变');
+    const detection = await browser.detect(frame.sessionId);
+    assert.ok(detection.candidates.some(c => c.items.length === 3 && c.items.every(i => i.publishedAtSource === 'relative')), JSON.stringify(detection));
+    const scrape = await browser.scrape({ ...options, rules });
+    assert.ok(scrape.every(i => i.publishedAtSource === 'relative'));
+    assert.deepEqual(scrape.map(i => i.link), preview.map(i => i.link));
+    assert.ok(Math.abs(Date.parse(scrape[0].publishedAt!) - Date.parse(preview[0].publishedAt!)) < 30000);
+    assert.ok((await browser.extract(frame.sessionId, { ...rules, date: '' })).every(i => !i.publishedAt));
+  } finally {
+    await browser.dispose(); server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});

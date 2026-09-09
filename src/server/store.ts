@@ -149,6 +149,7 @@ function rowToItem(row: Record<string, unknown>): FeedItem {
     description: row.description ? String(row.description) : undefined,
     image: row.image ? String(row.image) : undefined,
     publishedAt: row.published_at ? String(row.published_at) : undefined,
+    publishedAtSource: row.published_at ? (row.published_at_source === 'relative' ? 'relative' : 'absolute') : undefined,
     firstSeenAt: String(row.first_seen_at),
   };
 }
@@ -249,6 +250,7 @@ export class Store {
       UPDATE feeds SET name = COALESCE(NULLIF(TRIM(channel_title), ''), name);
       UPDATE feeds SET channel_title = name;
       PRAGMA user_version = 3; COMMIT;`);
+    if (version < 4) this.db.exec(`BEGIN; ALTER TABLE feed_items ADD COLUMN published_at_source TEXT; PRAGMA user_version = 4; COMMIT;`);
     this.ensureSetupToken();
   }
 
@@ -591,7 +593,7 @@ export class Store {
   }
 
   getItems(id: string, limit = 200): FeedItem[] {
-    const rows = this.db.prepare('SELECT id, title, link, description, image, published_at, first_seen_at FROM feed_items WHERE feed_id = ? ORDER BY first_seen_at DESC, rowid ASC LIMIT ?').all(id, limit) as Array<Record<string, unknown>>;
+    const rows = this.db.prepare('SELECT id, title, link, description, image, published_at, published_at_source, first_seen_at FROM feed_items WHERE feed_id = ? ORDER BY first_seen_at DESC, rowid ASC LIMIT ?').all(id, limit) as Array<Record<string, unknown>>;
     return rows.map(rowToItem);
   }
 
@@ -607,11 +609,14 @@ export class Store {
     try {
       const firstSeenAt = nowIso();
       for (const [key, item] of unique) {
-        const existing = this.db.prepare('SELECT id FROM feed_items WHERE feed_id = ? AND normalized_key = ?').get(feed.id, key) as Record<string, unknown> | undefined;
+        const existing = this.db.prepare('SELECT id, published_at, published_at_source FROM feed_items WHERE feed_id = ? AND normalized_key = ?').get(feed.id, key) as Record<string, unknown> | undefined;
+        const useIncomingDate = Boolean(item.publishedAt) && (!existing?.published_at || item.publishedAtSource !== 'relative');
+        const publishedAt = useIncomingDate ? item.publishedAt! : (existing?.published_at as string | null | undefined) ?? null;
+        const publishedAtSource = publishedAt ? (useIncomingDate ? item.publishedAtSource ?? 'absolute' : existing?.published_at_source ?? 'absolute') : null;
         if (existing) {
-          this.db.prepare('UPDATE feed_items SET title = ?, link = ?, description = ?, image = ?, published_at = ? WHERE id = ?').run(item.title.trim(), item.link, item.description ?? null, item.image ?? null, item.publishedAt ?? null, String(existing.id));
+          this.db.prepare('UPDATE feed_items SET title = ?, link = ?, description = ?, image = ?, published_at = ?, published_at_source = ? WHERE id = ?').run(item.title.trim(), item.link, item.description ?? null, item.image ?? null, publishedAt, publishedAtSource as string | null, String(existing.id));
         } else {
-          this.db.prepare('INSERT INTO feed_items(id, feed_id, normalized_key, title, link, description, image, published_at, first_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(randomId('item'), feed.id, key, item.title.trim(), item.link, item.description ?? null, item.image ?? null, item.publishedAt ?? null, firstSeenAt);
+          this.db.prepare('INSERT INTO feed_items(id, feed_id, normalized_key, title, link, description, image, published_at, published_at_source, first_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(randomId('item'), feed.id, key, item.title.trim(), item.link, item.description ?? null, item.image ?? null, publishedAt, publishedAtSource as string | null, firstSeenAt);
         }
       }
       this.db.prepare(`DELETE FROM feed_items WHERE feed_id = ? AND id NOT IN (SELECT id FROM feed_items WHERE feed_id = ? ORDER BY first_seen_at DESC, rowid ASC LIMIT 200)`).run(feed.id, feed.id);

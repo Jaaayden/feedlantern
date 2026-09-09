@@ -64,7 +64,7 @@ function AuthScreen({ state, authenticated }: { state: AuthState; authenticated:
 
 function ItemPreview({ items, empty = '还没有可预览的条目' }: { items: ExtractedItem[]; empty?: string }) {
   if (!items.length) return <div className="empty-preview"><Search size={24} /><p>{empty}</p></div>;
-  return <div className="item-list">{items.slice(0, 20).map((item, index) => <article className="preview-item" key={`${item.link}-${index}`}><div className="preview-number">{String(index + 1).padStart(2, '0')}</div><div className="preview-text"><a href={item.link} target="_blank" rel="noreferrer">{item.title || '（未匹配到标题）'}<ExternalLink size={13} /></a>{item.description && <p>{item.description}</p>}<div className="item-meta"><span>{hostLabel(item.link)}</span>{item.publishedAt && <time>{dateLabel(item.publishedAt)}</time>}</div></div>{item.image && <img src={item.image} alt="" loading="lazy" referrerPolicy="no-referrer" onError={e => { e.currentTarget.style.display = 'none'; }} />}</article>)}</div>;
+  return <div className="item-list">{items.slice(0, 20).map((item, index) => <article className="preview-item" key={`${item.link}-${index}`}><div className="preview-number">{String(index + 1).padStart(2, '0')}</div><div className="preview-text"><a href={item.link} target="_blank" rel="noreferrer">{item.title || '（未匹配到标题）'}<ExternalLink size={13} /></a>{item.description && <p>{item.description}</p>}<div className="item-meta"><span>{hostLabel(item.link)}</span>{item.publishedAt && <time>{dateLabel(item.publishedAt)}{item.publishedAtSource === 'relative' ? '（估算）' : ''}</time>}</div></div>{item.image && <img src={item.image} alt="" loading="lazy" referrerPolicy="no-referrer" onError={e => { e.currentTarget.style.display = 'none'; }} />}</article>)}</div>;
 }
 
 function CredentialForm({ editing, done, cancel }: { editing?: CredentialSummary; done: () => void; cancel: () => void }) {
@@ -216,7 +216,7 @@ export function Editor({ initial, draft, submitFeed, saved, cancel }: { initial?
       return;
     }
     setBusy('正在定位内容'); setError('');
-    try { const picked = await api.browser.pick(frame.sessionId, { x, y, target, itemSelector: rules.item || undefined, ancestorLevel: ancestorLevel < 0 ? undefined : ancestorLevel }); changeRule(target, picked.selector); setRects(picked.rects); setNote(`${fieldLabels[target]}匹配 ${picked.count} 项。${picked.warning ?? ''}`); await preview({ ...rules, [target]: picked.selector }, frame.sessionId); }
+    try { const picked = await api.browser.pick(frame.sessionId, { x, y, target, itemSelector: rules.item || undefined, ancestorLevel: ancestorLevel < 0 ? undefined : ancestorLevel }); changeRule(target, picked.selector); setRects(picked.rects); setNote(`${fieldLabels[target]}匹配 ${picked.count} 项。${picked.warning ?? ''}${picked.datePreview ? ` ${picked.datePreview.dateText} → ${dateLabel(picked.datePreview.publishedAt)}${picked.datePreview.publishedAtSource === 'relative' ? '（估算）' : ''}` : ''}`); await preview({ ...rules, [target]: picked.selector }, frame.sessionId); }
     catch (error) { setError(messageOf(error)); } finally { setBusy(''); }
   }
   async function save(event: FormEvent) {

@@ -1,3 +1,4 @@
+import { previewDateSelection } from './dates.js';
 import { randomUUID } from 'node:crypto';
 import { chromium, type Browser, type BrowserContext, type Cookie, type Page } from 'playwright';
 import type {
@@ -488,6 +489,10 @@ export class BrowserService {
         const expression = `(${PICK_SCRIPT})(${JSON.stringify(request)})`;
         const result = await session.page.evaluate(expression) as RawPickResult;
         if (!result.selector && result.warning) throw new BrowserServiceError(result.warning);
+        if (request.target === 'date') {
+          const datePreview = await previewDateSelection(session.page, request.itemSelector, result.selector);
+          return { ...result, ...(datePreview ? { datePreview } : {}), warning: [result.warning, datePreview ? '已从选中区域提取时间；框选范围表示容器。' : '未找到唯一可解析的日期，请调整选中区域。'].filter(Boolean).join(' ') };
+        }
         return result;
       } catch (error) {
         if (error instanceof BrowserServiceError) throw error;

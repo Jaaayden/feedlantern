@@ -1,4 +1,6 @@
 import type { Page } from 'playwright';
+import { readDateContext, resolveDate, type DateFields } from './dates.js';
+export { isoDate } from './dates.js';
 import type { ExtractedItem, SelectionRules } from '../shared/types';
 
 export class ExtractionError extends Error {
@@ -13,7 +15,7 @@ interface RawExtractedItem {
   link?: string;
   description?: string;
   imageCandidates: string[];
-  date?: string;
+  date?: DateFields;
 }
 
 const MAX_ITEMS = 1000;
@@ -86,7 +88,7 @@ const EXTRACTION_SCRIPT = String.raw`(payload) => {
       link: hrefOf(linkElement),
       description: descriptionElement ? textOrAttribute(descriptionElement) : undefined,
       imageCandidates: imageCandidatesOf(imageElement),
-      date: dateElement ? (dateElement.getAttribute('datetime') || textOrAttribute(dateElement)) : undefined,
+      date: dateElement ? { datetime: dateElement.getAttribute('datetime'), direct: clipped(Array.from(dateElement.childNodes).filter(n => n.nodeType === 3).map(n => n.textContent).join(' ')), text: clipped(dateElement.textContent) } : undefined,
     };
   });
 }`;
@@ -105,18 +107,6 @@ function httpUrl(value: string | undefined, baseUrl: string): string | undefined
   } catch {
     return undefined;
   }
-}
-
-export function isoDate(value: string | undefined): string | undefined {
-  let clean = cleanText(value).replace(/年|月/g, '-').replace(/日/g, '');
-  // Relative labels and dates without a year cannot provide a stable source
-  // date. Do not let Date.parse invent a year or the server's local timezone.
-  if (!/\b\d{4}\b/.test(clean)) return undefined;
-  if (!/(?:Z|[+-]\d{2}:?\d{2}|GMT|UTC)$/i.test(clean)) {
-    clean = /^\d{4}-\d{2}-\d{2}T/.test(clean) ? `${clean}Z` : `${clean} UTC`;
-  }
-  const timestamp = Date.parse(clean);
-  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : undefined;
 }
 
 function assertRules(rules: SelectionRules): void {
@@ -161,6 +151,7 @@ export async function extractPage(page: Page, rules: SelectionRules): Promise<Ex
     throw new ExtractionError(`读取页面 DOM 失败：${message}`);
   }
 
+  const dateContext = rules.date ? await readDateContext(page) : undefined;
   const items: ExtractedItem[] = [];
   for (const raw of rawItems) {
     const title = cleanText(raw.title);
@@ -170,8 +161,8 @@ export async function extractPage(page: Page, rules: SelectionRules): Promise<Ex
     const image = raw.imageCandidates.map(candidate => httpUrl(candidate, baseUrl)).find(Boolean);
     if (!title || !link) continue;
     const description = cleanText(raw.description).slice(0, MAX_TEXT) || undefined;
-    const publishedAt = isoDate(raw.date);
-    items.push({ title, link, ...(description ? { description } : {}), ...(image ? { image } : {}), ...(publishedAt ? { publishedAt } : {}) });
+    const date = raw.date && dateContext ? resolveDate(raw.date, link, baseUrl, dateContext) : undefined;
+    items.push({ title, link, ...(description ? { description } : {}), ...(image ? { image } : {}), ...(date ? { publishedAt: date.publishedAt, publishedAtSource: date.publishedAtSource } : {}) });
   }
 
   if (items.length === 0) {

@@ -259,6 +259,12 @@ const server = createServer(async (request, response) => {
     sendHtml(response, 200, cookie.includes('fl-auth=fixture-secret') ? cookieGatedPage(true) : cookieGatedPage(false));
     return;
   }
+  if (requestUrl.pathname === '/relative-dates') {
+    sendHtml(response, 200, `<!doctype html><meta charset="utf-8"><title>Relative dates</title>
+      <style>body{margin:0;font:16px sans-serif}.frow{display:block;height:90px}.fttl,.fmeta{display:block;height:30px}</style>
+      ${[1, 2, 3].map(n => `<a class="frow" href="/article/relative-${n}"><span class="fttl">相对时间文章 ${n}</span><span class="fmeta"><span>猎奇</span><span>NodeSeek</span> · 3分前</span></a>`).join('')}`);
+    return;
+  }
   if (requestUrl.pathname === '/ambiguous') {
     sendHtml(response, 200, ambiguousPage());
     return;

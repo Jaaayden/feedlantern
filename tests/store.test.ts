@@ -89,7 +89,7 @@ test('v0.1.0 表结构原位升级保留频道名、密钥和历史', async () =
     const items = store.getItems(feed.id);
     store.close();
     const db = new DatabaseSync(join(dir, 'app.db'));
-    db.exec('ALTER TABLE feeds DROP COLUMN channel_title; DROP TABLE settings; DROP TABLE import_jobs; PRAGMA user_version=0;'); db.close();
+    db.exec('ALTER TABLE feed_items DROP COLUMN published_at_source; ALTER TABLE feeds DROP COLUMN channel_title; DROP TABLE settings; DROP TABLE import_jobs; PRAGMA user_version=0;'); db.close();
     store = new Store(dir);
     assert.equal(store.getFeed(feed.id)?.channelTitle, '旧订阅');
     assert.equal(store.getFeedToken(feed.id)?.token, token);
@@ -108,7 +108,7 @@ test('v0.2.0 自定义频道名升级后统一，编辑名称继续同步 RSS', 
     store.close();
     const db = new DatabaseSync(join(dir, 'app.db'));
     db.prepare('UPDATE feeds SET channel_title = ?').run('已自定义频道名称');
-    db.exec('PRAGMA user_version=2'); db.close();
+    db.exec('ALTER TABLE feed_items DROP COLUMN published_at_source; PRAGMA user_version=2'); db.close();
     store = new Store(dir);
     const migrated = store.getFeed(feed.id)!;
     assert.equal(migrated.name, '已自定义频道名称');
@@ -118,5 +118,43 @@ test('v0.2.0 自定义频道名升级后统一，编辑名称继续同步 RSS', 
     const edited = store.updateFeed(feed.id, { ...migrated, name: '编辑器新名称' })!;
     assert.equal(edited.channelTitle, edited.name);
     assert.equal(new XMLParser().parse(renderRss(edited, [], 'https://example.test/rss')).rss.channel.title, '编辑器新名称');
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('相对日期固定保存，绝对时间可纠正估算，失败不抹除日期', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fl-dates-store-'));
+  const store = new Store(dir);
+  try {
+    const { feed } = store.createFeed({ name: 'dates', url: 'https://example.test', rules: { item: 'article', title: 'h2', link: 'a' }, credentialId: null, intervalMinutes: 60, waitMs: 0 });
+    const item = { title: '文章', link: 'https://example.test/1' };
+    const first = store.upsertItems(feed, [{ ...item, publishedAt: '2026-09-09T11:57:00.000Z', publishedAtSource: 'relative' }])[0];
+    const later = store.upsertItems(feed, [{ ...item, publishedAt: '2026-09-09T11:57:30.000Z', publishedAtSource: 'relative' }])[0];
+    assert.deepEqual(later, first);
+    const exact = store.upsertItems(feed, [{ ...item, publishedAt: '2026-09-09T11:56:50.000Z', publishedAtSource: 'absolute' }])[0];
+    assert.equal(exact.id, first.id);
+    assert.equal(exact.publishedAt, '2026-09-09T11:56:50.000Z');
+    assert.equal(exact.publishedAtSource, 'absolute');
+    assert.deepEqual(store.upsertItems(feed, [item])[0], exact);
+    assert.deepEqual(store.upsertItems(feed, [{ ...item, publishedAt: first.publishedAt, publishedAtSource: 'relative' }])[0], exact);
+    assert.ok(renderRss(feed, [exact], 'https://example.test/rss').includes('Wed, 09 Sep 2026 11:56:50 GMT'));
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('日期来源字段迁移保留旧日期，重启后仍视为绝对时间', async () => {
+  const { DatabaseSync } = await import('node:sqlite');
+  const dir = mkdtempSync(join(tmpdir(), 'fl-date-migration-'));
+  let store = new Store(dir);
+  try {
+    const { feed } = store.createFeed({ name: 'legacy dates', url: 'https://example.test', rules: { item: 'article', title: 'h2', link: 'a' }, credentialId: null, intervalMinutes: 60, waitMs: 0 });
+    const old = store.upsertItems(feed, [{ title: '旧日期', link: 'https://example.test/1', publishedAt: '2026-09-09T11:00:00.000Z' }])[0];
+    store.close();
+    const db = new DatabaseSync(join(dir, 'app.db'));
+    db.exec('ALTER TABLE feed_items DROP COLUMN published_at_source; PRAGMA user_version=3;');
+    db.close();
+    store = new Store(dir);
+    assert.deepEqual(store.getItems(feed.id)[0], old);
+    store.upsertItems(feed, [{ title: '旧日期', link: old.link, publishedAt: '2026-09-09T11:57:00.000Z', publishedAtSource: 'relative' }]);
+    store.close(); store = new Store(dir);
+    assert.deepEqual(store.getItems(feed.id)[0], old);
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });

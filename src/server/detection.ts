@@ -60,7 +60,7 @@ export async function detectPage(page: Page): Promise<DetectionResult> {
       const dynamicTokenPattern = /(?:^|[-_])(?:[a-f0-9]{6,}|\d{3,})(?:$|[-_])/i;
       const semanticWords = /(?:title|headline|subject|name|story|article|post|entry|card|item|result|row|thing|content|summary|excerpt|description|abstract|date|time|published|created|author)/i;
       const blockedWords = /(?:^|[-_\s])(?:ad|ads|advert|advertisement|sponsor|promoted|share|social|breadcrumb|path|pos|position|pagination|pager|cookie|consent|newsletter|related)(?:$|[-_\s])/i;
-      const datePattern = /(?:\b(?:19|20)\d{2}[./-]\d{1,2}(?:[./-]\d{1,2})?\b|\b\d{1,2}[./-]\d{1,2}[./-](?:19|20)?\d{2}\b|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b|\b\d{1,2}\s+(?:小时|天|周|月|年前|minutes?|hours?|days?|weeks?|months?)\b|\b\d{4}年\d{1,2}月)/i;
+      const datePattern = /(?:刚刚|\bjust\s+now\b|\d+\s*(?:秒钟?|分钟?|小时|天|周)\s*前|\b\d+\s*(?:seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|weeks?)\s+ago\b|\b(?:19|20)\d{2}[./-]\d{1,2}(?:[./-]\d{1,2})?\b|\b\d{1,2}[./-]\d{1,2}[./-](?:19|20)?\d{2}\b|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b|\b\d{1,2}\s+(?:小时|天|周|月|年前|minutes?|hours?|days?|weeks?|months?)\b|\b\d{4}年\d{1,2}月)/i;
 
       const helpers = {
         clamp(value: number, min = 0, max = 1): number {
