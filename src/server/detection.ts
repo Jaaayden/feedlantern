@@ -59,7 +59,7 @@ export async function detectPage(page: Page): Promise<DetectionResult> {
       const tokenPattern = /^[a-zA-Z_][a-zA-Z0-9_-]{0,42}$/;
       const dynamicTokenPattern = /(?:^|[-_])(?:[a-f0-9]{6,}|\d{3,})(?:$|[-_])/i;
       const semanticWords = /(?:title|headline|subject|name|story|article|post|entry|card|item|result|row|thing|content|summary|excerpt|description|abstract|date|time|published|created|author)/i;
-      const blockedWords = /(?:^|[-_\s])(?:ad|ads|advert|advertisement|sponsor|promoted|share|social|breadcrumb|path|pos|position|pagination|pager|cookie|consent|newsletter|related)(?:$|[-_\s])/i;
+      const blockedWords = /(?:^|[-_\s])(?:ad|ads|advert|advertisement|sponsor|promoted|share|social|breadcrumb|path|pos|position|pagination|pager|cookie|consent|newsletter|related|sidebar)(?:$|[-_\s])/i;
       const datePattern = /(?:刚刚|\bjust\s+now\b|\d+\s*(?:秒钟?|分钟?|小时|天|周)\s*前|\b\d+\s*(?:seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|weeks?)\s+ago\b|\b(?:19|20)\d{2}[./-]\d{1,2}(?:[./-]\d{1,2})?\b|\b\d{1,2}[./-]\d{1,2}[./-](?:19|20)?\d{2}\b|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b|\b\d{1,2}\s+(?:小时|天|周|月|年前|minutes?|hours?|days?|weeks?|months?)\b|\b\d{4}年\d{1,2}月)/i;
 
       const helpers = {
@@ -296,8 +296,10 @@ export async function detectPage(page: Page): Promise<DetectionResult> {
         const value = text(element.textContent);
         if (!value && field !== 'image' && field !== 'link') return -100;
         if (field === 'title') {
-          const semanticTitle = /title|headline|subject|story|name/i.test(signal);
+          const semanticTitle = /title|headline|subject|story|name|(?:^|[-_\s])f?ttl(?:$|[-_\s])/i.test(signal);
           const metadataSignal = /meta|metadata|date|time|publish|created|updated|author|byline|category|tag|label|type/i.test(signal);
+          const metadataParent = element.parentElement?.closest('[class*="meta"],time,[datetime]');
+          if (metadataParent && !semanticTitle) return -6;
           const dateLike = isDateLike(element) || Boolean(element.querySelector('time,[datetime]'));
           // A card often contains a date/category heading before its actual
           // title. Prefer a link explicitly marked as the title, while
@@ -307,7 +309,7 @@ export async function detectPage(page: Page): Promise<DetectionResult> {
           if (tag === 'a' && element.getAttribute('href') && !dateLike) return 10;
           if (dateLike || metadataSignal) return semanticTitle ? 8 : -6;
           if (/^h[1-6]$/.test(tag)) return 12;
-          if (/titleline/i.test(signal)) return 12;
+          if (semanticTitle) return 11;
           return value.length >= 4 && value.length <= 240 ? 4 : -1;
         }
         if (field === 'link') {
@@ -327,9 +329,11 @@ export async function detectPage(page: Page): Promise<DetectionResult> {
           return element.querySelector('img,source') ? 7 : -1;
         }
         if (field === 'date') {
+          if (tag !== 'time' && !element.getAttribute('datetime') && /title|headline|subject|(?:^|[-_\s])f?ttl(?:$|[-_\s])/i.test(signal)) return -1;
           if (element.querySelector('time,[datetime],h1,h2,h3,p,a')) return -1;
           if ((tag === 'a' || /^h[1-6]$/.test(tag)) && !/date|time|publish|created|updated/i.test(signal)) return -1;
-          return isDateLike(element) ? (tag === 'time' || element.getAttribute('datetime') ? 12 : 8) : -1;
+          const direct = Array.from(element.childNodes).filter(node => node.nodeType === 3).map(node => node.textContent).join(' ');
+          return isDateLike(element) ? (tag === 'time' || element.getAttribute('datetime') ? 12 : datePattern.test(direct) ? 10 : 8) : -1;
         }
         return -1;
         },

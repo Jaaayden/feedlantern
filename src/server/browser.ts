@@ -1,4 +1,4 @@
-import { previewDateSelection } from './dates.js';
+import { previewDateSelection, dateSelectionRects } from './dates.js';
 import { randomUUID } from 'node:crypto';
 import { chromium, type Browser, type BrowserContext, type Cookie, type Page } from 'playwright';
 import type {
@@ -506,7 +506,8 @@ export class BrowserService {
         if (!result.selector && result.warning) throw new BrowserServiceError(result.warning);
         if (request.target === 'date') {
           const datePreview = await previewDateSelection(session.page, request.itemSelector, result.selector);
-          return { ...result, ...(datePreview ? { datePreview } : {}), warning: [result.warning, datePreview ? '已从选中区域提取时间；框选范围表示容器。' : '未找到唯一可解析的日期，请调整选中区域。'].filter(Boolean).join(' ') };
+          const dateRects = datePreview ? await dateSelectionRects(session.page, request.itemSelector, result.selector) : [];
+          return { ...result, ...(datePreview ? { datePreview, sampleText: datePreview.dateText, ...(dateRects.length ? { rects: dateRects } : {}) } : {}), warning: [result.warning, datePreview ? '已从选中区域提取时间；保存的规则仍使用日期所在容器。' : '未找到唯一可解析的日期，请调整选中区域。'].filter(Boolean).join(' ') };
         }
         return result;
       } catch (error) {

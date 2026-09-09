@@ -134,3 +134,38 @@ export async function previewDateSelection(page: Page, itemSelector: string | un
   })(${payload})`) as { fields: DateFields; link?: string } | null;
   return raw ? resolveDate(raw.fields, raw.link, page.url(), await readDateContext(page)) : undefined;
 }
+
+/** Highlight the date text without changing DOM or persisting text-node selectors. */
+export async function dateSelectionRects(page: Page, itemSelector: string | undefined, selector: string): Promise<import('../shared/types').Rect[]> {
+  return page.evaluate(`(function(p) {
+    const roots = p.itemSelector ? Array.from(document.querySelectorAll(p.itemSelector)) : [document.documentElement];
+    const rects = [];
+    for (const root of roots) {
+      const el = p.selector === ':scope' ? root : root.querySelector(p.selector);
+      if (!el) continue;
+      const nodes = [];
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      let node;
+      while (node = walker.nextNode()) nodes.push(node);
+      const text = nodes.map(n => n.textContent).join('');
+      const matches = [...text.matchAll(new RegExp(p.relative, 'gi')), ...text.matchAll(new RegExp(p.absolute, 'gi'))];
+      if (matches.length !== 1) continue;
+      const match = matches[0], start = match.index, end = start + match[0].length;
+      const range = document.createRange();
+      let offset = 0, started = false;
+      for (const n of nodes) {
+        const next = offset + n.textContent.length;
+        if (!started && start < next) { range.setStart(n, start - offset); started = true; }
+        if (started && end <= next) { range.setEnd(n, end - offset); break; }
+        offset = next;
+      }
+      if (!started) continue;
+      for (const r of range.getClientRects()) {
+        if (r.width > 0 && r.height > 0 && r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth)
+          rects.push({ x:r.x, y:r.y, width:r.width, height:r.height });
+      }
+      if (rects.length >= 100) break;
+    }
+    return rects.slice(0,100);
+  })(${JSON.stringify({ itemSelector, selector, relative: relativePattern.source, absolute: absolutePattern.source })})`) as Promise<import('../shared/types').Rect[]>;
+}

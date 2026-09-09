@@ -264,3 +264,19 @@ test('没有重复内容列表时返回可操作的警告而不是抛错', async
     await page.close();
   }
 });
+
+test('论坛卡片优先正文标题和直属日期，排除侧栏推荐', async t => {
+  const page = await newPage(t); if (!page) return;
+  try {
+    await setFixture(page, `<style>.frow{display:block;padding:12px}.fbody,.fttl,.fmeta{display:block}</style>
+      <div id="fresh-root">${Array.from({length:5},(_,i)=>`<a class="frow" href="/post/${i}"><span class="flead">${i+1}</span><span class="fbody"><span class="fttl">刚刚发布的论坛文章 ${i}</span><span class="fmeta"><span class="ftag">AI</span><span class="fsrc">NodeSeek</span><span>·</span>${i+2} 分钟前</span></span></a>`).join('')}</div>
+      <div class="site-sidebar">${Array.from({length:8},(_,i)=>`<a href="/tool/${i}"><h2>工具推荐 ${i}</h2></a>`).join('')}</div>`, 'https://example.test/intel');
+    const result = await detectPage(page);
+    const candidate = result.candidates.find(c=>c.id===result.recommendedId);
+    assert.ok(candidate, JSON.stringify(result));
+    assert.match(candidate.rules.title,/fttl/);assert.match(candidate.rules.date!,/fmeta/);
+    assert.equal(candidate.items.length,5);
+    assert.ok(candidate.items.every(item=>item.title.startsWith('刚刚发布的论坛文章') && item.publishedAt && item.publishedAtSource==='relative'));
+    assert.ok(result.candidates.every(c=>c.items.every(item=>!item.link.includes('/tool/'))));
+  } finally {await page.close();}
+});

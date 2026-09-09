@@ -241,44 +241,23 @@ test('日期裸文本点选显示时间片段和估算值，保存后仍可见',
   await expect(page.locator('.modal .preview-item time').first()).toContainText('估算');
 });
 
-test('滚轮合并且串行发送，外层页面不滚动，失败后可继续操作', async ({ page }) => {
-  await page.setViewportSize({width:1440,height:1000});
+test('网页通过上下按钮滚动，滚轮不发送远端操作', async ({ page }) => {
   await loginInPage(page);
-  await page.getByRole('button',{name:'新建订阅',exact:true}).click();
+  await page.getByRole('button', { name: '新建订阅', exact: true }).click();
   await (await locatorForUrl(page)).fill(new URL('/static-scroll', FIXTURE_URLS.static).href);
-  await page.getByRole('button',{name:'打开并自动识别',exact:true}).click();
-  await expect(page.locator('.preview-item')).toHaveCount(3,{timeout:45000});
-  await page.getByRole('button',{name:'调整匹配',exact:true}).click();
+  await page.getByRole('button', { name: '打开并自动识别', exact: true }).click();
+  await expect(page.locator('.preview-item')).toHaveCount(3, { timeout: 45000 });
+  await page.getByRole('button', { name: '调整匹配', exact: true }).click();
   const image = page.locator('.browser-screen img');
-  await image.scrollIntoViewIfNeeded();
   const before = await image.getAttribute('src');
-  const outer = await page.evaluate(()=>scrollY);
-  let active=0, peak=0, requests=0;
-  await page.route('**/api/browser/*/scroll', async route => {
-    requests++; active++; peak=Math.max(peak,active);
-    const response=await route.fetch();
-    await new Promise(resolve=>setTimeout(resolve,150));
-    await route.fulfill({response}); active--;
-  });
-  const response = page.waitForResponse(r=>r.url().endsWith('/scroll'));
-  await image.hover(); await page.mouse.wheel(0,350);
-  await response;
-  await expect(page.getByRole('button',{name:'向下滚动网页'})).toBeEnabled();
-  expect(await page.evaluate(()=>scrollY)).toBe(outer);
+  let requests = 0;
+  page.on('request', request => { if (request.url().endsWith('/scroll')) requests++; });
+  await image.dispatchEvent('wheel', { deltaY: 300 });
+  await page.getByRole('button', { name: '向下滚动网页' }).click();
+  await expect(page.getByRole('button', { name: '向下滚动网页' })).toBeEnabled();
   await expect.poll(async () => (await image.getAttribute('src')) !== before).toBe(true);
-  await image.evaluate(el => { const b=el.getBoundingClientRect(); for(let i=0;i<20;i++) el.dispatchEvent(new WheelEvent('wheel',{deltaY:-8,clientX:b.x+b.width/2,clientY:b.y+b.height/2,bubbles:true,cancelable:true})); });
-  await expect.poll(()=>requests).toBe(2);
-  await expect(page.getByRole('button',{name:'向下滚动网页'})).toBeEnabled();
-  expect(peak).toBe(1);
-  await page.unroute('**/api/browser/*/scroll');
-  await page.route('**/api/browser/*/scroll', route=>route.fulfill({status:500,contentType:'application/json',body:JSON.stringify({error:'测试滚动失败'})}));
-  await image.hover(); await page.mouse.wheel(0,100);
-  await expect(page.getByText('测试滚动失败')).toBeVisible();
-  await expect(page.getByRole('button',{name:'收起调整'})).toBeEnabled();
-  await page.getByRole('button',{name:'收起调整'}).click();
-  await page.getByRole('button',{name:'调整匹配',exact:true}).click();
-  await page.unroute('**/api/browser/*/scroll');
-  await page.getByRole('button',{name:'向上滚动网页'}).click();
-  await expect(page.getByRole('button',{name:'向上滚动网页'})).toBeEnabled();
-  await page.getByRole('button',{name:'返回订阅',exact:true}).click();
+  expect(requests).toBe(1);
+  await page.getByRole('button', { name: '向上滚动网页' }).click();
+  await expect(page.getByRole('button', { name: '向上滚动网页' })).toBeEnabled();
+  expect(requests).toBe(2);
 });

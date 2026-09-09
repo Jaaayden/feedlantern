@@ -95,6 +95,9 @@ test('裸文本日期点选保留容器选择器，展示解析结果并与自�
     assert.equal(pick.count, 3);
     assert.ok(pick.selector.includes('.fmeta'));
     assert.equal(pick.datePreview?.dateText, '3分前');
+    assert.equal(pick.sampleText, '3分前');
+    assert.equal(pick.rects.length, 3);
+    assert.ok(pick.rects.every(rect => rect.width < 100), '仅高亮日期，不框住整行元信息');
     assert.equal(pick.datePreview?.publishedAtSource, 'relative');
     assert.match(pick.warning!, /已从选中区域提取时间/);
     const rules = { item: 'a.frow', title: '.fttl', link: ':scope', date: pick.selector };
