@@ -23,12 +23,14 @@ function Brand({ compact = false }: { compact?: boolean }) { return <div classNa
 
 function Modal({ title, children, close, wide = false }: { title: string; children: ReactNode; close: () => void; wide?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
+  const closeRef = useRef(close);
+  closeRef.current = close;
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
     const first = ref.current?.querySelector<HTMLElement>('button, input, textarea, select');
     first?.focus();
     const keydown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') close();
+      if (event.key === 'Escape') closeRef.current();
       if (event.key !== 'Tab') return;
       const list = Array.from(ref.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), a[href]') ?? []);
       const first = list[0], last = list.at(-1);
@@ -37,7 +39,7 @@ function Modal({ title, children, close, wide = false }: { title: string; childr
     };
     document.addEventListener('keydown', keydown);
     return () => { document.removeEventListener('keydown', keydown); previous?.focus(); };
-  }, [close]);
+  }, []);
   return <div className="modal-backdrop"><div ref={ref} className={`modal ${wide ? 'modal-wide' : ''}`} role="dialog" aria-modal="true" aria-label={title}><div className="modal-header"><h2>{title}</h2><button className="icon-button" aria-label="关闭" onClick={close}><X size={20} /></button></div>{children}</div></div>;
 }
 
@@ -230,7 +232,7 @@ export function Editor({ initial, draft, submitFeed, saved, cancel }: { initial?
     catch (error) { setError(messageOf(error)); } finally { setBusy(''); }
   }
   const chosen = detection?.candidates.find(item => item.id === candidateId);
-  return <><button className="back-link" onClick={cancel}><ArrowLeft size={16} />返回订阅</button><div className="page-heading"><div><span className="section-kicker">A NEW WAY TO FOLLOW</span><h1>{initial ? '编辑订阅' : '让网页成为订阅'}</h1><p>我们先找到内容，你只需确认值得关注。</p></div><span className="step-label">{frame ? '02 / 预览与保存' : '01 / 连接网页'}</span></div>
+  return <><button className="back-link" onClick={cancel}><ArrowLeft size={16} />返回订阅</button><div className="page-heading"><div><span className="section-kicker">A NEW WAY TO FOLLOW</span><h1>{initial ? '编辑匹配规则' : '让网页成为订阅'}</h1><p>我们先找到内容，你只需确认值得关注。</p></div><span className="step-label">{frame ? '02 / 预览与保存' : '01 / 连接网页'}</span></div>
     <form className="source-panel" onSubmit={open}><div className="source-row"><Field label="源网址"><div className="input-icon"><Globe2 size={18} /><input required type="url" placeholder="https://example.com/articles" value={url} onChange={e => setUrl(e.target.value)} /></div></Field><Field label="Cookie 凭据"><select value={credentialId} onChange={e => setCredentialId(e.target.value)}><option value="">公开网页，无需 Cookie</option>{credentials.map(item => <option value={item.id} key={item.id}>{item.name}</option>)}</select></Field><button className="button primary source-submit" disabled={!!busy}>{busy ? <Busy label="处理中" /> : <><Sparkles size={17} />打开并自动识别</>}</button></div><details className="advanced"><summary>加载设置<ChevronDown size={14} /></summary><div className="form-row"><Field label="额外等待时间（毫秒）"><input type="number" min={0} max={10000} step={100} value={waitMs} onChange={e => setWaitMs(Number(e.target.value))} /></Field><Field label="等待元素（可选）"><input value={waitForSelector} onChange={e => setWaitForSelector(e.target.value)} placeholder="CSS 选择器，例如 .article-list" /></Field></div></details></form>
     <ErrorNote error={error} />{busy && <div className="progress-strip" role="status"><Busy label={busy} /></div>}
     {!frame && !busy && <div className="editor-welcome"><div className="welcome-step"><span>01</span><Globe2 size={23} /><h3>打开网页</h3><p>支持动态内容与 Cookie 登录态</p></div><div className="welcome-step"><span>02</span><Sparkles size={23} /><h3>自动识别</h3><p>找到列表，匹配标题、图片与摘要</p></div><div className="welcome-step"><span>03</span><Rss size={23} /><h3>持续关注</h3><p>复制 RSS 地址到你喜欢的阅读器</p></div></div>}
@@ -241,24 +243,107 @@ export function Editor({ initial, draft, submitFeed, saved, cancel }: { initial?
   </>;
 }
 
-function ChannelTitleSetting({ feed, saved }: { feed: Feed; saved: () => void }) {
-  const [title, setTitle] = useState(feed.name);
-  const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
-  return <details><summary>订阅设置</summary><form onSubmit={async e => {
-    e.preventDefault(); setBusy(true); setError('');
-    try { await api.feeds.title(feed.id, title); saved(); } catch (e) { setError(messageOf(e)); } finally { setBusy(false); }
-  }}><Field label="订阅名称" hint="同步更新订阅列表和 RSS 频道标题，订阅地址保持不变。"><input required maxLength={200} value={title} onChange={e => setTitle(e.target.value)} /></Field><ErrorNote error={error} /><button className="button small" disabled={busy}>保存订阅名称</button></form></details>;
+function FeedAddress({ feedUrl, notify, onError }: { feedUrl: string; notify: Notify; onError: (error: string) => void }) {
+  return <Field label="RSS 订阅地址" hint="持有此地址即可读取订阅内容。需要撤销时可在订阅设置中轮换密钥。">
+    <div className="copy-row"><input readOnly value={feedUrl} onFocus={e => e.target.select()} /><button className="button primary" onClick={() => void navigator.clipboard.writeText(feedUrl).then(() => notify('RSS 地址已复制')).catch(() => onError('无法访问剪贴板，请选中地址后手动复制。'))}>复制 RSS 地址</button></div>
+  </Field>;
 }
 
-function FeedDetail({ id, close, edit, changed, notify }: { id: string; close: () => void; edit: (feed: Feed) => void; changed: () => void; notify: Notify }) {
+function FeedStatus({ feed }: { feed: Feed }) {
+  return <><div className="detail-status"><span>每 {feed.intervalMinutes} 分钟刷新</span><span>最近成功：{dateLabel(feed.lastSuccessAt)}</span><span>{feed.enabled ? `下次检查：${dateLabel(feed.nextFetchAt)}` : '已暂停自动刷新'}</span></div><ErrorNote error={feed.lastError ?? undefined} /></>;
+}
+
+function FeedDetail({ id, close, settings, changed, notify }: { id: string; close: () => void; settings: () => void; changed: () => void; notify: Notify }) {
   const [detail, setDetail] = useState<{ feed: Feed; items: FeedItem[]; feedUrl: string } | null>(null);
   const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(async () => { setDetail(await api.feeds.detail(id)); }, [id]);
+  useEffect(() => { void load().catch(error => setError(messageOf(error))); }, [load]);
+  async function refresh() {
+    setBusy(true); setError('');
+    try { await api.feeds.refresh(id); await load(); changed(); }
+    catch (error) { setError(messageOf(error)); } finally { setBusy(false); }
+  }
+  return <Modal title={detail?.feed.name ?? '订阅详情'} close={close} wide><div className="modal-body">
+    <ErrorNote error={error} />{!detail ? !error && <Busy label="正在加载订阅" /> : <>
+      <div className="detail-source"><Globe2 size={16} /><a href={detail.feed.url} target="_blank" rel="noreferrer">{detail.feed.url}</a></div>
+      <FeedAddress feedUrl={detail.feedUrl} notify={notify} onError={setError} />
+      <div className="detail-actions"><button className="button small" disabled={busy} onClick={() => void refresh()}><RefreshCw size={14} />{busy ? '正在刷新' : '立即刷新'}</button><button className="button small" disabled={busy} onClick={settings}><Settings2 size={14} />订阅设置</button></div>
+      <FeedStatus feed={detail.feed} /><ItemPreview items={detail.items} />
+    </>}
+  </div></Modal>;
+}
+
+function FeedSettings({ id, close, edit, changed, notify }: { id: string; close: () => void; edit: (feed: Feed) => void; changed: () => void; notify: Notify }) {
+  const [detail, setDetail] = useState<{ feed: Feed; feedUrl: string } | null>(null);
+  const [title, setTitle] = useState('');
+  const [interval, setInterval] = useState('');
+  const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
-  const load = useCallback(async () => { try { setDetail(await api.feeds.detail(id)); } catch (error) { setError(messageOf(error)); } }, [id]);
-  useEffect(() => { void load(); }, [load]);
-  async function action(label: string, fn: () => Promise<unknown>, reload = true) { setBusy(label); setError(''); try { await fn(); if (reload) await load(); changed(); if (label === '轮换密钥') notify('订阅地址已更新'); } catch (error) { setError(messageOf(error)); } finally { setBusy(''); } }
-  return <Modal title={detail?.feed.name ?? '订阅详情'} close={close} wide><div className="modal-body"><ErrorNote error={error} />{!detail ? <Busy label="正在加载订阅" /> : <><div className="detail-source"><Globe2 size={16} /><a href={detail.feed.url} target="_blank" rel="noreferrer">{detail.feed.url}</a></div><label className="field"><span>RSS 订阅地址</span><div className="copy-row"><input readOnly value={detail.feedUrl} onFocus={e => e.target.select()} /><button className="button primary" onClick={() => void navigator.clipboard.writeText(detail.feedUrl).then(() => notify('RSS 地址已复制')).catch(() => setError('无法访问剪贴板，请选中地址后手动复制。'))}>复制 RSS 地址</button></div><small>持有此地址即可读取订阅内容。需要撤销时可轮换密钥。</small></label><ChannelTitleSetting feed={detail.feed} saved={() => { void load(); changed(); notify('订阅名称已保存'); }} /><div className="detail-actions"><button className="button small" disabled={!!busy} onClick={() => void action('刷新', () => api.feeds.refresh(id))}><RefreshCw size={14} />立即刷新</button><button className="button small" disabled={!!busy} onClick={() => void action('切换状态', () => api.feeds.toggle(id))}>{detail.feed.enabled ? '暂停订阅' : '恢复订阅'}</button><button className="button small" onClick={() => edit(detail.feed)}><Pencil size={14} />编辑匹配</button><button className="button small" disabled={!!busy} onClick={() => { if (confirm('轮换后，旧 RSS 地址将立即失效。继续？')) void action('轮换密钥', () => api.feeds.rotate(id)); }}><KeyRound size={14} />轮换订阅密钥</button><button className="button small danger" disabled={!!busy} onClick={() => { if (confirm('删除此订阅及其历史条目？')) void action('删除', async () => { await api.feeds.remove(id); close(); }, false); }}><Trash2 size={14} />删除订阅</button></div>{busy && <Busy label={`正在${busy}`} />}<div className="detail-status"><span>最近成功：{dateLabel(detail.feed.lastSuccessAt)}</span><span>{detail.feed.enabled ? `下次检查：${dateLabel(detail.feed.nextFetchAt)}` : '已暂停自动刷新'}</span></div><ErrorNote error={detail.feed.lastError ?? undefined} /><ItemPreview items={detail.items} /></>}</div></Modal>;
+  useEffect(() => {
+    let cancelled = false;
+    void api.feeds.detail(id).then(result => {
+      if (cancelled) return;
+      setDetail(result); setTitle(result.feed.name); setInterval(String(result.feed.intervalMinutes));
+    }).catch(error => { if (!cancelled) setError(messageOf(error)); });
+    return () => { cancelled = true; };
+  }, [id]);
+  const dirty = !!detail && (title !== detail.feed.name || interval !== String(detail.feed.intervalMinutes));
+  function leave(next: () => void) {
+    if (busy) return;
+    if (!dirty || confirm('有未保存的设置，确定放弃修改？')) next();
+  }
+  async function save(event: FormEvent) {
+    event.preventDefault();
+    if (!detail || busy) return;
+    if (!title.trim()) { setError('请输入订阅名称'); return; }
+    const minutes = Number(interval);
+    if (!interval || !Number.isInteger(minutes) || minutes < 5 || minutes > 1440) { setError('刷新间隔必须是 5 到 1440 之间的整数'); return; }
+    setBusy('保存设置'); setError('');
+    try {
+      const result = await api.feeds.settings(id, {
+        ...(title !== detail.feed.name ? { channelTitle: title } : {}),
+        ...(interval !== String(detail.feed.intervalMinutes) ? { intervalMinutes: minutes } : {}),
+      });
+      setDetail(result); setTitle(result.feed.name); setInterval(String(result.feed.intervalMinutes));
+      changed(); notify('订阅设置已保存');
+    } catch (error) { setError(messageOf(error)); } finally { setBusy(''); }
+  }
+  async function action(label: string, fn: () => Promise<unknown>, success: string) {
+    if (busy) return;
+    setBusy(label); setError('');
+    try {
+      await fn();
+      setDetail(await api.feeds.detail(id));
+      changed(); notify(success);
+    } catch (error) { setError(messageOf(error)); } finally { setBusy(''); }
+  }
+  async function remove() {
+    if (busy || !confirm('删除此订阅及其历史条目？')) return;
+    setBusy('删除订阅'); setError('');
+    try { await api.feeds.remove(id); changed(); notify('订阅已删除'); close(); }
+    catch (error) { setError(messageOf(error)); } finally { setBusy(''); }
+  }
+  return <Modal title="订阅设置" close={() => leave(close)}><div className="modal-body feed-settings">
+    <ErrorNote error={error} />{!detail ? !error && <Busy label="正在加载订阅设置" /> : <>
+      <p className="feed-settings-source">{detail.feed.url}</p>
+      <form onSubmit={save}>
+        <Field label="订阅名称" hint="同步更新订阅列表和 RSS 频道标题，订阅地址保持不变。"><input required maxLength={200} disabled={!!busy} value={title} onChange={e => setTitle(e.target.value)} /></Field>
+        <Field label="刷新间隔（分钟）" hint="支持 5–1440 分钟。修改后从保存时重新计时，不会立即抓取；已暂停的订阅继续保持暂停。"><input type="number" required min={5} max={1440} step={1} disabled={!!busy} value={interval} onChange={e => setInterval(e.target.value)} /></Field>
+        <button className="button primary" disabled={!!busy || !dirty}>{busy === '保存设置' ? <Busy label="正在保存" /> : '保存设置'}</button>
+      </form>
+      <section className="feed-settings-section" aria-label="更新与匹配">
+        <h3>更新与匹配</h3><FeedStatus feed={detail.feed} />
+        <div className="detail-actions"><button className="button small" disabled={!!busy} onClick={() => void action('切换状态', () => api.feeds.toggle(id), detail.feed.enabled ? '订阅已暂停' : '订阅已恢复')}>{detail.feed.enabled ? '暂停订阅' : '恢复订阅'}</button><button className="button small" disabled={!!busy} onClick={() => leave(() => edit(detail.feed))}><Pencil size={14} />编辑匹配规则</button></div>
+      </section>
+      <section className="feed-settings-section" aria-label="订阅地址与删除">
+        <h3>订阅地址与删除</h3><FeedAddress feedUrl={detail.feedUrl} notify={notify} onError={setError} />
+        <p className="hint">轮换密钥会立即使旧 RSS 地址失效；删除订阅会同时删除历史条目。</p>
+        <div className="detail-actions"><button className="button small" disabled={!!busy} onClick={() => { if (confirm('轮换后，旧 RSS 地址将立即失效。继续？')) void action('轮换密钥', () => api.feeds.rotate(id), '订阅地址已更新'); }}><KeyRound size={14} />轮换订阅密钥</button><button className="button small danger" disabled={!!busy} onClick={() => void remove()}><Trash2 size={14} />删除订阅</button></div>
+      </section>
+      {busy && busy !== '保存设置' && <Busy label={`正在${busy}`} />}
+    </>}
+  </div></Modal>;
 }
 
 function SettingsView({ auth, logout, notify }: { auth: AuthState; logout: () => void; notify: Notify }) {
@@ -281,10 +366,12 @@ export default function App() {
   const [query, setQuery] = useState('');
   const [editor, setEditor] = useState<Feed | null | undefined>(undefined);
   const [detailId, setDetailId] = useState<string | null>(null);
+  const [settingsId, setSettingsId] = useState<string | null>(null);
+  const [editorReturnId, setEditorReturnId] = useState<string | null>(null);
   const [toast, setToast] = useState('');
   const notify = useCallback((message: string) => setToast(message), []);
   const acceptAuth = useCallback((state: AuthState) => { setCsrfToken(state.csrfToken); setAuth(state); }, []);
-  const forgetAuth = useCallback(() => { setCsrfToken(undefined); setAuth(previous => previous ? { ...previous, authenticated: false, csrfToken: undefined } : null); setFeeds([]); setEditor(undefined); setDetailId(null); }, []);
+  const forgetAuth = useCallback(() => { setCsrfToken(undefined); setAuth(previous => previous ? { ...previous, authenticated: false, csrfToken: undefined } : null); setFeeds([]); setEditor(undefined); setDetailId(null); setSettingsId(null); setEditorReturnId(null); }, []);
   useEffect(() => { void api.auth.status().then(acceptAuth).catch(error => setBootError(messageOf(error))); return onUnauthorized(forgetAuth); }, [acceptAuth, forgetAuth]);
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''), 4000); return () => clearTimeout(timer); }, [toast]);
   const loadFeeds = useCallback(async () => { setLoading(true); try { setFeeds(await api.feeds.list()); setError(''); } catch (error) { setError(messageOf(error)); } finally { setLoading(false); } }, []);
@@ -294,8 +381,8 @@ export default function App() {
   if (!auth) return <div className="boot"><Brand />{bootError ? <><ErrorNote error={bootError} /><button className="button" onClick={() => location.reload()}>重新连接</button></> : <Busy label="正在连接服务" />}</div>;
   if (!auth.authenticated) return <><AuthScreen state={auth} authenticated={acceptAuth} />{toast && <div className="toast" role="status"><Check size={16} />{toast}</div>}</>;
   const filtered = feeds.filter(feed => `${feed.name} ${feed.url}`.toLowerCase().includes(query.toLowerCase()));
-  function navigate(next: typeof page) { setPage(next); setEditor(undefined); setDetailId(null); }
-  return <div className="app-layout"><aside className="sidebar"><Brand /><div className="workspace-label">个人工作台</div><nav aria-label="主导航"><button className={page === 'feeds' || page === 'batch' ? 'selected' : ''} onClick={() => navigate('feeds')}><Rss size={19} />订阅管理<span>{feeds.length}</span></button><button className={page === 'credentials' ? 'selected' : ''} onClick={() => navigate('credentials')}><Cookie size={19} />Cookie 凭据</button><button className={page === 'settings' ? 'selected' : ''} onClick={() => navigate('settings')}><Settings2 size={19} />设置</button></nav><div className="sidebar-bottom"><div className="local-label"><span /> 自托管 · 独立运行</div><div className="account"><span className="avatar">{auth.username?.slice(0, 1).toUpperCase()}</span><div><strong>{auth.username}</strong><small>管理员</small></div><button className="icon-button" aria-label="退出登录" onClick={() => void logout()}><LogOut size={17} /></button></div><span className="version">{auth.version}</span></div></aside><div className="main-shell"><header className="topbar"><span><span className="muted">工作台</span><span className="slash">/</span>{page === 'feeds' ? editor !== undefined ? '创建与编辑' : '订阅管理' : page === 'batch' ? '批量添加' : page === 'credentials' ? 'Cookie 凭据' : '设置'}</span><span className="topbar-status"><ShieldCheck size={14} /> 已安全登录 <button className="icon-button mobile-logout" aria-label="退出登录" onClick={() => void logout()}><LogOut size={15} /></button></span></header><main className="main-content">
-    {page === 'batch' ? <BatchView notify={notify} changed={() => void loadFeeds()} /> : page === 'credentials' ? <CredentialsView notify={notify} /> : page === 'settings' ? <SettingsView auth={auth} logout={forgetAuth} notify={notify} /> : editor !== undefined ? <Editor key={editor?.id ?? 'new'} initial={editor ?? undefined} cancel={() => setEditor(undefined)} saved={id => { setEditor(undefined); setDetailId(id); notify('订阅已保存'); void loadFeeds(); }} /> : <><div className="page-heading"><div><span className="section-kicker">LESS CHECKING. MORE READING.</span><h1>你的订阅，持续点亮。</h1><p>把关注的网页汇集在这里，新内容会自动抵达。</p></div><div className="inline"><button className="button" onClick={() => navigate('batch')}>批量添加</button><button className="button primary" onClick={() => setEditor(null)}><Plus size={17} />新建订阅</button></div></div><div className="stats-row"><div><span>全部订阅</span><strong>{feeds.length}<small>个来源</small></strong></div><div><span>正在关注</span><strong>{feeds.filter(feed => feed.enabled).length}<small>自动更新</small></strong></div><div><span>已收集内容</span><strong>{feeds.reduce((sum, feed) => sum + feed.itemCount, 0)}<small>条记录</small></strong></div></div><div className="list-toolbar"><h2>订阅列表 <span>{feeds.length}</span></h2><div className="input-icon search-input"><Search size={16} /><input aria-label="搜索订阅" placeholder="搜索名称或网址" value={query} onChange={e => setQuery(e.target.value)} /></div></div><ErrorNote error={error} />{loading && !feeds.length ? <Busy label="正在加载订阅" /> : filtered.length ? <FeedCollection feeds={filtered} query={query} detail={setDetailId} edit={setEditor} changed={() => void loadFeeds()} notify={notify} /> : <div className="empty-state"><span className="large-icon"><Rss size={32} /></span><h2>{query ? '没有找到匹配的订阅' : '从一个值得关注的网址开始'}</h2><p>{query ? '尝试其他名称或网址。' : '输入网页地址，自动识别内容，预览后即可生成 RSS。'}</p>{!query && <button className="button" onClick={() => setEditor(null)}><Plus size={16} />创建第一条订阅</button>}</div>}<div className="dashboard-note"><Sparkles size={17} /><span>自动识别先行，手动调整随时可用。</span><span className="muted">你的内容，你来选择。</span></div></>}
-  </main><footer className="page-footer"><span>FeedLantern · 订阅灯</span><a href="https://github.com/Jaaayden/feedlantern" target="_blank" rel="noreferrer">GitHub · Jaaayden/feedlantern · {auth.version}</a></footer></div>{detailId && <FeedDetail id={detailId} close={closeDetail} edit={feed => { setDetailId(null); setEditor(feed); }} changed={() => void loadFeeds()} notify={notify} />}{toast && <div className="toast" role="status"><Check size={16} />{toast}</div>}</div>;
+  function navigate(next: typeof page) { setPage(next); setEditor(undefined); setDetailId(null); setSettingsId(null); setEditorReturnId(null); }
+  return <div className="app-layout"><aside className="sidebar"><Brand /><div className="workspace-label">个人工作台</div><nav aria-label="主导航"><button className={page === 'feeds' || page === 'batch' ? 'selected' : ''} onClick={() => navigate('feeds')}><Rss size={19} />订阅管理<span>{feeds.length}</span></button><button className={page === 'credentials' ? 'selected' : ''} onClick={() => navigate('credentials')}><Cookie size={19} />Cookie 凭据</button><button className={page === 'settings' ? 'selected' : ''} onClick={() => navigate('settings')}><Settings2 size={19} />设置</button></nav><div className="sidebar-bottom"><div className="local-label"><span /> 自托管 · 独立运行</div><div className="account"><span className="avatar">{auth.username?.slice(0, 1).toUpperCase()}</span><div><strong>{auth.username}</strong><small>管理员</small></div><button className="icon-button" aria-label="退出登录" onClick={() => void logout()}><LogOut size={17} /></button></div><span className="version">{auth.version}</span></div></aside><div className="main-shell"><header className="topbar"><span><span className="muted">工作台</span><span className="slash">/</span>{page === 'feeds' ? editor !== undefined ? editor ? '编辑匹配规则' : '新建订阅' : '订阅管理' : page === 'batch' ? '批量添加' : page === 'credentials' ? 'Cookie 凭据' : '设置'}</span><span className="topbar-status"><ShieldCheck size={14} /> 已安全登录 <button className="icon-button mobile-logout" aria-label="退出登录" onClick={() => void logout()}><LogOut size={15} /></button></span></header><main className="main-content">
+    {page === 'batch' ? <BatchView notify={notify} changed={() => void loadFeeds()} /> : page === 'credentials' ? <CredentialsView notify={notify} /> : page === 'settings' ? <SettingsView auth={auth} logout={forgetAuth} notify={notify} /> : editor !== undefined ? <Editor key={editor?.id ?? 'new'} initial={editor ?? undefined} cancel={() => { setEditor(undefined); setSettingsId(editorReturnId); setEditorReturnId(null); }} saved={id => { setEditor(undefined); if (editorReturnId) setSettingsId(id); else setDetailId(id); setEditorReturnId(null); notify('订阅已保存'); void loadFeeds(); }} /> : <><div className="page-heading"><div><span className="section-kicker">LESS CHECKING. MORE READING.</span><h1>你的订阅，持续点亮。</h1><p>把关注的网页汇集在这里，新内容会自动抵达。</p></div><div className="inline"><button className="button" onClick={() => navigate('batch')}>批量添加</button><button className="button primary" onClick={() => setEditor(null)}><Plus size={17} />新建订阅</button></div></div><div className="stats-row"><div><span>全部订阅</span><strong>{feeds.length}<small>个来源</small></strong></div><div><span>正在关注</span><strong>{feeds.filter(feed => feed.enabled).length}<small>自动更新</small></strong></div><div><span>已收集内容</span><strong>{feeds.reduce((sum, feed) => sum + feed.itemCount, 0)}<small>条记录</small></strong></div></div><div className="list-toolbar"><h2>订阅列表 <span>{feeds.length}</span></h2><div className="input-icon search-input"><Search size={16} /><input aria-label="搜索订阅" placeholder="搜索名称或网址" value={query} onChange={e => setQuery(e.target.value)} /></div></div><ErrorNote error={error} />{loading && !feeds.length ? <Busy label="正在加载订阅" /> : filtered.length ? <FeedCollection feeds={filtered} query={query} detail={setDetailId} settings={setSettingsId} changed={() => void loadFeeds()} notify={notify} /> : <div className="empty-state"><span className="large-icon"><Rss size={32} /></span><h2>{query ? '没有找到匹配的订阅' : '从一个值得关注的网址开始'}</h2><p>{query ? '尝试其他名称或网址。' : '输入网页地址，自动识别内容，预览后即可生成 RSS。'}</p>{!query && <button className="button" onClick={() => setEditor(null)}><Plus size={16} />创建第一条订阅</button>}</div>}<div className="dashboard-note"><Sparkles size={17} /><span>自动识别先行，手动调整随时可用。</span><span className="muted">你的内容，你来选择。</span></div></>}
+  </main><footer className="page-footer"><span>FeedLantern · 订阅灯</span><a href="https://github.com/Jaaayden/feedlantern" target="_blank" rel="noreferrer">GitHub · Jaaayden/feedlantern · {auth.version}</a></footer></div>{detailId && <FeedDetail key={detailId} id={detailId} close={closeDetail} settings={() => { setSettingsId(detailId); setDetailId(null); }} changed={() => void loadFeeds()} notify={notify} />}{settingsId && <FeedSettings key={settingsId} id={settingsId} close={() => setSettingsId(null)} edit={feed => { setSettingsId(null); setEditorReturnId(feed.id); setEditor(feed); }} changed={() => void loadFeeds()} notify={notify} />}{toast && <div className="toast" role="status"><Check size={16} />{toast}</div>}</div>;
 }

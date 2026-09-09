@@ -53,6 +53,7 @@ test('completes setup login to automatic detection, save, RSS copy, and token ro
   await copyButton.click();
   await expect(page.getByText(/已复制|复制成功/)).toBeVisible();
 
+  await page.getByRole('dialog').getByRole('button', { name: '订阅设置', exact: true }).click();
   page.once('dialog', async (dialog) => { await dialog.accept(); });
   const rotateButton = await firstVisible([
     page.getByRole('button', { name: '轮换订阅密钥' }),

@@ -150,3 +150,53 @@ test('重启恢复加密凭据、订阅、历史条目和已到期调度', async
     rmSync(dataDir, { recursive: true, force: true });
   }
 });
+
+test('设置更新排在进行中的抓取之后，旧的定时待办不会覆盖新间隔', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fl-settings-queue-'));
+  const store = new Store(dir);
+  const input = { name: 'queue', url: 'https://example.test/first', rules: { item: 'article', title: 'h2', link: 'a' }, intervalMinutes: 60, waitMs: 0, credentialId: null };
+  const first = store.createFeed(input).feed;
+  const second = store.createFeed({ ...input, url: 'https://example.test/second' }).feed;
+  for (const feed of [first, second]) store.markFetchStart(feed.id, '2000-01-01T00:00:00.000Z');
+  let entered!: () => void;
+  let release!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  const urls: string[] = [];
+  const app = await createApp({ dataDir: dir, store, browserService: { ...fakeBrowser, async scrape(options) {
+    urls.push(options.url);
+    if (options.url === first.url) { entered(); await blocked; }
+    return [{ title: 'article', link: `${options.url}/1` }];
+  } } });
+  let patchesEntered!: () => void;
+  const patchesReady = new Promise<void>(resolve => { patchesEntered = resolve; });
+  let requests = 0;
+  app.addHook('preHandler', (request, _reply, done) => {
+    if (request.method === 'PATCH' && ++requests === 2) setImmediate(patchesEntered);
+    done();
+  });
+  try {
+    await app.ready();
+    await started;
+    const base = { host: '127.0.0.1:4321', 'x-feedlantern': '1' };
+    const setup = await app.inject({ method: 'POST', url: '/api/auth/setup', headers: base, payload: { setupToken: readFileSync(join(dir, 'setup-token'), 'utf8').trim(), username: 'admin', password: 'test-password' } });
+    const headers = { ...base, cookie: `${setup.cookies[0].name}=${setup.cookies[0].value}`, 'x-csrf-token': setup.json().csrfToken };
+    // Wait for both requests to enter their route before releasing the capture.
+    const original = store.updateFeedSettings.bind(store);
+    let updates = 0;
+    store.updateFeedSettings = (...args) => { updates++; return original(...args); };
+    const patches = [first, second].map(feed => app.inject({ method: 'PATCH', url: `/api/feeds/${feed.id}`, headers, payload: { intervalMinutes: 15 } }).then(response => response));
+    await patchesReady;
+    assert.equal(updates, 0);
+    release();
+    const results = await Promise.all(patches);
+    assert.ok(results.every(r => r.statusCode === 200));
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.deepEqual(urls, [first.url]);
+    for (const feed of [first, second]) {
+      const updated = store.getFeed(feed.id)!;
+      assert.equal(updated.intervalMinutes, 15);
+      assert.ok(Math.abs(Date.parse(updated.nextFetchAt) - Date.now() - 15 * 60000) < 2000);
+    }
+  } finally { release(); await app.close(); store.close(); rmSync(dir, { recursive: true, force: true }); }
+});

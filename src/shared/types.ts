@@ -18,6 +18,10 @@ export interface FeedInput {
   waitMs: number;
   waitForSelector?: string;
 }
+export interface FeedSettingsInput {
+  channelTitle?: string;
+  intervalMinutes?: number;
+}
 export interface Feed extends FeedInput {
   id: string;
   channelTitle?: string;

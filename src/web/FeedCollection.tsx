@@ -2,8 +2,8 @@ import { useEffect, useState } from 'react';
 import type { Feed } from '../shared/types';
 import { api } from './api';
 
-export function FeedCollection({ feeds, query, detail, edit, changed, notify }: {
-  feeds: Feed[]; query: string; detail: (id: string) => void; edit: (feed: Feed) => void;
+export function FeedCollection({ feeds, query, detail, settings, changed, notify }: {
+  feeds: Feed[]; query: string; detail: (id: string) => void; settings: (id: string) => void;
   changed: () => void; notify: (text: string) => void;
 }) {
   const [view, setView] = useState<'list' | 'cards'>('list');
@@ -41,7 +41,7 @@ export function FeedCollection({ feeds, query, detail, edit, changed, notify }: 
       <div className="feed-identity"><button className="card-title" aria-label={`查看订阅 ${feed.name}`} onClick={() => detail(feed.id)}>{feed.name}</button><p className="feed-host" title={feed.url}>{feed.url}</p>{feed.lastError && <p className="card-error" title={feed.lastError}>{feed.lastError}</p>}</div>
       <span className={`badge ${feed.lastError ? 'bad' : feed.enabled ? 'good' : ''}`}>{feed.lastError ? '需要检查' : feed.enabled ? '更新中' : '已暂停'}</span>
       <div className="feed-metrics"><span>{feed.itemCount} 条内容 · 每 {feed.intervalMinutes} 分钟</span><small>最近成功：{feed.lastSuccessAt ? new Date(feed.lastSuccessAt).toLocaleString('zh-CN') : '尚未更新'}</small></div>
-      <div className="detail-actions"><button className="button small" disabled={busy} aria-label={`复制 RSS 地址 ${feed.name}`} onClick={() => void operate('copy', [feed.id])}>复制 RSS</button><button className="button small" aria-label={`编辑订阅 ${feed.name}`} onClick={() => edit(feed)}>编辑</button></div>
+      <div className="detail-actions"><button className="button small" disabled={busy} aria-label={`复制 RSS 地址 ${feed.name}`} onClick={() => void operate('copy', [feed.id])}>复制 RSS</button><button className="button small" aria-label={`订阅设置 ${feed.name}`} onClick={() => settings(feed.id)}>订阅设置</button></div>
     </article>)}</div>
   </section>;
 }

@@ -158,3 +158,28 @@ test('日期来源字段迁移保留旧日期，重启后仍视为绝对时间',
     assert.deepEqual(store.getItems(feed.id)[0], old);
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('刷新间隔设置持久化，保留暂停状态、抓取配置、历史、错误和密钥', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fl-interval-'));
+  let store = new Store(dir);
+  try {
+    const credential = store.createCredential({ name: 'test', url: 'https://example.test', format: 'header', value: 'test=1' }, { domains: ['example.test'], count: 1, expiresAt: null });
+    const { feed, token } = store.createFeed({ name: '名称', url: 'https://example.test', rules: { item: 'article', title: 'h2', link: 'a' }, ruleOrigins: { title: 'manual' }, credentialId: credential.id, intervalMinutes: 60, waitMs: 1000, waitForSelector: 'article' });
+    store.upsertItems(feed, [{ title: '历史文章', link: 'https://example.test/1' }]);
+    store.toggleFeed(feed.id);
+    store.markFetchFailure(feed.id, '网页暂不可用', feed.nextFetchAt);
+    const before = store.getFeed(feed.id)!;
+    const items = store.getItems(feed.id);
+    const after = store.updateFeedSettings(feed.id, { intervalMinutes: 15 })!;
+    assert.equal(after.intervalMinutes, 15);
+    assert.deepEqual({ ...after, intervalMinutes: before.intervalMinutes, nextFetchAt: before.nextFetchAt }, before);
+    assert.equal(store.updateFeedSettings(feed.id, { channelTitle: '新名称', intervalMinutes: 15 })?.nextFetchAt, after.nextFetchAt);
+    assert.deepEqual(store.getItems(feed.id), items);
+    assert.equal(store.getFeedToken(feed.id)?.token, token);
+    assert.equal(store.updateFeedSettings('missing', { intervalMinutes: 15 }), null);
+    store.close(); store = new Store(dir);
+    assert.equal(store.getFeed(feed.id)?.intervalMinutes, 15);
+    assert.equal(store.getFeed(feed.id)?.enabled, false);
+    assert.equal(store.getFeed(feed.id)?.name, '新名称');
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});

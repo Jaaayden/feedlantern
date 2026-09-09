@@ -17,6 +17,7 @@ import type {
   ExtractedItem,
   Feed,
   FeedInput,
+  FeedSettingsInput,
   PickRequest,
   PickResult,
   ScreenFrame,
@@ -318,7 +319,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     try {
       for (const feed of store.dueFeeds()) {
         if (closing) break;
-        if (store.getFeed(feed.id)?.enabled) await doRefresh(feed.id);
+        await enqueueRefresh(() => {
+          // Recheck inside the queue: a settings save or manual refresh may
+          // have moved this feed's deadline since the due list was read.
+          const current = store.getFeed(feed.id);
+          if (current?.enabled && current.nextFetchAt <= new Date().toISOString()) return refreshOnce(feed.id);
+          return null;
+        });
       }
     } finally {
       schedulerRunning = false;
@@ -579,10 +586,21 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
   app.patch('/api/feeds/:id', async request => {
     feedsGuard(request);
-    const title = asNonEmptyString(asRecord(request.body).channelTitle, '订阅名称', 200);
-    const feed = store.setChannelTitle(String((request.params as { id: string }).id), title);
-    if (!feed) throw new AppError(404, 'Feed 不存在');
-    return feedPayload(feed);
+    const body = asRecord(request.body);
+    const input: FeedSettingsInput = {};
+    if ('channelTitle' in body) input.channelTitle = asNonEmptyString(body.channelTitle, '订阅名称', 200);
+    if ('intervalMinutes' in body) {
+      if (typeof body.intervalMinutes !== 'number' || !Number.isInteger(body.intervalMinutes) || body.intervalMinutes < 5 || body.intervalMinutes > 1440) {
+        throw new AppError(400, '刷新间隔必须是 5 到 1440 之间的整数');
+      }
+      input.intervalMinutes = body.intervalMinutes;
+    }
+    if (!Object.keys(input).length) throw new AppError(400, '请提供订阅名称或刷新间隔');
+    return enqueueRefresh(() => {
+      const feed = store.updateFeedSettings(String((request.params as { id: string }).id), input);
+      if (!feed) throw new AppError(404, 'Feed 不存在');
+      return feedPayload(feed);
+    });
   });
   app.post('/api/feeds/bulk', async request => {
     feedsGuard(request);

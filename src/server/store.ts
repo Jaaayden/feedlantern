@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSy
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import type { CredentialSummary, ExtractedItem, Feed, FeedInput, FeedItem, ImportJob, RuleOrigins, SelectionRules } from '../shared/types.js';
+import type { CredentialSummary, ExtractedItem, Feed, FeedInput, FeedSettingsInput, FeedItem, ImportJob, RuleOrigins, SelectionRules } from '../shared/types.js';
 import type { ServerConfig } from './config.js';
 
 export interface CredentialValue {
@@ -492,7 +492,18 @@ export class Store {
   }
 
   setChannelTitle(id: string, title: string): Feed | null {
-    this.db.prepare('UPDATE feeds SET name = ?, channel_title = ? WHERE id = ?').run(title, title, id);
+    return this.updateFeedSettings(id, { channelTitle: title });
+  }
+
+  updateFeedSettings(id: string, input: FeedSettingsInput): Feed | null {
+    const feed = this.getFeed(id);
+    if (!feed) return null;
+    const title = input.channelTitle ?? feed.name;
+    const interval = input.intervalMinutes ?? feed.intervalMinutes;
+    const nextFetchAt = interval === feed.intervalMinutes
+      ? feed.nextFetchAt : new Date(Date.now() + interval * 60_000).toISOString();
+    this.db.prepare('UPDATE feeds SET name = ?, channel_title = ?, interval_minutes = ?, next_fetch_at = ? WHERE id = ?')
+      .run(title, title, interval, nextFetchAt, id);
     return this.getFeed(id);
   }
 

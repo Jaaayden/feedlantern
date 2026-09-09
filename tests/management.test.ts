@@ -91,3 +91,48 @@ test('无需域名配置的本机反代：来源校验、HTTPS Cookie、RSS 地�
     assert.equal(new URL(local.json().feedUrl).origin, 'http://127.0.0.1:4321');
   } finally { await app.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('订阅设置独立保存、严格校验且不抓取网页', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fl-feed-settings-'));
+  let scrapes = 0;
+  const app = await createApp({ dataDir: dir, browserService: { ...browser, scrape: async () => { scrapes++; throw Error('目标网页不可用'); } }, startScheduler: false });
+  const base = { host: '127.0.0.1:4321', 'x-feedlantern': '1' };
+  try {
+    const setup = await app.inject({ method: 'POST', url: '/api/auth/setup', headers: base, payload: { setupToken: readFileSync(join(dir, 'setup-token'), 'utf8').trim(), username: 'admin', password: 'test-password' } });
+    const headers = { ...base, cookie: `${setup.cookies[0].name}=${setup.cookies[0].value}`, 'x-csrf-token': setup.json().csrfToken };
+    const created = (await app.inject({ method: 'POST', url: '/api/feeds', headers, payload: { name: '旧名称', url: 'https://example.test', rules: { item: 'article', title: 'h2', link: 'a' } } })).json();
+    const url = `/api/feeds/${created.feed.id}`;
+    const patch = (payload: Record<string, unknown>) => app.inject({ method: 'PATCH', url, headers, payload });
+    assert.equal((await app.inject({ method: 'PATCH', url, headers: base, payload: { intervalMinutes: 15 } })).statusCode, 401);
+    assert.equal((await app.inject({ method: 'PATCH', url, headers: { ...headers, 'x-csrf-token': '' }, payload: { intervalMinutes: 15 } })).statusCode, 403);
+    for (const intervalMinutes of [null, '', '15', true, [], {}, 4, 1441, 5.5]) {
+      assert.equal((await patch({ channelTitle: '不应保存', intervalMinutes })).statusCode, 400);
+    }
+    for (const payload of [{}, { unknown: 1 }, { channelTitle: '' }, { channelTitle: ' '.repeat(4) }, { channelTitle: 'x'.repeat(201) }]) assert.equal((await patch(payload)).statusCode, 400);
+    assert.deepEqual((await app.inject({ url, headers })).json().feed, created.feed);
+    assert.equal((await app.inject({ method: 'PATCH', url: '/api/feeds/missing', headers, payload: { intervalMinutes: 15 } })).statusCode, 404);
+    const renamed = (await patch({ channelTitle: '新名称' })).json().feed;
+    assert.equal(renamed.name, '新名称'); assert.equal(renamed.channelTitle, '新名称');
+    assert.equal(renamed.nextFetchAt, created.feed.nextFetchAt);
+    for (const intervalMinutes of [5, 1440]) {
+      const before = Date.now();
+      const response = await patch({ intervalMinutes });
+      assert.equal(response.statusCode, 200);
+      const result = response.json();
+      assert.equal(result.feed.intervalMinutes, intervalMinutes);
+      assert.equal(result.feed.name, '新名称');
+      assert.equal(result.feedUrl, created.feedUrl);
+      assert.equal(result.feed.lastError, created.feed.lastError);
+      assert.ok(Date.parse(result.feed.nextFetchAt) >= before + intervalMinutes * 60000);
+      assert.ok(Date.parse(result.feed.nextFetchAt) <= Date.now() + intervalMinutes * 60000);
+      assert.equal((await patch({ intervalMinutes })).json().feed.nextFetchAt, result.feed.nextFetchAt);
+    }
+    await app.inject({ method: 'POST', url: `${url}/toggle`, headers });
+    const combined = await patch({ channelTitle: '暂停时修改', intervalMinutes: 30 });
+    assert.equal(combined.statusCode, 200);
+    assert.equal(combined.json().feed.enabled, false);
+    assert.equal(combined.json().feed.name, '暂停时修改');
+    assert.equal(combined.json().feed.intervalMinutes, 30);
+    assert.equal(scrapes, 1);
+  } finally { await app.close(); rmSync(dir, { recursive: true, force: true }); }
+});

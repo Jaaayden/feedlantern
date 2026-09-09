@@ -38,7 +38,7 @@ SQLite `PRAGMA user_version` 记录迁移：版本 1 增加频道名称与设置
 | `/api/credentials` | 凭据元数据及导入更新 |
 | `/api/browser/*` | 打开页面、截图、自动发现、点选、预览 |
 | `/api/feeds` | 单个订阅创建及管理 |
-| `PATCH /api/feeds/:id` | `{channelTitle}`，同时更新订阅名称和 RSS 频道标题；保留 channelTitle 字段以兼容旧客户端 |
+| `PATCH /api/feeds/:id` | `{channelTitle?, intervalMinutes?}`，至少提供一个；名称同步 RSS 标题，间隔为 5–1440 的整数，变化时重新计时；不触发抓取，兼容仅改名称的旧客户端 |
 | `GET/PUT /api/settings` | `{feedView:'list'|'cards'}` |
 | `POST /api/feeds/bulk` | `{ids,action}`；copy/pause/resume/refresh/delete，逐项结果 |
 | `GET/POST /api/import-jobs` | 列出/创建批量任务，创建参数 entries 与 intervalMinutes |

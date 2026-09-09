@@ -6,6 +6,7 @@ import type {
   ExtractedItem,
   Feed,
   FeedInput,
+  FeedSettingsInput,
   FeedItem,
   PickRequest,
   PickResult,
@@ -105,6 +106,7 @@ export const api = {
     remove: (id: string) => request<void>(`/api/credentials/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   },
   feeds: {
+    settings: (id: string, body: FeedSettingsInput) => request<{ feed: Feed; feedUrl: string }>(`/api/feeds/${encodeURIComponent(id)}`, { method: 'PATCH', body }),
     title: (id: string, channelTitle: string) => request<{ feed: Feed }>(`/api/feeds/${encodeURIComponent(id)}`, { method: 'PATCH', body: { channelTitle } }),
     bulk: async (ids: string[], action: string) => {
       const results: Array<{ id: string; ok: boolean; feedUrl?: string; error?: string }> = [];
