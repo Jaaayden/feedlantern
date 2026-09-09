@@ -242,6 +242,10 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (requestUrl.pathname === '/static-scroll') {
+    sendHtml(response, 200, staticPage().replace('</main>', '<div style="height:1600px">Scroll fixture spacer</div></main>'));
+    return;
+  }
   if (requestUrl.pathname === '/static') {
     sendHtml(response, 200, staticPage());
     return;

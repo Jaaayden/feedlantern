@@ -245,7 +245,7 @@ test('滚轮合并且串行发送，外层页面不滚动，失败后可继续�
   await page.setViewportSize({width:1440,height:1000});
   await loginInPage(page);
   await page.getByRole('button',{name:'新建订阅',exact:true}).click();
-  await (await locatorForUrl(page)).fill(FIXTURE_URLS.static);
+  await (await locatorForUrl(page)).fill(new URL('/static-scroll', FIXTURE_URLS.static).href);
   await page.getByRole('button',{name:'打开并自动识别',exact:true}).click();
   await expect(page.locator('.preview-item')).toHaveCount(3,{timeout:45000});
   await page.getByRole('button',{name:'调整匹配',exact:true}).click();
@@ -265,7 +265,7 @@ test('滚轮合并且串行发送，外层页面不滚动，失败后可继续�
   await response;
   await expect(page.getByRole('button',{name:'向下滚动网页'})).toBeEnabled();
   expect(await page.evaluate(()=>scrollY)).toBe(outer);
-  expect(await image.getAttribute('src')).not.toBe(before);
+  await expect.poll(async () => (await image.getAttribute('src')) !== before).toBe(true);
   await image.evaluate(el => { const b=el.getBoundingClientRect(); for(let i=0;i<20;i++) el.dispatchEvent(new WheelEvent('wheel',{deltaY:-8,clientX:b.x+b.width/2,clientY:b.y+b.height/2,bubbles:true,cancelable:true})); });
   await expect.poll(()=>requests).toBe(2);
   await expect(page.getByRole('button',{name:'向下滚动网页'})).toBeEnabled();
