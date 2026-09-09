@@ -12,6 +12,7 @@ import type {
 } from '../shared/types';
 import { cookiesForUrl, toPlaywrightCookies } from './cookies';
 import { extractPage } from './extraction';
+import { prepareScrollContent } from './page-preparation';
 import {
   allowedHostListFromEnv,
   createRestrictedForwardProxy,
@@ -98,7 +99,7 @@ const PICK_SCRIPT = String.raw`(request) => {
     }
     const id = element.id || '';
     if (stable(id)) return '#' + escaped(id);
-    const classes = Array.from(element.classList).filter(stable).slice(0, 2).map(function(value) { return '.' + escaped(value); }).join('');
+    const classes = Array.from(element.classList).filter(stable).filter(function(value) { return !/^(?:animated|animate__animated|aos-animate)$/.test(value); }).slice(0, 2).map(function(value) { return '.' + escaped(value); }).join('');
     return tag + classes;
   }
   function pathSelector(element, stop) {
@@ -332,6 +333,7 @@ export class BrowserService {
         await page.waitForSelector(options.waitForSelector, { state: 'attached', timeout: SELECTOR_TIMEOUT_MS });
       }
       if (waitMs > 0) await page.waitForTimeout(waitMs);
+      await prepareScrollContent(page);
     } catch (error) {
       throw normalizeSelectorError(error, '打开页面失败');
     }

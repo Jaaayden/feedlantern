@@ -76,6 +76,7 @@ export async function detectPage(page: Page): Promise<DetectionResult> {
           return Array.from(element.classList)
             .filter((name) => tokenPattern.test(name) && !dynamicTokenPattern.test(name))
             .filter((name) => !/^(?:n|item|row|post|news)[-_]?\d+$/i.test(name))
+            .filter((name) => !/^(?:animated|animate__animated|aos-animate)$/.test(name))
             .filter((name) => name.length <= 42)
             .slice(0, 6);
         },
@@ -190,19 +191,21 @@ export async function detectPage(page: Page): Promise<DetectionResult> {
 
         parentScopeSelector(element: Element): string | null {
         let current = element.parentElement;
+        const path: string[] = [];
         let depth = 0;
-        while (current && current !== document.body && depth < 4) {
-          const selector = simpleSelector(current);
+        while (current && depth < 8) {
+          path.unshift(simpleSelector(current));
+          const selector = path.join(' > ');
           try {
-            const count = document.querySelectorAll(selector).length;
-            if (count <= 8) return selector;
+            if (document.querySelectorAll(selector).length === 1) return selector;
           } catch {
-            // Continue with the next ancestor.
+            // Continue with the next ancestor, preserving the parent path.
           }
+          if (current === document.body) break;
           current = current.parentElement;
           depth += 1;
         }
-        return 'body';
+        return null;
         },
 
         buildItemSelector(group: Element[]): { selector: string; matches: Element[] } | null {
@@ -220,7 +223,7 @@ export async function detectPage(page: Page): Promise<DetectionResult> {
         if (sameParent && first.parentElement) {
           const parent = parentScopeSelector(first);
           if (parent) options.unshift(`${parent} > ${base}`);
-          if (!classes) options.unshift(`${parent || 'body'} > ${tag}`);
+          if (parent && !classes) options.unshift(`${parent} > ${tag}`);
         }
 
         let current: Element | null = first.parentElement;
@@ -572,7 +575,9 @@ export async function detectPage(page: Page): Promise<DetectionResult> {
     const titleDistinctRatio = titleValues.length === 0 ? 0 : uniqueTitles / titleValues.length;
     const countScore = Math.min(1, items.length / 8);
     const repetitionPenalty = titleDistinctRatio < 0.5 ? 0.15 : titleDistinctRatio < 0.75 ? 0.05 : 0;
-    const bareLinksPenalty = discovery.rules.title === ':scope' && discovery.rules.link === ':scope'
+    // A list of bare links is equally navigation-like whether each item
+    // is the anchor itself or a wrapper containing that same anchor.
+    const bareLinksPenalty = discovery.rules.title === discovery.rules.link
       && !discovery.rules.date && !discovery.rules.image && !discovery.rules.description ? 0.15 : 0;
     const score = Math.max(0, Math.min(1,
       discovery.score * 0.35 +
