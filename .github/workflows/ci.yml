@@ -38,6 +38,16 @@ jobs:
         run: pnpm test
       - name: Browser acceptance tests
         run: pnpm test:e2e
+      - name: Preserve browser test diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: browser-test-diagnostics
+          path: |
+            test-results/
+            playwright-report/
+          retention-days: 7
+          if-no-files-found: ignore
 
   containers:
     needs: verify

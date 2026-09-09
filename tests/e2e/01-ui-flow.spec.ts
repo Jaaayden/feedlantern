@@ -1,5 +1,5 @@
 import { mkdir } from 'node:fs/promises';
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures';
 import type { Feed } from '../../src/shared/types';
 import { FIXTURE_URLS, locatorForUrl, loginInPage, firstVisible } from './support';
 

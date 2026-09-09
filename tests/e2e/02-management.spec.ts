@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures';
 import { loginInPage, loginAsAdmin, protocolHeaders, FIXTURE_URLS, TEST_ACCOUNT } from './support';
 test('列表偏好、统一订阅名称、批量创建及加密备份入口', async ({ page }) => {
   const auth = await loginAsAdmin(page.request);
@@ -108,10 +108,10 @@ test('独立设置入口、刷新间隔持久化、未保存提醒及操作保�
   await page.screenshot({ path: 'test-results/mobile-feed-settings.png', fullPage: true });
 });
 
-test('设置保存失败保留输入，规则编辑取消和保存返回设置', async ({ page }) => {
+test('设置保存失败保留输入，规则编辑取消和保存返回设置', async ({ page }, testInfo) => {
   const auth = await loginAsAdmin(page.request);
   const headers = protocolHeaders(auth.csrfToken);
-  const created = await page.request.post('/api/feeds', { headers, data: { name: '规则设置返回测试', url: FIXTURE_URLS.static, rules: { item: '.article-card', title: '.article-title', link: 'a.article-link' } } });
+  const created = await page.request.post('/api/feeds', { headers, data: { name: `规则设置返回测试-${testInfo.retry}`,  url: FIXTURE_URLS.static, rules: { item: '.article-card', title: '.article-title', link: 'a.article-link' } } });
   const { feed } = await created.json();
   await page.goto('/');
   await page.getByLabel('搜索订阅').fill(feed.name);
