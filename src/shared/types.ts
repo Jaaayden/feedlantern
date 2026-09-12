@@ -42,6 +42,35 @@ export interface ExtractedItem {
   publishedAtSource?: 'absolute' | 'relative';
 }
 export interface FeedItem extends ExtractedItem { id: string; firstSeenAt: string }
+export type FetchSource = 'scheduled' | 'manual' | 'create' | 'edit' | 'resume' | 'import';
+export type FetchStatus = 'running' | 'success' | 'failure' | 'interrupted';
+export type AlertStatus = 'pending' | 'sent' | 'failed' | 'canceled' | 'disabled';
+export const fetchSourceLabels: Record<FetchSource, string> = { scheduled: '定时', manual: '手动', create: '创建订阅', edit: '修改规则', resume: '恢复订阅', import: '批量创建' };
+export interface FetchLog {
+  id: number; feedId: string; source: FetchSource; status: FetchStatus;
+  startedAt: string; finishedAt: string | null; durationMs: number | null;
+  itemCount: number | null; newItemCount: number | null; error: string | null;
+  notification: { status: AlertStatus; error: string | null } | null;
+}
+export interface FetchLogPage { logs: FetchLog[]; nextCursor: string | null; retentionDays: number }
+export interface ApplicationSettings {
+  feedView: 'list' | 'cards';
+  logRetentionDays: number;
+  bark: {
+    enabled: boolean; url: string; timeoutSeconds: number; maxAttempts: number;
+    retryDelaySeconds: number; laterRetryDelaySeconds: number; cooldownMinutes: number;
+  };
+  server: {
+    backgroundConcurrency: number; allowedHosts: string[]; dnsOverHttps: boolean;
+    trustedProxies: string[]; publicOrigin: string; cookieSecure: boolean;
+    sessionTtlDays: number; host: string; port: number;
+  };
+}
+export const defaultApplicationSettings: ApplicationSettings = {
+  feedView: 'list', logRetentionDays: 30,
+  bark: { enabled: false, url: '', timeoutSeconds: 10, maxAttempts: 3, retryDelaySeconds: 60, laterRetryDelaySeconds: 300, cooldownMinutes: 30 },
+  server: { backgroundConcurrency: 1, allowedHosts: [], dnsOverHttps: false, trustedProxies: [], publicOrigin: 'http://127.0.0.1:4321', cookieSecure: false, sessionTtlDays: 30, host: '127.0.0.1', port: 4321 },
+};
 export interface CredentialSummary { id: string; name: string; url: string; format: 'header' | 'json'; domains: string[]; count: number; updatedAt: string; expiresAt: string | null }
 export interface ScreenFrame { sessionId: string; image: string; width: number; height: number; url: string; title: string }
 export interface Rect { x: number; y: number; width: number; height: number }
@@ -68,6 +97,7 @@ export interface AuthState { setupRequired: boolean; authenticated: boolean; use
 // GET /api/credentials -> CredentialSummary[]; POST -> {name,url,format:'header'|'json',value} -> CredentialSummary
 // PUT /api/credentials/:id same; DELETE /api/credentials/:id (409 if referenced)
 // GET /api/feeds -> Feed[]; POST /api/feeds FeedInput -> {feed,feedUrl}
+// GET /api/feeds/:id/logs?status=&cursor=&limit= -> FetchLogPage (admin only, default 20, max 100)
 // GET /api/feeds/:id -> {feed,items:FeedItem[],feedUrl}; PUT FeedInput -> {feed,feedUrl}
 // POST /api/feeds/:id/refresh {}; POST /api/feeds/:id/toggle {}; POST /api/feeds/:id/rotate-token {}
 // DELETE /api/feeds/:id; GET /feeds/:id/:token.xml -> RSS 2.0 (token grants read-only access)

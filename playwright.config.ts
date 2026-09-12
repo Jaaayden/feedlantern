@@ -47,6 +47,7 @@ export default defineConfig({
       env: {
         ...inheritedEnv,
         NODE_ENV: 'test',
+        BARK_URL: '',
         HOST: '127.0.0.1',
         PORT: '4322',
         PUBLIC_ORIGIN: e2eBaseUrl,

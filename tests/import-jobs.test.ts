@@ -27,6 +27,12 @@ test('批量任务自动创建、歧义确认、失败重试和重启恢复不�
     await until(() => jobs.get(job.id).entries.every(e => e.state === 'created'));
     jobs.recover();
     assert.equal(store.listFeeds().length, 3);
+    for (const feed of store.listFeeds()) {
+      const logs = store.history.list(feed.id).logs;
+      assert.equal(logs.length, 1); assert.equal(logs[0].source, 'import');
+      assert.equal(logs[0].status, 'success'); assert.equal(logs[0].itemCount, 3);
+      assert.equal(logs[0].newItemCount, 3); assert.ok(logs[0].durationMs! >= 0);
+    }
     const duplicate = jobs.create([{ url: 'https://example.test/normal#fragment', credentialId: null, intervalMinutes: 60 }]);
     assert.equal(duplicate.entries[0].state, 'existing');
   } finally { jobs.stop(); store.close(); rmSync(dir, { recursive: true, force: true }); }

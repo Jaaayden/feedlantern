@@ -2,8 +2,11 @@ import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, chmod } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { validateBarkUrl } from './bark.js';
 
 export interface ServerConfig {
+  barkUrl?: string;
+  dnsOverHttps?: boolean;
   backgroundConcurrency: number;
   port: number;
   host: string;
@@ -86,6 +89,8 @@ export function getConfig(overrides: ConfigInput = {}, cwd = process.cwd()): Ser
   const backgroundConcurrency = Number(overrides.backgroundConcurrency ?? process.env.BACKGROUND_CONCURRENCY ?? 1);
   if (!Number.isInteger(backgroundConcurrency) || backgroundConcurrency < 1 || backgroundConcurrency > 4) throw new Error('BACKGROUND_CONCURRENCY 必须是 1–4 的整数');
   return {
+    barkUrl: validateBarkUrl(overrides.barkUrl ?? process.env.BARK_URL),
+    dnsOverHttps: overrides.dnsOverHttps ?? parseBool(process.env.DNS_OVER_HTTPS, false),
     backgroundConcurrency,
     port: overrides.port ?? parsePort(process.env.PORT),
     host: overrides.host ?? process.env.HOST ?? '127.0.0.1',

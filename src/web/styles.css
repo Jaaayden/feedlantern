@@ -28,3 +28,19 @@ summary { cursor:pointer; }
 @media(max-width:600px) { .page-heading { flex-direction:column; align-items:flex-start; } }
 
 .feed-settings{display:flex;flex-direction:column;gap:22px}.feed-settings-source{font-size:12px;color:var(--muted);overflow-wrap:anywhere}.feed-settings-section{border-top:1px solid #e4e9df;padding-top:20px}.feed-settings-section>h3{margin-bottom:16px}.feed-settings-section>.hint{margin-bottom:14px}.feed-settings-section .detail-status{flex-wrap:wrap;gap:8px 16px}.feed-settings .detail-actions{flex-wrap:wrap}
+/* Fetch history stays readable inside the detail modal on narrow screens. */
+.fetch-logs { margin-top: 16px; min-width: 0; }
+.fetch-log-list { display: grid; gap: 12px; margin: 12px 0; }
+.fetch-log { border: 1px solid var(--border, #ddd); border-radius: 12px; padding: 14px; overflow-wrap: anywhere; }
+.fetch-log-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.fetch-log p { margin: 8px 0 0; }
+.fetch-log-notification { font-size: 13px; }
+.fetch-logs .collection-toolbar { flex-wrap: wrap; gap: 10px; }
+.fetch-logs .collection-toolbar label { white-space: nowrap; }
+.fetch-logs select { width: auto; min-width: 100px; }
+
+.application-settings { margin-bottom: 24px; }
+.application-settings fieldset { border: 1px solid #e3e7e4; border-radius: 12px; padding: 18px; margin: 18px 0; min-width: 0; }
+.application-settings legend { padding: 0 8px; font-weight: 600; }
+.application-settings .inline { margin: 12px 0; }
+.application-settings input[type="checkbox"] { width: 18px; height: 18px; }

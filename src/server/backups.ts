@@ -1,5 +1,6 @@
 import { randomBytes, scryptSync, createCipheriv, createDecipheriv } from 'node:crypto';
 import { z } from 'zod';
+import { isApplicationSettingsJson } from './settings.js';
 const text = z.string().max(1_000_000);
 const short = z.string().min(1).max(4000);
 const nullable = text.nullable();
@@ -11,7 +12,10 @@ export const backupTables = {
   credentials: z.array(z.object({ id: short, name: short, url, format: z.enum(['header', 'json']), encrypted_value: text, domains_json: text, cookie_count: z.number().int().nonnegative(), updated_at: date, expires_at: date.nullable() }).strict()).max(10000),
   feeds: z.array(z.object({ id: short, name: short, channel_title: z.string().min(1).max(200).nullable(), url, rules_json: text, rule_origins_json: nullable, credential_id: short.nullable(), interval_minutes: z.number().int().min(5).max(1440), wait_ms: z.number().int().min(0).max(10000), wait_for_selector: nullable, enabled: flag, created_at: date, last_fetched_at: date.nullable(), last_success_at: date.nullable(), next_fetch_at: date, last_error: nullable, item_count: z.number().int().nonnegative(), token_ciphertext: z.string().regex(/^[A-Za-z0-9_-]{43}$/), token_hash: z.string().regex(/^[a-f0-9]{64}$/) }).strict()).max(10000),
   feed_items: z.array(z.object({ id: short, feed_id: short, normalized_key: short, title: text, link: url, description: nullable, image: nullable, published_at: date.nullable(), published_at_source: z.enum(['absolute', 'relative']).nullable().default(null), first_seen_at: date }).strict()).max(2_000_000),
-  settings: z.array(z.object({ key: z.literal('feedView'), value: z.enum(['list', 'cards']) }).strict()).max(1),
+  settings: z.array(z.union([
+    z.object({ key: z.literal('feedView'), value: z.enum(['list', 'cards']) }).strict(),
+    z.object({ key: z.literal('application'), value: text.refine(isApplicationSettingsJson, '应用设置无效') }).strict(),
+  ])).max(2).refine(rows => new Set(rows.map(row => row.key)).size === rows.length, '设置键重复'),
 };
 export const snapshotSchema = z.object({ format: z.literal('feedlantern-backup'), version: z.literal(1), appVersion: short, createdAt: date, security: z.object({ allowedHosts: z.array(z.string()), dnsOverHttps: z.boolean() }), tables: z.object(backupTables).strict() }).strict();
 export type Snapshot = z.infer<typeof snapshotSchema>;

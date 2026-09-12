@@ -1,3 +1,6 @@
+import { BarkWorker, type BarkSender } from './bark.js';
+import { applicationSettingsSchema, settingsFromConfig, applyRuntimeSettings } from './settings.js';
+import { safeDiagnostic } from './fetch-history.js';
 import { TaskPool, siteKey } from './task-pool.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import ipaddr from 'ipaddr.js';
@@ -13,10 +16,13 @@ import fastifyStatic from '@fastify/static';
 import type { Cookie } from 'playwright';
 import type {
   AuthState,
+  ApplicationSettings,
   CredentialSummary,
   DetectionResult,
   ExtractedItem,
   Feed,
+  FetchSource,
+  FetchStatus,
   FeedInput,
   FeedSettingsInput,
   PickRequest,
@@ -62,6 +68,7 @@ export interface CreateAppOptions extends ConfigInput {
   store?: Store;
   browserService?: BrowserServiceLike;
   startScheduler?: boolean;
+  barkSender?: BarkSender;
 }
 
 interface FeedBody {
@@ -203,16 +210,28 @@ function cookieMetadata(cookies: readonly Cookie[], url: string): { domains: str
 async function makeBrowserService(config: ServerConfig, injected?: BrowserServiceLike): Promise<BrowserServiceLike> {
   if (injected) return injected;
   const module = await import('./browser.js');
-  const BrowserService = module.BrowserService as new (options: { allowedHosts?: string[]; executablePath?: string; backgroundConcurrency?: number }) => BrowserServiceLike;
-  return new BrowserService({ allowedHosts: config.allowedHosts, backgroundConcurrency: config.backgroundConcurrency, executablePath: config.browserExecutablePath });
+  const BrowserService = module.BrowserService as new (options: { allowedHosts?: string[]; dnsOverHttps?: boolean; executablePath?: string; backgroundConcurrency?: number }) => BrowserServiceLike;
+  return new BrowserService({ allowedHosts: config.allowedHosts, dnsOverHttps: config.dnsOverHttps, backgroundConcurrency: config.backgroundConcurrency, executablePath: config.browserExecutablePath });
 }
 
 export async function createApp(options: CreateAppOptions = {}): Promise<FastifyInstance> {
   const config = options.config ?? getConfig(options);
   await ensureDataDir(config.dataDir);
   const store = options.store ?? new Store(config);
-  const browser = await makeBrowserService(config, options.browserService);
-  const app = Fastify({ logger: false, bodyLimit: 2_500_000, trustProxy: config.trustedProxies?.length ? config.trustedProxies : false });
+  store.initializeSettings(settingsFromConfig(config));
+  applyRuntimeSettings(config, store.getSettings());
+  let browser = await makeBrowserService(config, options.browserService);
+  store.history.recover();
+  const bark = new BarkWorker(store.history, () => store.getSettings().bark, options.barkSender);
+  const app = Fastify({ logger: false, bodyLimit: 2_500_000, trustProxy: address => {
+    try {
+      const peer = ipaddr.process(address);
+      return (config.trustedProxies ?? []).some(raw => {
+        const [network, bits] = raw.includes('/') ? ipaddr.parseCIDR(raw) : [ipaddr.parse(raw), raw.includes(':') ? 128 : 32] as const;
+        return peer.kind() === network.kind() && peer.match(network, bits);
+      });
+    } catch { return false; }
+  } });
   // Fastify captures the error handler when a route is registered.
   // Install it before plugins/routes so errors share the frontend contract.
   app.setErrorHandler((error, _request, reply) => {
@@ -291,30 +310,47 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return cookiesForTarget(credential, feed.url);
   };
 
-  const refreshOnce = async (id: string): Promise<Feed | null> => {
+  const refreshOnce = async (id: string, source: FetchSource): Promise<Feed | null> => {
     const feed = store.getFeed(id);
     if (!feed) return null;
     const nextFetchAt = new Date(Date.now() + feed.intervalMinutes * 60_000).toISOString();
-    store.markFetchStart(feed.id, nextFetchAt);
+    const started = performance.now();
+    const runId = store.transaction(() => {
+      store.markFetchStart(feed.id, nextFetchAt);
+      return store.history.start(feed.id, source);
+    });
     try {
       const items = await browser.scrape({ url: feed.url, cookies: credentialsForFeed(feed), waitMs: feed.waitMs, waitForSelector: feed.waitForSelector, rules: feed.rules });
-      if (!items.length) throw new Error('没有抽取到有效条目：请检查 selector 或页面是否已完成渲染');
-      store.upsertItems(feed, items);
-      return store.markFetchSuccess(feed.id, nextFetchAt);
+      if (!items.length) throw new Error('没有抽取到有效条目：可能是页面结构或规则变化，请检查匹配规则、Cookie 或页面渲染');
+      const result = store.transaction(() => {
+        const counts = { itemCount: 0, newItemCount: 0 };
+        store.upsertItems(feed, items, counts);
+        if (!counts.itemCount) throw new Error('没有抽取到有效条目：可能是页面结构或规则变化');
+        const updated = store.markFetchSuccess(feed.id, nextFetchAt);
+        store.history.succeed(runId, feed.id, performance.now() - started, counts);
+        return updated;
+      });
+      bark.wake();
+      return result;
     } catch (error) {
-      store.markFetchFailure(feed.id, friendlyError(error, '抓取失败，已保留已有条目'), nextFetchAt);
+      const message = safeDiagnostic(friendlyError(error, '抓取失败，已保留已有条目'));
+      store.transaction(() => {
+        store.markFetchFailure(feed.id, message, nextFetchAt);
+        store.history.fail(runId, feed, source, performance.now() - started, message, store.getSettings().bark.enabled);
+      });
+      bark.wake();
       return store.getFeed(feed.id);
     }
   };
 
-  const doRefresh = (id: string, dueOnly = false): Promise<Feed | null> => {
+  const doRefresh = (id: string, dueOnly = false, source: FetchSource = dueOnly ? 'scheduled' : 'manual'): Promise<Feed | null> => {
     const active = refreshInFlight.get(id);
     if (active) { if (!dueOnly) active.force = true; return active.promise; }
     const job = { force: !dueOnly, promise: Promise.resolve<Feed | null>(null) };
     job.promise = enqueueRefresh(() => {
       const current = store.getFeed(id);
       if (!current) return null;
-      if (job.force || current.enabled && current.nextFetchAt <= new Date().toISOString()) return refreshOnce(id);
+      if (job.force || current.enabled && current.nextFetchAt <= new Date().toISOString()) return refreshOnce(id, source);
       return current;
     }, () => refreshKeys(id)).finally(() => refreshInFlight.delete(id));
     refreshInFlight.set(id, job);
@@ -351,7 +387,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   }, error => friendlyError(error, '识别失败：请检查网址、网络或 Cookie，然后重试或手动调整。'), config.backgroundConcurrency);
 
   app.addHook('onRequest', async (request) => {
-    if (maintenance) throw new AppError(503, '正在恢复备份，请稍后重试');
+    if (maintenance) throw new AppError(503, '服务维护中，请稍后重试');
     if (!request.url.startsWith('/api/')) return;
     const requestHost = Array.isArray(request.headers.host) ? request.headers.host[0] : request.headers.host;
     if (!requestHost || !allowedApiHosts.has(requestHost.toLowerCase()) && requestHost.toLowerCase() !== new URL(currentConfig().publicOrigin).host.toLowerCase()) throw new AppError(403, '请求主机不被允许');
@@ -489,7 +525,35 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       }
     }
   };
-  const security = () => ({ allowedHosts: config.allowedHosts, dnsOverHttps: process.env.DNS_OVER_HTTPS === 'true' });
+  const security = () => ({ allowedHosts: config.allowedHosts, dnsOverHttps: config.dnsOverHttps ?? false });
+  const parseSettings = (value: unknown): ApplicationSettings => {
+    const parsed = applicationSettingsSchema.safeParse(value);
+    if (!parsed.success) throw new AppError(400, '设置无效，请检查 Bark 地址、服务器地址和数值范围');
+    return parsed.data;
+  };
+  const settingsPreview = (value: ApplicationSettings) => ({ ...value, bark: { ...value.bark, url: undefined, configured: !!value.bark.url } });
+  const applySettings = async (next: ApplicationSettings, write: () => void = () => store.setSettings(next)): Promise<void> => {
+    const previous = store.getSettings();
+    const captureChanged = previous.server.backgroundConcurrency !== next.server.backgroundConcurrency
+      || previous.server.dnsOverHttps !== next.server.dnsOverHttps
+      || JSON.stringify(previous.server.allowedHosts) !== JSON.stringify(next.server.allowedHosts);
+    const nextConfig = { ...config }; applyRuntimeSettings(nextConfig, next);
+    const replacement = captureChanged ? await makeBrowserService(nextConfig, options.browserService) : browser;
+    const wasMaintenance = maintenance;
+    maintenance = true;
+    await bark.stop();
+    try {
+      store.transaction(() => {
+        write();
+        if (previous.bark.enabled !== next.bark.enabled || previous.bark.url !== next.bark.url) store.history.resetNotifications();
+      });
+      if (replacement !== browser) { await browser.dispose(); browser = replacement; }
+      applyRuntimeSettings(config, next);
+      pool.setConcurrency(next.server.backgroundConcurrency);
+      jobs.setConcurrency(next.server.backgroundConcurrency);
+      store.history.prune();
+    } finally { maintenance = wasMaintenance; bark.start(); }
+  };
   app.post('/api/backups/export', async request => {
     backupGuard(request);
     const password = asNonEmptyString(asRecord(request.body).password, '备份密码', 1024);
@@ -511,24 +575,34 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       const creds = new Set(snapshot.tables.credentials.map(c => c.id));
       if (snapshot.tables.feed_items.some(i => !ids.has(i.feed_id)) || snapshot.tables.feeds.some(f => f.credential_id && !creds.has(f.credential_id))) throw Error();
     } catch { limiter.registerFailure(request.ip); throw new AppError(400, '备份密码错误、文件损坏或格式不受支持'); }
-    if (action === 'preview') return { appVersion: snapshot.appVersion, createdAt: snapshot.createdAt, feeds: snapshot.tables.feeds.length, items: snapshot.tables.feed_items.length, credentials: snapshot.tables.credentials.length, username: snapshot.tables.admin[0].username, sourceSecurity: snapshot.security, targetSecurity: security() };
+    if (action === 'preview') return { appVersion: snapshot.appVersion, createdAt: snapshot.createdAt, feeds: snapshot.tables.feeds.length, items: snapshot.tables.feed_items.length, credentials: snapshot.tables.credentials.length, username: snapshot.tables.admin[0].username, sourceSecurity: snapshot.security, targetSecurity: security(), settings: snapshot.tables.settings.some(row => row.key === 'application') ? settingsPreview(parseSettings(JSON.parse(snapshot.tables.settings.find(row => row.key === 'application')!.value))) : null };
     if (body.confirm !== true) throw new AppError(400, '请先预览并确认覆盖恢复');
     maintenance = true; jobs.stop();
     try {
       await pool.drain();
+      await bark.stop();
       await browser.closeEditors?.();
       store.restoreTables(snapshot.tables);
+      const restoredSettings = store.getSettings();
+      const nextConfig = { ...config }; applyRuntimeSettings(nextConfig, restoredSettings);
+      const replacement = await makeBrowserService(nextConfig, options.browserService);
+      if (replacement !== browser) { await browser.dispose(); browser = replacement; }
+      applyRuntimeSettings(config, restoredSettings);
+      pool.setConcurrency(restoredSettings.server.backgroundConcurrency);
+      jobs.setConcurrency(restoredSettings.server.backgroundConcurrency);
       return { ok: true };
-    } finally { maintenance = false; jobs.recover(); }
+    } finally { maintenance = false; jobs.recover(); bark.start(); }
   });
   app.get('/api/backups/config', async request => {
     feedsGuard(request);
-    return { format: 'feedlantern-config', version: 1, feeds: store.listFeeds().map(f => ({ name: f.name, channelTitle: f.channelTitle, url: f.url, rules: f.rules, ruleOrigins: f.ruleOrigins, intervalMinutes: f.intervalMinutes, waitMs: f.waitMs, waitForSelector: f.waitForSelector, enabled: f.enabled, requiresCredential: !!f.credentialId })) };
+    return { format: 'feedlantern-config', version: 2, settings: store.getSettings(), feeds: store.listFeeds().map(f => ({ name: f.name, channelTitle: f.channelTitle, url: f.url, rules: f.rules, ruleOrigins: f.ruleOrigins, intervalMinutes: f.intervalMinutes, waitMs: f.waitMs, waitForSelector: f.waitForSelector, enabled: f.enabled, requiresCredential: !!f.credentialId })) };
   });
   app.post('/api/backups/config', { bodyLimit: 10_000_000 }, async request => {
     feedsGuard(request);
     const body = asRecord(request.body), archive = asRecord(body.archive);
-    if (archive.format !== 'feedlantern-config' || archive.version !== 1 || !Array.isArray(archive.feeds) || archive.feeds.length > 10000) throw new AppError(400, '配置格式无效');
+    if (archive.format !== 'feedlantern-config' || ![1, 2].includes(Number(archive.version)) || !Array.isArray(archive.feeds) || archive.feeds.length > 10000) throw new AppError(400, '配置格式无效');
+    if (archive.version === 2 && archive.settings === undefined) throw new AppError(400, '配置文件缺少应用设置');
+    const importedSettings = archive.settings === undefined ? undefined : parseSettings(archive.settings);
     const entries = archive.feeds.map(raw => {
       const value = asRecord(raw);
       return { input: parseFeedInput({ ...value, credentialId: null }), title: asOptionalString(value.channelTitle, '频道名称', 200), enabled: value.enabled !== false, needsCookie: value.requiresCredential === true };
@@ -536,9 +610,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const signature = (f: FeedInput) => JSON.stringify([normalizeSource(f.url), ...['item', 'title', 'link', 'description', 'image', 'date'].map(k => f.rules[k as keyof SelectionRules] ?? '')]);
     if (body.confirm !== true) {
       const seen = new Set(store.listFeeds().map(signature));
-      return { entries: entries.map(e => { const duplicate = seen.has(signature(e.input)); seen.add(signature(e.input)); return { name: e.input.name, url: e.input.url, duplicate, needsCookie: e.needsCookie }; }) };
+      return { settings: importedSettings ? settingsPreview(importedSettings) : null, entries: entries.map(e => { const duplicate = seen.has(signature(e.input)); seen.add(signature(e.input)); return { name: e.input.name, url: e.input.url, duplicate, needsCookie: e.needsCookie }; }) };
     }
-    return enqueueRefresh(async () => store.transaction(() => {
+    return enqueueRefresh(async () => {
+      let result = { created: 0, skipped: 0 };
+      const write = () => store.transaction(() => {
       const seen = new Set(store.listFeeds().map(signature));
       let created = 0, skipped = 0;
       for (const entry of entries) {
@@ -550,8 +626,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         if (entry.needsCookie) store.markFetchFailure(feed.id, '请绑定 Cookie 凭据后恢复订阅', feed.nextFetchAt);
         seen.add(key); created++;
       }
-      return { created, skipped };
-    }));
+      if (importedSettings) store.setSettings(importedSettings);
+      result = { created, skipped };
+      });
+      if (importedSettings) await applySettings(importedSettings, write); else write();
+      return result;
+    });
   });
   app.get('/api/import-jobs', async request => { feedsGuard(request); return store.listImportJobs(); });
   app.post('/api/import-jobs', async request => {
@@ -586,10 +666,15 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   app.get('/api/settings', async request => { feedsGuard(request); return store.getSettings(); });
   app.put('/api/settings', async request => {
     feedsGuard(request);
-    const view = asRecord(request.body).feedView;
-    if (view !== 'list' && view !== 'cards') throw new AppError(400, '视图必须为 list 或 cards');
-    store.setFeedView(view);
-    return store.getSettings();
+    const body = asRecord(request.body);
+    if (!Object.keys(body).length || body.bark !== undefined && (typeof body.bark !== 'object' || body.bark === null || Array.isArray(body.bark))
+      || body.server !== undefined && (typeof body.server !== 'object' || body.server === null || Array.isArray(body.server))) throw new AppError(400, '设置格式无效');
+    return enqueueRefresh(async () => {
+      const previous = store.getSettings();
+      const next = parseSettings({ ...previous, ...body, bark: { ...previous.bark, ...asRecord(body.bark) }, server: { ...previous.server, ...asRecord(body.server) } });
+      await applySettings(next);
+      return store.getSettings();
+    });
   });
   app.patch('/api/feeds/:id', async request => {
     feedsGuard(request);
@@ -632,7 +717,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
           const feed = store.getFeed(id);
           if (!feed) throw new AppError(404, '订阅不存在');
           if (action === 'copy') return { id, ok: true, feedUrl: feedUrl(currentConfig(), store, id) };
-          if (action === 'delete') store.deleteFeed(id);
+          if (action === 'delete') { store.deleteFeed(id); bark.wake(); }
           if (action === 'pause' && feed.enabled || action === 'resume' && !feed.enabled) store.toggleFeed(id);
           return { id, ok: true };
         });
@@ -646,8 +731,24 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const input = parseFeedInput(request.body);
     if (input.credentialId && !store.getCredentialSummary(input.credentialId)) throw new AppError(400, 'Cookie 凭据不存在');
     const created = store.createFeed(input);
-    const refreshed = await doRefresh(created.feed.id);
+    const refreshed = await doRefresh(created.feed.id, false, 'create');
     return feedPayload(refreshed ?? created.feed);
+  });
+  app.get('/api/feeds/:id/logs', async request => {
+    feedsGuard(request);
+    const id = String((request.params as { id: string }).id);
+    if (!store.getFeed(id)) throw new AppError(404, 'Feed 不存在');
+    const query = request.query as Record<string, unknown>;
+    const status = query.status;
+    if (status !== undefined && !['running', 'success', 'failure', 'interrupted'].includes(String(status))) throw new AppError(400, '日志状态无效');
+    const integer = (value: unknown, fallback: number, max: number): number => {
+      if (value === undefined) return fallback;
+      if (typeof value !== 'string' || !/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) > max) throw new AppError(400, '日志分页参数无效');
+      return Number(value);
+    };
+    const limit = integer(query.limit, 20, 100);
+    const cursor = query.cursor === undefined ? undefined : integer(query.cursor, 0, Number.MAX_SAFE_INTEGER);
+    return store.history.list(id, status as FetchStatus | undefined, cursor, limit);
   });
   app.get('/api/feeds/:id', async (request) => {
     feedsGuard(request);
@@ -663,7 +764,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return enqueueRefresh(async () => {
       const updated = store.updateFeed(id, input);
       if (!updated) throw new AppError(404, 'Feed 不存在');
-      const refreshed = await refreshOnce(id);
+      const refreshed = await refreshOnce(id, 'edit');
       return feedPayload(refreshed ?? updated);
     });
   });
@@ -678,7 +779,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return enqueueRefresh(async () => {
       const toggled = store.toggleFeed(String((request.params as { id: string }).id));
       if (!toggled) throw new AppError(404, 'Feed 不存在');
-      const refreshed = toggled.enabled ? await refreshOnce(toggled.id) : toggled;
+      const refreshed = toggled.enabled ? await refreshOnce(toggled.id, 'resume') : toggled;
       return feedPayload(refreshed ?? toggled);
     });
   });
@@ -692,6 +793,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     feedsGuard(request);
     return enqueueRefresh(() => {
       if (!store.deleteFeed(String((request.params as { id: string }).id))) throw new AppError(404, 'Feed 不存在');
+      bark.wake();
       return { ok: true };
     });
   });
@@ -791,7 +893,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
 
 
-  app.addHook('onReady', async () => { jobs.recover(); });
+  const cleanup = setInterval(() => {
+    try { store.history.prune(); } catch { console.error('抓取日志清理失败，将自动重试'); }
+  }, 60 * 60_000);
+  cleanup.unref();
+  app.addHook('onReady', async () => { jobs.recover(); bark.start(); });
   if (options.startScheduler !== false) {
     scheduler = setInterval(() => { void refreshDue().catch(() => {}); }, 30_000);
     scheduler.unref();
@@ -801,7 +907,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     jobs.stop();
     closing = true;
     if (scheduler) clearInterval(scheduler);
+    clearInterval(cleanup);
     await pool.drain();
+    await bark.stop();
     await browser.dispose();
     if (!options.store) store.close();
   });

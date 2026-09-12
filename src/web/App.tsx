@@ -1,6 +1,8 @@
+import { ApplicationSettingsPanel } from './ApplicationSettingsPanel';
 import { BackupPanel } from './BackupPanel';
 import { BatchView } from './BatchView';
 import { FeedCollection } from './FeedCollection';
+import { FetchLogs } from './FetchLogs';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Check, ChevronDown, CircleHelp, Cookie, ExternalLink, Globe2, KeyRound, LoaderCircle, LogOut, MousePointer2, Pencil, Plus, Radio, RefreshCw, Rss, Search, Settings2, ShieldCheck, Sparkles, Trash2, X } from 'lucide-react';
@@ -267,6 +269,8 @@ function FeedStatus({ feed }: { feed: Feed }) {
 }
 
 function FeedDetail({ id, close, settings, changed, notify }: { id: string; close: () => void; settings: () => void; changed: () => void; notify: Notify }) {
+  const [tab, setTab] = useState<'items' | 'logs'>('items');
+  const [revision, setRevision] = useState(0);
   const [detail, setDetail] = useState<{ feed: Feed; items: FeedItem[]; feedUrl: string } | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -274,7 +278,7 @@ function FeedDetail({ id, close, settings, changed, notify }: { id: string; clos
   useEffect(() => { void load().catch(error => setError(messageOf(error))); }, [load]);
   async function refresh() {
     setBusy(true); setError('');
-    try { await api.feeds.refresh(id); await load(); changed(); }
+    try { await api.feeds.refresh(id); await load(); setRevision(v => v + 1); changed(); }
     catch (error) { setError(messageOf(error)); } finally { setBusy(false); }
   }
   return <Modal title={detail?.feed.name ?? '订阅详情'} close={close} wide><div className="modal-body">
@@ -282,7 +286,12 @@ function FeedDetail({ id, close, settings, changed, notify }: { id: string; clos
       <div className="detail-source"><Globe2 size={16} /><a href={detail.feed.url} target="_blank" rel="noreferrer">{detail.feed.url}</a></div>
       <FeedAddress feedUrl={detail.feedUrl} notify={notify} onError={setError} />
       <div className="detail-actions"><button className="button small" disabled={busy} onClick={() => void refresh()}><RefreshCw size={14} />{busy ? '正在刷新' : '立即刷新'}</button><button className="button small" disabled={busy} onClick={settings}><Settings2 size={14} />订阅设置</button></div>
-      <FeedStatus feed={detail.feed} /><ItemPreview items={detail.items} />
+      <FeedStatus feed={detail.feed} />
+      <div className="detail-actions" aria-label="详情内容">
+        <button className="button small" aria-pressed={tab === 'items'} onClick={() => setTab('items')}>订阅内容</button>
+        <button className="button small" aria-pressed={tab === 'logs'} onClick={() => setTab('logs')}>抓取日志</button>
+      </div>
+      {tab === 'items' ? <ItemPreview items={detail.items} /> : <FetchLogs id={id} revision={revision} />}
     </>}
   </div></Modal>;
 }
@@ -360,13 +369,14 @@ function FeedSettings({ id, close, edit, changed, notify }: { id: string; close:
 }
 
 function SettingsView({ auth, logout, notify }: { auth: AuthState; logout: () => void; notify: Notify }) {
+  const [settingsRevision, setSettingsRevision] = useState(0);
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   async function submit(event: FormEvent) { event.preventDefault(); if (newPassword !== confirmPassword) { setError('两次输入的新密码不一致'); return; } setBusy(true); setError(''); try { await api.auth.password({ currentPassword, newPassword }); setCurrentPassword(''); setNewPassword(''); setConfirmPassword(''); notify('密码已修改，请重新登录'); logout(); } catch (error) { setError(messageOf(error)); } finally { setBusy(false); } }
-  return <><div className="page-heading"><div><span className="section-kicker">MAKE IT YOURS</span><h1>设置</h1><p>管理你的管理员账号。</p></div></div><BackupPanel onRestored={logout} /><div className="settings-grid"><form className="panel settings-form" onSubmit={submit}><div className="panel-heading"><h2>修改密码</h2><KeyRound size={19} /></div><p className="muted">当前管理员：{auth.username}。修改后会退出所有现有会话。</p><Field label="当前密码"><input required type="password" value={currentPassword} onChange={e => setCurrentPassword(e.target.value)} autoComplete="current-password" /></Field><Field label="新密码"><input required type="password" minLength={8} maxLength={1024} value={newPassword} onChange={e => setNewPassword(e.target.value)} autoComplete="new-password" /></Field><Field label="确认新密码"><input required type="password" minLength={8} value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} autoComplete="new-password" /></Field><ErrorNote error={error} /><button className="button primary" disabled={busy}>{busy ? <Busy /> : '更新密码'}</button></form><section className="panel about-panel"><Brand /><p>自动找到网页上的新内容，汇入你的 RSS 阅读器。</p><div className="about-row"><span>版本</span><code>{auth.version}</code></div><div className="about-row"><span>许可证</span><span>MIT</span></div><a className="text-link" href="https://github.com/Jaaayden/feedlantern" target="_blank" rel="noreferrer">查看开源项目<ExternalLink size={14} /></a><div className="notice">服务主机需要保持运行，定时更新才会继续。首版聚焦列表订阅，暂不支持全文和自动翻页。</div></section></div></>;
+  return <><div className="page-heading"><div><span className="section-kicker">MAKE IT YOURS</span><h1>设置</h1><p>管理通知、抓取、网络与管理员账号。</p></div></div><ApplicationSettingsPanel revision={settingsRevision} /><BackupPanel onRestored={logout} onImported={() => setSettingsRevision(v => v + 1)} /><div className="settings-grid"><form className="panel settings-form" onSubmit={submit}><div className="panel-heading"><h2>修改密码</h2><KeyRound size={19} /></div><p className="muted">当前管理员：{auth.username}。修改后会退出所有现有会话。</p><Field label="当前密码"><input required type="password" value={currentPassword} onChange={e => setCurrentPassword(e.target.value)} autoComplete="current-password" /></Field><Field label="新密码"><input required type="password" minLength={8} maxLength={1024} value={newPassword} onChange={e => setNewPassword(e.target.value)} autoComplete="new-password" /></Field><Field label="确认新密码"><input required type="password" minLength={8} value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} autoComplete="new-password" /></Field><ErrorNote error={error} /><button className="button primary" disabled={busy}>{busy ? <Busy /> : '更新密码'}</button></form><section className="panel about-panel"><Brand /><p>自动找到网页上的新内容，汇入你的 RSS 阅读器。</p><div className="about-row"><span>版本</span><code>{auth.version}</code></div><div className="about-row"><span>许可证</span><span>MIT</span></div><a className="text-link" href="https://github.com/Jaaayden/feedlantern" target="_blank" rel="noreferrer">查看开源项目<ExternalLink size={14} /></a><div className="notice">服务主机需要保持运行，定时更新才会继续。首版聚焦列表订阅，暂不支持全文和自动翻页。</div></section></div></>;
 }
 
 export default function App() {

@@ -1,10 +1,13 @@
 import type {
   AuthState,
+  ApplicationSettings,
   ImportJob,
   CredentialSummary,
   DetectionResult,
   ExtractedItem,
   Feed,
+  FetchLogPage,
+  FetchStatus,
   FeedInput,
   FeedSettingsInput,
   FeedItem,
@@ -84,7 +87,8 @@ export const api = {
     confirm: (id: string, entryId: string, input: FeedInput) => request<{ feed: Feed; feedUrl: string }>(`/api/import-jobs/${id}/confirm`, { method: 'POST', body: { entryId, input } }),
   },
   settings: {
-    get: () => request<{ feedView: 'list' | 'cards' }>('/api/settings'),
+    save: (body: ApplicationSettings) => request<ApplicationSettings>('/api/settings', { method: 'PUT', body }),
+    get: () => request<ApplicationSettings>('/api/settings'),
     update: (feedView: 'list' | 'cards') => request<{ feedView: 'list' | 'cards' }>('/api/settings', { method: 'PUT', body: { feedView } }),
   },
   auth: {
@@ -106,6 +110,12 @@ export const api = {
     remove: (id: string) => request<void>(`/api/credentials/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   },
   feeds: {
+    logs: (id: string, status?: FetchStatus, cursor?: string) => {
+      const query = new URLSearchParams();
+      if (status) query.set('status', status);
+      if (cursor) query.set('cursor', cursor);
+      return request<FetchLogPage>(`/api/feeds/${encodeURIComponent(id)}/logs?${query}`);
+    },
     settings: (id: string, body: FeedSettingsInput) => request<{ feed: Feed; feedUrl: string }>(`/api/feeds/${encodeURIComponent(id)}`, { method: 'PATCH', body }),
     title: (id: string, channelTitle: string) => request<{ feed: Feed }>(`/api/feeds/${encodeURIComponent(id)}`, { method: 'PATCH', body: { channelTitle } }),
     bulk: async (ids: string[], action: string) => {

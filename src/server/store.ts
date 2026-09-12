@@ -1,4 +1,7 @@
 import type { Tables } from './backups.js';
+import { FetchHistory } from './fetch-history.js';
+import { applicationSettingsSchema } from './settings.js';
+import { defaultApplicationSettings, type ApplicationSettings } from '../shared/types.js';
 import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { join } from 'node:path';
@@ -155,6 +158,7 @@ function rowToItem(row: Record<string, unknown>): FeedItem {
 }
 
 export class Store {
+  readonly history: FetchHistory;
   readonly dataDir: string;
   readonly dbPath: string;
   readonly masterKeyPath: string;
@@ -251,6 +255,7 @@ export class Store {
       UPDATE feeds SET channel_title = name;
       PRAGMA user_version = 3; COMMIT;`);
     if (version < 4) this.db.exec(`BEGIN; ALTER TABLE feed_items ADD COLUMN published_at_source TEXT; PRAGMA user_version = 4; COMMIT;`);
+    this.history = new FetchHistory(this.db, () => this.getSettings());
     this.ensureSetupToken();
   }
 
@@ -513,6 +518,7 @@ export class Store {
       tables[table] = this.db.prepare(`SELECT * FROM ${table}`).all().map(row => {
         if (table === 'credentials') return { ...row, encrypted_value: decrypt(this.masterKey, String(row.encrypted_value)) };
         if (table === 'feeds') return { ...row, token_ciphertext: decrypt(this.masterKey, String(row.token_ciphertext)) };
+        if (table === 'settings' && row.key === 'application') return { ...row, value: decrypt(this.masterKey, String(row.value)) };
         return { ...row };
       });
     }
@@ -520,17 +526,21 @@ export class Store {
   }
 
   restoreTables(tables: Tables): void {
+    const previousServer = this.getSettings().server;
     this.transaction(() => {
       for (const table of ['sessions', 'import_jobs', 'feed_items', 'feeds', 'credentials', 'admin', 'settings']) this.db.exec(`DELETE FROM ${table}`);
       for (const table of ['admin', 'credentials', 'feeds', 'feed_items', 'settings'] as const) {
         for (const value of tables[table]) {
           const row: Record<string, string | number | null> = { ...value };
           if (table === 'credentials') row.encrypted_value = encrypt(this.masterKey, String(row.encrypted_value));
+          if (table === 'settings' && row.key === 'application') row.value = encrypt(this.masterKey, JSON.stringify(applicationSettingsSchema.parse(JSON.parse(String(row.value)))));
           if (table === 'feeds') { row.name = String(row.channel_title ?? '').trim() || row.name; row.channel_title = row.name; row.token_hash = hashToken(String(row.token_ciphertext)); row.token_ciphertext = encrypt(this.masterKey, String(row.token_ciphertext)); }
           const keys = Object.keys(row);
           this.db.prepare(`INSERT INTO ${table}(${keys.join(',')}) VALUES (${keys.map(() => '?').join(',')})`).run(...keys.map(k => row[k]));
         }
       }
+      // Old backups restore safe defaults, and never reactivate a legacy env URL.
+      this.initializeSettings({ ...structuredClone(defaultApplicationSettings), server: previousServer });
     });
     this.ensureSetupToken();
   }
@@ -549,9 +559,26 @@ export class Store {
     this.db.prepare('INSERT INTO import_jobs(id,body) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body').run(job.id, JSON.stringify(job));
   }
 
-  getSettings(): { feedView: 'list' | 'cards' } {
+  getSettings(): ApplicationSettings {
     const row = this.db.prepare("SELECT value FROM settings WHERE key = 'feedView'").get();
-    return { feedView: row?.value === 'cards' ? 'cards' : 'list' };
+    const saved = this.db.prepare("SELECT value FROM settings WHERE key = 'application'").get();
+    const settings = saved ? applicationSettingsSchema.parse(JSON.parse(decrypt(this.masterKey, String(saved.value)))) : structuredClone(defaultApplicationSettings);
+    return { ...settings, feedView: row?.value === 'cards' ? 'cards' : 'list' };
+  }
+
+  initializeSettings(initial?: ApplicationSettings): void {
+    if (this.db.prepare("SELECT key FROM settings WHERE key='application'").get()) return;
+    const settings = initial ? { ...initial, feedView: this.getSettings().feedView } : this.getSettings();
+    this.setSettings(settings);
+  }
+
+  setSettings(value: ApplicationSettings): void {
+    const settings = applicationSettingsSchema.parse(value);
+    this.transaction(() => {
+      this.setFeedView(settings.feedView);
+      this.db.prepare("INSERT INTO settings(key,value) VALUES ('application',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+        .run(encrypt(this.masterKey, JSON.stringify(settings)));
+    });
   }
 
   setFeedView(view: 'list' | 'cards'): void {
@@ -608,7 +635,7 @@ export class Store {
     return rows.map(rowToItem);
   }
 
-  upsertItems(feed: Feed, extracted: ExtractedItem[]): FeedItem[] {
+  upsertItems(feed: Feed, extracted: ExtractedItem[], counts?: { itemCount: number; newItemCount: number }): FeedItem[] {
     const unique = new Map<string, ExtractedItem>();
     for (const item of extracted) {
       const link = normalizeLink(item.link, feed.url);
@@ -617,6 +644,7 @@ export class Store {
       if (!unique.has(key)) unique.set(key, { ...item, link });
     }
     this.db.exec('SAVEPOINT items');
+    let inserted = 0;
     try {
       const firstSeenAt = nowIso();
       const findItem = this.db.prepare('SELECT id, published_at, published_at_source FROM feed_items WHERE feed_id = ? AND normalized_key = ?');
@@ -631,6 +659,7 @@ export class Store {
           updateItem.run(item.title.trim(), item.link, item.description ?? null, item.image ?? null, publishedAt, publishedAtSource as string | null, String(existing.id));
         } else {
           insertItem.run(randomId('item'), feed.id, key, item.title.trim(), item.link, item.description ?? null, item.image ?? null, publishedAt, publishedAtSource as string | null, firstSeenAt);
+          inserted++;
         }
       }
       this.db.prepare(`DELETE FROM feed_items WHERE feed_id = ? AND id NOT IN (SELECT id FROM feed_items WHERE feed_id = ? ORDER BY first_seen_at DESC, rowid ASC LIMIT 200)`).run(feed.id, feed.id);
@@ -639,6 +668,7 @@ export class Store {
       try { this.db.exec('ROLLBACK TO items; RELEASE items'); } catch { /* best effort */ }
       throw error;
     }
+    if (counts) { counts.itemCount = unique.size; counts.newItemCount = inserted; }
     return this.getItems(feed.id, 200);
   }
 

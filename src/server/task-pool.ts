@@ -5,8 +5,13 @@ export class TaskPool {
   private running = 0;
   private exclusive = false;
   private waiters: Array<() => void> = [];
-  constructor(readonly concurrency: number) {
+  constructor(public concurrency: number) {
     if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 4) throw new Error('后台并发必须是 1–4 的整数');
+  }
+  setConcurrency(value: number): void {
+    if (!Number.isInteger(value) || value < 1 || value > 4) throw new Error('后台并发必须是 1–4 的整数');
+    this.concurrency = value;
+    this.pump();
   }
   enqueue<T>(operation: () => Promise<T> | T, keys: string[] | (() => string[]) = []): Promise<T> {
     return new Promise<T>((resolve, reject) => {

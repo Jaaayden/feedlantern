@@ -43,6 +43,7 @@ export interface BrowserScrapeOptions extends BrowserOpenOptions {
 }
 
 export interface BrowserServiceOptions {
+  dnsOverHttps?: boolean;
   backgroundConcurrency?: number;
   allowedHosts?: string[];
   executablePath?: string;
@@ -259,6 +260,7 @@ export class BrowserService {
     if (!Number.isInteger(this.backgroundConcurrency) || this.backgroundConcurrency < 1 || this.backgroundConcurrency > 4) throw new BrowserServiceError('后台并发必须是 1–4 的整数');
     this.networkOptions = {
       allowedHosts: options.allowedHosts ?? allowedHostListFromEnv(),
+      dnsOverHttps: options.dnsOverHttps,
     };
     this.executablePath = options.executablePath;
   }
