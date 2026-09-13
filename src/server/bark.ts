@@ -1,7 +1,7 @@
 import type { FetchHistory } from './fetch-history.js';
 import { defaultApplicationSettings, type ApplicationSettings } from '../shared/types.js';
 
-export type BarkSender = (url: string, body: string, signal: AbortSignal) => Promise<void>;
+export type BarkSender = (url: string, body: string, signal: AbortSignal, title?: string) => Promise<void>;
 
 export function validateBarkUrl(raw?: string): string | undefined {
   if (!raw?.trim()) return undefined;
@@ -13,7 +13,7 @@ export function validateBarkUrl(raw?: string): string | undefined {
   } catch { throw new Error('Bark 地址必须是包含设备密钥的 HTTPS 推送地址，不支持查询参数'); }
 }
 
-export const sendBark: BarkSender = async (url, body, signal) => {
+export const sendBark: BarkSender = async (url, body, signal, title = '订阅灯：订阅抓取失败') => {
   // Convert the App's device URL into the documented V2 JSON endpoint.
   // Keeping the key in the body also avoids putting it in proxy access paths.
   const endpoint = new URL(url);
@@ -23,7 +23,7 @@ export const sendBark: BarkSender = async (url, body, signal) => {
   const response = await fetch(endpoint, {
     method: 'POST', redirect: 'error', signal,
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ device_key: deviceKey, title: '订阅灯：订阅抓取失败', body, group: 'FeedLantern' }),
+    body: JSON.stringify({ device_key: deviceKey, title, body, group: 'FeedLantern' }),
   });
   if (!response.ok) { await response.body?.cancel(); throw new Error('Bark 推送失败'); }
   const result = await response.json() as { code?: number };
@@ -71,7 +71,7 @@ export class BarkWorker {
       this.activeId = job.id;
       this.controller = new AbortController();
       let ok = false;
-      try { await this.send(options.url, job.body, AbortSignal.any([this.controller.signal, AbortSignal.timeout(options.timeoutSeconds * 1000)])); ok = true; }
+      try { await this.send(options.url, job.body, AbortSignal.any([this.controller.signal, AbortSignal.timeout(options.timeoutSeconds * 1000)]), job.kind === 'translation' ? '订阅灯：RSS 翻译失败' : undefined); ok = true; }
       catch { /* Only a fixed, sanitized error is persisted. */ }
       finally { this.activeId = undefined; this.controller = undefined; }
       this.history.finishAttempt(job.id, ok);

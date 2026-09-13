@@ -1,3 +1,5 @@
+import { translationEnabled } from '../shared/types.js';
+import { RssTranslations } from './rss-translation.js';
 import type { Tables } from './backups.js';
 import { FetchHistory } from './fetch-history.js';
 import { applicationSettingsSchema } from './settings.js';
@@ -125,6 +127,8 @@ function mergeRuleOrigins(current: RuleOrigins | undefined, next: RuleOrigins | 
 function rowToFeed(row: Record<string, unknown>): Feed {
   return {
     id: String(row.id),
+    sourceType: row.source_type === 'rss' ? 'rss' : 'website',
+    translationMode: row.translation_mode === 'original' ? 'original' : row.translation_mode === 'chinese' ? 'chinese' : 'bilingual',
     name: String(row.name),
     channelTitle: String(row.channel_title ?? row.name),
     url: String(row.url),
@@ -159,6 +163,7 @@ function rowToItem(row: Record<string, unknown>): FeedItem {
 
 export class Store {
   readonly history: FetchHistory;
+  readonly translations: RssTranslations;
   readonly dataDir: string;
   readonly dbPath: string;
   readonly masterKeyPath: string;
@@ -255,6 +260,12 @@ export class Store {
       UPDATE feeds SET channel_title = name;
       PRAGMA user_version = 3; COMMIT;`);
     if (version < 4) this.db.exec(`BEGIN; ALTER TABLE feed_items ADD COLUMN published_at_source TEXT; PRAGMA user_version = 4; COMMIT;`);
+    if (version < 5) this.db.exec(`BEGIN;
+      ALTER TABLE feeds ADD COLUMN source_type TEXT NOT NULL DEFAULT 'website';
+      ALTER TABLE feeds ADD COLUMN translation_mode TEXT NOT NULL DEFAULT 'bilingual';
+      PRAGMA user_version=5; COMMIT;`);
+    if (version < 6) this.db.exec("BEGIN; UPDATE feeds SET translation_mode='original' WHERE source_type='website'; PRAGMA user_version=6; COMMIT;");
+    this.translations = new RssTranslations(this.db);
     this.history = new FetchHistory(this.db, () => this.getSettings());
     this.ensureSetupToken();
   }
@@ -482,17 +493,24 @@ export class Store {
       last_error, item_count, token_ciphertext, token_hash
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL, NULL, ?, NULL, 0, ?, ?)`)
       .run(id, input.name, input.url, JSON.stringify(input.rules), input.ruleOrigins ? JSON.stringify(input.ruleOrigins) : null, input.credentialId, input.intervalMinutes, input.waitMs, input.waitForSelector ?? null, timestamp, nextFetchAt, encrypt(this.masterKey, token), hashToken(token));
-    this.db.prepare("UPDATE feeds SET channel_title = ? WHERE id = ?").run(input.name, id);
+    this.db.prepare("UPDATE feeds SET channel_title = ?, source_type=?, translation_mode=? WHERE id = ?").run(input.name, input.sourceType ?? 'website', input.translationMode ?? (input.sourceType === 'rss' ? 'bilingual' : 'original'), id);
     return { feed: this.getFeed(id)!, token };
   }
 
   updateFeed(id: string, input: FeedInput): Feed | null {
     const existing = this.getFeed(id);
     if (!existing) return null;
+    this.translations.invalidate(id);
+    if ((existing.sourceType === 'rss' || input.sourceType === 'rss') && (existing.url !== input.url || existing.sourceType !== (input.sourceType ?? 'website'))) {
+      this.db.prepare('DELETE FROM feed_items WHERE feed_id=?').run(id);
+      this.translations.resetSource(id);
+    }
+    this.db.prepare('UPDATE feeds SET source_type=?,translation_mode=? WHERE id=?').run(input.sourceType ?? 'website', input.translationMode ?? existing.translationMode ?? 'bilingual', id);
     const origins = mergeRuleOrigins(existing.ruleOrigins, input.ruleOrigins);
     const nextFetchAt = new Date(Date.now() + input.intervalMinutes * 60_000).toISOString();
     this.db.prepare(`UPDATE feeds SET name = ?, channel_title = ?, url = ?, rules_json = ?, rule_origins_json = ?, credential_id = ?, interval_minutes = ?, wait_ms = ?, wait_for_selector = ?, next_fetch_at = ?, last_error = NULL WHERE id = ?`)
       .run(input.name, input.name, input.url, JSON.stringify(input.rules), origins ? JSON.stringify(origins) : null, input.credentialId, input.intervalMinutes, input.waitMs, input.waitForSelector ?? null, nextFetchAt, id);
+    this.translations.syncWebsite(this.getFeed(id)!);
     return this.getFeed(id);
   }
 
@@ -503,18 +521,21 @@ export class Store {
   updateFeedSettings(id: string, input: FeedSettingsInput): Feed | null {
     const feed = this.getFeed(id);
     if (!feed) return null;
+    if (input.translationMode && input.translationMode !== feed.translationMode) this.translations.invalidate(id);
+    if (input.translationMode) this.db.prepare('UPDATE feeds SET translation_mode=? WHERE id=?').run(input.translationMode, id);
     const title = input.channelTitle ?? feed.name;
     const interval = input.intervalMinutes ?? feed.intervalMinutes;
     const nextFetchAt = interval === feed.intervalMinutes
       ? feed.nextFetchAt : new Date(Date.now() + interval * 60_000).toISOString();
     this.db.prepare('UPDATE feeds SET name = ?, channel_title = ?, interval_minutes = ?, next_fetch_at = ? WHERE id = ?')
       .run(title, title, interval, nextFetchAt, id);
+    this.translations.syncWebsite(this.getFeed(id)!);
     return this.getFeed(id);
   }
 
   exportTables(): Tables {
     const tables: Record<string, unknown> = {};
-    for (const table of ['admin', 'credentials', 'feeds', 'feed_items', 'settings']) {
+    for (const table of ['admin', 'credentials', 'feeds', 'feed_items', 'settings', 'rss_sources', 'translations', 'translation_cache']) {
       tables[table] = this.db.prepare(`SELECT * FROM ${table}`).all().map(row => {
         if (table === 'credentials') return { ...row, encrypted_value: decrypt(this.masterKey, String(row.encrypted_value)) };
         if (table === 'feeds') return { ...row, token_ciphertext: decrypt(this.masterKey, String(row.token_ciphertext)) };
@@ -528,8 +549,8 @@ export class Store {
   restoreTables(tables: Tables): void {
     const previousServer = this.getSettings().server;
     this.transaction(() => {
-      for (const table of ['sessions', 'import_jobs', 'feed_items', 'feeds', 'credentials', 'admin', 'settings']) this.db.exec(`DELETE FROM ${table}`);
-      for (const table of ['admin', 'credentials', 'feeds', 'feed_items', 'settings'] as const) {
+      for (const table of ['sessions', 'import_jobs', 'translations', 'rss_sources', 'translation_cache', 'feed_items', 'feeds', 'credentials', 'admin', 'settings']) this.db.exec(`DELETE FROM ${table}`);
+      for (const table of ['admin', 'credentials', 'feeds', 'feed_items', 'settings', 'rss_sources', 'translations', 'translation_cache'] as const) {
         for (const value of tables[table]) {
           const row: Record<string, string | number | null> = { ...value };
           if (table === 'credentials') row.encrypted_value = encrypt(this.masterKey, String(row.encrypted_value));
@@ -587,12 +608,19 @@ export class Store {
 
   getFeed(id: string): Feed | null {
     const row = this.db.prepare(`SELECT f.*, (SELECT COUNT(*) FROM feed_items i WHERE i.feed_id = f.id) AS item_count FROM feeds f WHERE f.id = ?`).get(id) as Record<string, unknown> | undefined;
-    return row ? rowToFeed(row) : null;
+    if (!row) return null;
+    const feed = rowToFeed(row);
+    if (translationEnabled(feed)) feed.translation = this.translations.stats(feed.id);
+    return feed;
   }
 
   listFeeds(): Feed[] {
     const rows = this.db.prepare(`SELECT f.*, (SELECT COUNT(*) FROM feed_items i WHERE i.feed_id = f.id) AS item_count FROM feeds f ORDER BY f.created_at DESC`).all() as Array<Record<string, unknown>>;
-    return rows.map(rowToFeed);
+    return rows.map(row => {
+      const feed = rowToFeed(row);
+      if (translationEnabled(feed)) feed.translation = this.translations.stats(feed.id);
+      return feed;
+    });
   }
 
   deleteFeed(id: string): boolean {
@@ -603,6 +631,7 @@ export class Store {
   toggleFeed(id: string): Feed | null {
     const current = this.getFeed(id);
     if (!current) return null;
+    this.translations.invalidate(id);
     const enabled = !current.enabled;
     this.db.prepare('UPDATE feeds SET enabled = ?, next_fetch_at = ? WHERE id = ?').run(enabled ? 1 : 0, enabled ? nowIso() : current.nextFetchAt, id);
     return this.getFeed(id);
@@ -632,7 +661,9 @@ export class Store {
 
   getItems(id: string, limit = 200): FeedItem[] {
     const rows = this.db.prepare('SELECT id, title, link, description, image, published_at, published_at_source, first_seen_at FROM feed_items WHERE feed_id = ? ORDER BY first_seen_at DESC, rowid ASC LIMIT ?').all(id, limit) as Array<Record<string, unknown>>;
-    return rows.map(rowToItem);
+    const items = rows.map(rowToItem);
+    const feed = this.getFeed(id);
+    return feed && translationEnabled(feed) ? this.translations.decorate(feed, items) : items;
   }
 
   upsertItems(feed: Feed, extracted: ExtractedItem[], counts?: { itemCount: number; newItemCount: number }): FeedItem[] {
@@ -663,6 +694,7 @@ export class Store {
         }
       }
       this.db.prepare(`DELETE FROM feed_items WHERE feed_id = ? AND id NOT IN (SELECT id FROM feed_items WHERE feed_id = ? ORDER BY first_seen_at DESC, rowid ASC LIMIT 200)`).run(feed.id, feed.id);
+      this.translations.syncWebsite(this.getFeed(feed.id)!);
       this.db.exec('RELEASE items');
     } catch (error) {
       try { this.db.exec('ROLLBACK TO items; RELEASE items'); } catch { /* best effort */ }
@@ -688,7 +720,11 @@ export class Store {
 
   dueFeeds(now = new Date()): Feed[] {
     const rows = this.db.prepare(`SELECT f.*, (SELECT COUNT(*) FROM feed_items i WHERE i.feed_id = f.id) AS item_count FROM feeds f WHERE f.enabled = 1 AND f.next_fetch_at <= ? ORDER BY f.next_fetch_at ASC`).all(now.toISOString()) as Array<Record<string, unknown>>;
-    return rows.map(rowToFeed);
+    return rows.map(row => {
+      const feed = rowToFeed(row);
+      if (translationEnabled(feed)) feed.translation = this.translations.stats(feed.id);
+      return feed;
+    });
   }
 }
 

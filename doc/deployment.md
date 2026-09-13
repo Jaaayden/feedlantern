@@ -71,3 +71,17 @@ ssh -L 4321:127.0.0.1:4321 user@your-server
 5. 正式使用前导出一次加密备份，妥善保管密码。
 
 数据在 Compose 命名卷 `feedlantern_data` 中，包括数据库及本机加密密钥。`docker compose down` 保留卷，`down -v` 会删除数据，不用于日常维护。
+
+## RSS 翻译连通性检查
+
+RSS 翻译复用现有容器与数据卷，不需要 Redis、外部数据库或额外服务。Google 免费通道要求容器能访问 `translate-pa.googleapis.com`；宿主机浏览器能翻译不代表容器的出口可用。
+
+在部署目录运行：
+
+```sh
+docker compose exec feedlantern node --import tsx scripts/check-translation.ts
+```
+
+该命令将三段固定公开样本文本合并为一次请求翻译，最多等待 20 秒。成功显示译文数量和耗时，失败返回非零退出码。遇到自动化请求限制页面或 HTTP 429 时，稍后重试或检查服务器的网络出口；服务不会绕过限制，也不会自动改用收费接口。Google 免费通道可能变更，本地测试使用模拟服务不能代替实际服务器连通性验证。
+
+RSS 源获取沿用设置中的目标主机访问策略与加密 DNS 选项。默认禁止私网及特殊地址，每次重定向重新检查；若订阅你自己内网的 RSS 服务，需要在现有「允许目标主机」设置里明确加入对应主机与端口。

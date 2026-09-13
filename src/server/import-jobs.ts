@@ -1,3 +1,4 @@
+import type { SourceResult } from './rss-source.js';
 import { siteKey } from './task-pool.js';
 import { randomUUID } from 'node:crypto';
 import type { DetectionResult, Feed, FeedInput, ImportEntry, ImportJob } from '../shared/types.js';
@@ -20,7 +21,8 @@ export class ImportJobs {
     private discover: (entry: ImportEntry) => Promise<{ title: string; detection: DetectionResult }>,
     private scrape: (input: FeedInput) => Promise<import('../shared/types.js').ExtractedItem[]>,
     private describeError: (error: unknown) => string = () => '识别失败：请检查网址、网络或 Cookie，然后重试或手动调整。',
-    private concurrency = 1) {}
+    private concurrency = 1,
+    private loadRss?: (entry: ImportEntry) => Promise<SourceResult>, private wakeTranslation?: () => void) {}
 
   recover() {
     this.stopped = false;
@@ -33,7 +35,7 @@ export class ImportJobs {
   }
   stop() { this.stopped = true; }
   setConcurrency(value: number) { this.concurrency = value; }
-  create(entries: Array<{ url: string; credentialId: string | null; intervalMinutes: number }>): ImportJob {
+  create(entries: Array<Pick<ImportEntry, 'url' | 'credentialId' | 'intervalMinutes' | 'sourceType' | 'translationMode'>>): ImportJob {
     if (this.store.listImportJobs().filter(j => j.entries.some(e => ['queued', 'running'].includes(e.state))).length >= 10) throw new AppError(429, '请等待现有批量任务完成');
     const job: ImportJob = { id: randomUUID(), createdAt: new Date().toISOString(), entries: [] };
     const seen = new Set<string>();
@@ -41,7 +43,7 @@ export class ImportJobs {
       const url = normalizeSource(input.url);
       if (seen.has(url)) continue;
       seen.add(url);
-      const existing = this.existing(url);
+      const existing = this.existing(url, input);
       job.entries.push({ ...input, url, id: randomUUID(), state: existing ? 'existing' : 'queued', feedId: existing?.id });
     }
     this.store.saveImportJob(job); this.wake(); return job;
@@ -64,10 +66,11 @@ export class ImportJobs {
     return this.enqueue(async () => {
       const job = this.get(id), entry = job.entries.find(e => e.id === entryId);
       if (!entry) throw new AppError(404, '任务条目不存在');
+      if (entry.sourceType === 'rss') throw new AppError(400, 'RSS 翻译请使用重试，不支持网页规则确认');
       if (entry.feedId) return this.store.getFeed(entry.feedId);
       if (!['review', 'failed'].includes(entry.state)) throw new AppError(409, '该任务当前不能确认');
       if (normalizeSource(input.url) !== entry.url) throw new AppError(400, '确认时不能更改来源网址');
-      const existing = this.existing(entry.url);
+      const existing = this.existing(entry.url, entry);
       if (existing) { entry.state = 'existing'; entry.feedId = existing.id; this.store.saveImportJob(job); return existing; }
       const startedAt = new Date().toISOString(), started = performance.now();
       const items = await this.scrape(input);
@@ -75,10 +78,10 @@ export class ImportJobs {
       return this.complete(job, entry, input, items, startedAt, performance.now() - started);
     }, [siteKey(input.url)]);
   }
-  private existing(url: string): Feed | undefined { return this.store.listFeeds().find(f => normalizeSource(f.url) === url); }
-  private complete(job: ImportJob, entry: ImportEntry, input: FeedInput, items: import('../shared/types.js').ExtractedItem[], startedAt: string, durationMs: number) {
+  private existing(url: string, entry: Pick<ImportEntry, 'sourceType' | 'translationMode'>): Feed | undefined { return this.store.listFeeds().find(f => normalizeSource(f.url) === url && (f.sourceType ?? 'website') === (entry.sourceType ?? 'website') && (entry.sourceType !== 'rss' || (f.translationMode ?? 'bilingual') === (entry.translationMode ?? 'bilingual'))); }
+  private complete(job: ImportJob, entry: ImportEntry, input: FeedInput, items: import('../shared/types.js').ExtractedItem[], startedAt: string, durationMs: number, rss?: SourceResult) {
     return this.store.transaction(() => {
-      const existing = this.existing(entry.url);
+      const existing = this.existing(entry.url, entry);
       if (existing) {
         entry.state = 'existing'; entry.feedId = existing.id;
         const current = this.get(job.id);
@@ -89,8 +92,11 @@ export class ImportJobs {
       const { feed } = this.store.createFeed(input);
       const runId = this.store.history.start(feed.id, 'import', startedAt);
       const counts = { itemCount: 0, newItemCount: 0 };
-      this.store.upsertItems(feed, items, counts);
-      if (!counts.itemCount) throw new AppError(400, '未匹配到有效条目，请调整规则');
+      if (rss) {
+        Object.assign(counts, this.store.translations.upsert(feed, this.store.translations.incoming(feed.id, rss.items)));
+        this.store.translations.saveSource(feed.id, rss);
+      } else this.store.upsertItems(feed, items, counts);
+      if (!rss && !counts.itemCount) throw new AppError(400, '未匹配到有效条目，请调整规则');
       this.store.markFetchStart(feed.id, feed.nextFetchAt);
       this.store.markFetchSuccess(feed.id, feed.nextFetchAt);
       this.store.history.succeed(runId, feed.id, durationMs, counts);
@@ -102,7 +108,7 @@ export class ImportJobs {
       return this.store.getFeed(feed.id)!;
     });
   }
-  wake() { if (!this.running && !this.stopped) void this.run().catch(() => { /* persisted running entries recover on restart */ }); }
+  wake() { if (this.running && !this.stopped) this.restartRequested = true; if (!this.running && !this.stopped) void this.run().catch(() => { /* persisted running entries recover on restart */ }); }
   private async run() {
     this.running = true;
     try {
@@ -122,11 +128,19 @@ export class ImportJobs {
           if (this.stopped) return;
           const current = this.get(job.id), entry = current.entries.find(e => e.id === pending.id)!;
           if (entry.state !== 'queued') return;
-          const existing = this.existing(entry.url);
+          const existing = this.existing(entry.url, entry);
           if (existing) { entry.state = 'existing'; entry.feedId = existing.id; this.store.saveImportJob(current); return; }
           entry.state = 'running'; this.store.saveImportJob(current);
           try {
             const startedAt = new Date().toISOString(), started = performance.now();
+            if (entry.sourceType === 'rss') {
+              if (!this.loadRss) throw new AppError(501, 'RSS 批量导入不可用');
+              const rss = await this.loadRss(entry);
+              entry.title = rss.title;
+              this.complete(current, entry, { sourceType: 'rss', translationMode: entry.translationMode ?? 'bilingual', name: (rss.title.trim() || new URL(entry.url).host).slice(0, 200), url: entry.url, credentialId: null, intervalMinutes: entry.intervalMinutes, waitMs: 0, rules: { item: '', title: '', link: '' } }, [], startedAt, performance.now() - started, rss);
+              this.wakeTranslation?.();
+              return;
+            }
             const { title, detection } = await this.discover(entry);
             entry.title = title;
             const candidate = detection.candidates.find(c => c.id === detection.recommendedId && c.confidence === 'high');

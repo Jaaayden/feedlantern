@@ -9,6 +9,8 @@ export interface SelectionRules {
   date?: string;
 }
 export interface FeedInput {
+  sourceType?: 'website' | 'rss';
+  translationMode?: 'original' | 'chinese' | 'bilingual';
   name: string;
   url: string;
   rules: SelectionRules;
@@ -19,6 +21,7 @@ export interface FeedInput {
   waitForSelector?: string;
 }
 export interface FeedSettingsInput {
+  translationMode?: 'original' | 'chinese' | 'bilingual';
   channelTitle?: string;
   intervalMinutes?: number;
 }
@@ -32,8 +35,12 @@ export interface Feed extends FeedInput {
   nextFetchAt: string;
   lastError: string | null;
   itemCount: number;
+  translation?: { pending: number; success: number; failed: number };
 }
 export interface ExtractedItem {
+  contentHtml?: string;
+  translationStatus?: 'pending' | 'success' | 'failed';
+  translationError?: string;
   title: string;
   link: string;
   description?: string;
@@ -54,6 +61,7 @@ export interface FetchLog {
 }
 export interface FetchLogPage { logs: FetchLog[]; nextCursor: string | null; retentionDays: number }
 export interface ApplicationSettings {
+  translation: { concurrency: number; requestIntervalMs: number };
   feedView: 'list' | 'cards';
   logRetentionDays: number;
   bark: {
@@ -67,6 +75,7 @@ export interface ApplicationSettings {
   };
 }
 export const defaultApplicationSettings: ApplicationSettings = {
+  translation: { concurrency: 6, requestIntervalMs: 100 },
   feedView: 'list', logRetentionDays: 30,
   bark: { enabled: false, url: '', timeoutSeconds: 10, maxAttempts: 3, retryDelaySeconds: 60, laterRetryDelaySeconds: 300, cooldownMinutes: 30 },
   server: { backgroundConcurrency: 1, allowedHosts: [], dnsOverHttps: false, trustedProxies: [], publicOrigin: 'http://127.0.0.1:4321', cookieSecure: false, sessionTtlDays: 30, host: '127.0.0.1', port: 4321 },
@@ -109,8 +118,13 @@ export interface AuthState { setupRequired: boolean; authenticated: boolean; use
 // DELETE /api/browser/:id -> {ok:true}
 
 export interface ImportEntry {
+  sourceType?: 'website' | 'rss'; translationMode?: 'original' | 'chinese' | 'bilingual';
   id: string; url: string; credentialId: string | null; intervalMinutes: number;
   state: 'queued' | 'running' | 'created' | 'existing' | 'review' | 'failed' | 'canceled';
   feedId?: string; error?: string; title?: string; detection?: DetectionResult;
 }
 export interface ImportJob { id: string; createdAt: string; entries: ImportEntry[] }
+
+export function translationEnabled(feed: Pick<FeedInput, 'sourceType' | 'translationMode'>): boolean {
+  return feed.translationMode === 'chinese' || feed.translationMode === 'bilingual' || feed.sourceType === 'rss' && feed.translationMode !== 'original';
+}

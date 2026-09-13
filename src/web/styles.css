@@ -44,3 +44,19 @@ summary { cursor:pointer; }
 .application-settings legend { padding: 0 8px; font-weight: 600; }
 .application-settings .inline { margin: 12px 0; }
 .application-settings input[type="checkbox"] { width: 18px; height: 18px; }
+
+.rss-content { display:block; width:100%; height:300px; border:1px solid var(--line); border-radius:8px; background:white; margin:12px 0; }
+.preview-text { min-width:0; }
+[aria-label="订阅来源类型"] { margin-bottom:24px; }
+[aria-label="订阅来源类型"] [aria-pressed="true"] { background:#e3edda; border-color:#a5b998; }
+
+.rss-editor-form > button[type="button"] { margin-bottom:20px; }
+.rss-editor-form > .hint { margin-bottom:14px; }
+.rss-source-preview { margin-top:24px; padding:24px; }
+.rss-source-preview h2 { margin-bottom:20px; }
+.rss-source-preview article + article { margin-top:24px; }
+
+.translation-progress { margin: 16px 0; padding: 16px; border: 1px solid var(--border); border-radius: 12px; }
+.translation-progress p { font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.translation-progress summary { cursor: pointer; margin: 10px 0; }
+.translation-log-list { max-height: 240px; overflow-y: auto; }

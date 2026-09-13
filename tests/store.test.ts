@@ -89,7 +89,7 @@ test('v0.1.0 表结构原位升级保留频道名、密钥和历史', async () =
     const items = store.getItems(feed.id);
     store.close();
     const db = new DatabaseSync(join(dir, 'app.db'));
-    db.exec('ALTER TABLE feed_items DROP COLUMN published_at_source; ALTER TABLE feeds DROP COLUMN channel_title; DROP TABLE settings; DROP TABLE import_jobs; PRAGMA user_version=0;'); db.close();
+    db.exec('ALTER TABLE feeds DROP COLUMN source_type; ALTER TABLE feeds DROP COLUMN translation_mode; ALTER TABLE feed_items DROP COLUMN published_at_source; ALTER TABLE feeds DROP COLUMN channel_title; DROP TABLE settings; DROP TABLE import_jobs; PRAGMA user_version=0;'); db.close();
     store = new Store(dir);
     assert.equal(store.getFeed(feed.id)?.channelTitle, '旧订阅');
     assert.equal(store.getFeedToken(feed.id)?.token, token);
@@ -108,7 +108,7 @@ test('v0.2.0 自定义频道名升级后统一，编辑名称继续同步 RSS', 
     store.close();
     const db = new DatabaseSync(join(dir, 'app.db'));
     db.prepare('UPDATE feeds SET channel_title = ?').run('已自定义频道名称');
-    db.exec('ALTER TABLE feed_items DROP COLUMN published_at_source; PRAGMA user_version=2'); db.close();
+    db.exec('ALTER TABLE feeds DROP COLUMN source_type; ALTER TABLE feeds DROP COLUMN translation_mode; ALTER TABLE feed_items DROP COLUMN published_at_source; PRAGMA user_version=2'); db.close();
     store = new Store(dir);
     const migrated = store.getFeed(feed.id)!;
     assert.equal(migrated.name, '已自定义频道名称');
@@ -149,7 +149,7 @@ test('日期来源字段迁移保留旧日期，重启后仍视为绝对时间',
     const old = store.upsertItems(feed, [{ title: '旧日期', link: 'https://example.test/1', publishedAt: '2026-09-09T11:00:00.000Z' }])[0];
     store.close();
     const db = new DatabaseSync(join(dir, 'app.db'));
-    db.exec('ALTER TABLE feed_items DROP COLUMN published_at_source; PRAGMA user_version=3;');
+    db.exec('ALTER TABLE feeds DROP COLUMN source_type; ALTER TABLE feeds DROP COLUMN translation_mode; ALTER TABLE feed_items DROP COLUMN published_at_source; PRAGMA user_version=3;');
     db.close();
     store = new Store(dir);
     assert.deepEqual(store.getItems(feed.id)[0], old);

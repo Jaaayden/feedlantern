@@ -246,6 +246,12 @@ const server = createServer(async (request, response) => {
     sendHtml(response, 200, staticPage().replace('</main>', '<div style="height:1600px">Scroll fixture spacer</div></main>'));
     return;
   }
+  if (requestUrl.pathname === '/feed.xml') {
+    if (request.headers['if-none-match'] === 'rss-fixture-v1') { response.writeHead(304); response.end(); return; }
+    response.writeHead(200, { 'Content-Type': 'application/rss+xml', ETag: 'rss-fixture-v1' });
+    response.end(`<rss version="2.0"><channel><title>RSS translation fixture</title><item><guid>rss-one</guid><title>Hello RSS</title><link>http://${host}:${port}/article/one</link><description><![CDATA[<p>This is an English article with <strong>bold text</strong>.</p><ul><li>One item</li></ul><pre>const example = 1;</pre>]]></description><pubDate>Sat, 12 Sep 2026 00:00:00 GMT</pubDate></item></channel></rss>`);
+    return;
+  }
   if (requestUrl.pathname === '/static') {
     sendHtml(response, 200, staticPage());
     return;

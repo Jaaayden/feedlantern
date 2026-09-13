@@ -1,3 +1,4 @@
+import type { TranslationProgressData } from './TranslationProgress';
 import type {
   AuthState,
   ApplicationSettings,
@@ -82,11 +83,12 @@ export const api = {
   },
   jobs: {
     list: () => request<ImportJob[]>('/api/import-jobs'),
-    create: (entries: Array<{ url: string; credentialId: string | null }>, intervalMinutes: number) => request<ImportJob>('/api/import-jobs', { method: 'POST', body: { entries, intervalMinutes } }),
+    create: (entries: Array<{ url: string; credentialId: string | null }>, intervalMinutes: number, sourceType: 'website' | 'rss' = 'website', translationMode: 'chinese' | 'bilingual' = 'bilingual') => request<ImportJob>('/api/import-jobs', { method: 'POST', body: { entries, intervalMinutes, sourceType, translationMode } }),
     action: (id: string, action: 'retry' | 'cancel', entryId?: string) => request<ImportJob>(`/api/import-jobs/${id}/${action}`, { method: 'POST', body: { entryId } }),
     confirm: (id: string, entryId: string, input: FeedInput) => request<{ feed: Feed; feedUrl: string }>(`/api/import-jobs/${id}/confirm`, { method: 'POST', body: { entryId, input } }),
   },
   settings: {
+    testBark: (body: ApplicationSettings['bark']) => request<{ ok: boolean }>('/api/settings/bark/test', { method: 'POST', body }),
     save: (body: ApplicationSettings) => request<ApplicationSettings>('/api/settings', { method: 'PUT', body }),
     get: () => request<ApplicationSettings>('/api/settings'),
     update: (feedView: 'list' | 'cards') => request<{ feedView: 'list' | 'cards' }>('/api/settings', { method: 'PUT', body: { feedView } }),
@@ -110,6 +112,9 @@ export const api = {
     remove: (id: string) => request<void>(`/api/credentials/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   },
   feeds: {
+    previewRss: (url: string) => request<{ title: string; items: ExtractedItem[] }>('/api/rss/preview', { method: 'POST', body: { url } }),
+    translationProgress: (id: string) => request<TranslationProgressData>(`/api/feeds/${encodeURIComponent(id)}/translation/progress`),
+    retryTranslation: (id: string) => request<unknown>(`/api/feeds/${encodeURIComponent(id)}/translation/retry`, { method: 'POST', body: {} }),
     logs: (id: string, status?: FetchStatus, cursor?: string) => {
       const query = new URLSearchParams();
       if (status) query.set('status', status);

@@ -1,11 +1,13 @@
 {
   "name": "feedlantern",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "description": "A self-hosted visual website-to-RSS builder with private cookie storage.",
   "license": "MIT",
-  "engines": { "node": ">=24.0.0" },
+  "engines": {
+    "node": ">=24.0.0"
+  },
   "packageManager": "pnpm@11.25.0",
   "scripts": {
     "dev": "concurrently -k 'tsx watch --env-file-if-exists=.env scripts/dev-server.ts' 'vite --host 127.0.0.1'",
@@ -20,23 +22,27 @@
   "dependencies": {
     "@fastify/cookie": "^11.0.2",
     "@fastify/static": "^8.2.0",
+    "dom-serializer": "^3.1.1",
     "fastify": "^5.6.0",
+    "htmlparser2": "^12.0.0",
     "ipaddr.js": "^2.2.0",
     "lucide-react": "^0.468.0",
     "playwright": "^1.55.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
+    "sanitize-html": "^2.17.7",
     "tsx": "^4.20.5",
-    "zod": "^4.1.5"
+    "zod": "^4.1.5",
+    "fast-xml-parser": "^5.11.1"
   },
   "devDependencies": {
     "@playwright/test": "^1.55.0",
     "@types/node": "^24.3.0",
     "@types/react": "^19.1.12",
     "@types/react-dom": "^19.1.9",
+    "@types/sanitize-html": "^2.16.1",
     "@vitejs/plugin-react": "^5.0.2",
     "concurrently": "^9.2.1",
-    "fast-xml-parser": "^5.2.5",
     "typescript": "^5.9.2",
     "vite": "^7.1.4"
   }

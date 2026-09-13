@@ -1,4 +1,8 @@
-import { BarkWorker, type BarkSender } from './bark.js';
+import { translationEnabled } from '../shared/types.js';
+import { fetchSource, type SourceFetcher } from './rss-source.js';
+import { NetworkPolicy } from './network.js';
+import { TranslationWorker, type Translator } from './rss-translation.js';
+import { BarkWorker, sendBark, type BarkSender } from './bark.js';
 import { applicationSettingsSchema, settingsFromConfig, applyRuntimeSettings } from './settings.js';
 import { safeDiagnostic } from './fetch-history.js';
 import { TaskPool, siteKey } from './task-pool.js';
@@ -69,9 +73,14 @@ export interface CreateAppOptions extends ConfigInput {
   browserService?: BrowserServiceLike;
   startScheduler?: boolean;
   barkSender?: BarkSender;
+  rssFetcher?: SourceFetcher;
+  translator?: Translator;
+  translationIntervalMs?: number;
 }
 
 interface FeedBody {
+  sourceType?: unknown;
+  translationMode?: unknown;
   name?: unknown;
   url?: unknown;
   rules?: unknown;
@@ -151,14 +160,19 @@ function parseRuleOrigins(value: unknown): FeedInput['ruleOrigins'] {
 
 function parseFeedInput(value: unknown): FeedInput {
   const record = asRecord(value) as FeedBody;
+  if (record.sourceType !== undefined && !['website','rss'].includes(String(record.sourceType))) throw new AppError(400, '订阅来源类型无效');
+  if (record.translationMode !== undefined && !['original','chinese','bilingual'].includes(String(record.translationMode))) throw new AppError(400, '翻译输出模式无效');
+  const rss = record.sourceType === 'rss';
   const credentialId = record.credentialId === undefined || record.credentialId === null || record.credentialId === '' ? null : asNonEmptyString(record.credentialId, 'credentialId', 200);
   return {
+    sourceType: rss ? 'rss' : 'website',
+    translationMode: record.translationMode === 'original' ? 'original' : record.translationMode === 'chinese' ? 'chinese' : record.translationMode === 'bilingual' || rss ? 'bilingual' : undefined,
     name: asNonEmptyString(record.name, 'feed name', 200),
     url: parseHttpUrl(record.url, 'feed URL'),
-    rules: parseRules(record.rules),
+    rules: rss ? { item: '', title: '', link: '' } : parseRules(record.rules),
     ruleOrigins: parseRuleOrigins(record.ruleOrigins),
-    credentialId,
-    intervalMinutes: asInteger(record.intervalMinutes, 'intervalMinutes', 5, 1_440, 60),
+    credentialId: rss ? null : credentialId,
+    intervalMinutes: asInteger(record.intervalMinutes, 'intervalMinutes', 5, 1_440, rss ? 30 : 60),
     waitMs: asInteger(record.waitMs, 'waitMs', 0, 10_000, 1_000),
     ...(record.waitForSelector ? { waitForSelector: asNonEmptyString(record.waitForSelector, 'waitForSelector', 4_000) } : {}),
   };
@@ -272,6 +286,15 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   let closing = false;
   let maintenance = false;
   const pool = new TaskPool(config.backgroundConcurrency);
+  const translations = new TranslationWorker(store.translations, options.translator, options.translationIntervalMs ?? (() => store.getSettings().translation), (feedId, error) => {
+    try {
+      const feed = store.getFeed(feedId); if (!feed) return;
+      if (error) store.history.translationFailed(feed, error);
+      else store.history.translationRecovered(feedId);
+      bark.wake();
+    } catch { console.error('翻译通知入队失败'); }
+  });
+  const getRss: SourceFetcher = options.rssFetcher ?? ((url, input) => fetchSource(url, new NetworkPolicy({ allowedHosts: config.allowedHosts, dnsOverHttps: config.dnsOverHttps }), input));
   const refreshInFlight = new Map<string, { promise: Promise<Feed | null>; force: boolean }>();
 
   // Unkeyed mutations form barriers; independent captures share bounded slots.
@@ -320,17 +343,26 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       return store.history.start(feed.id, source);
     });
     try {
-      const items = await browser.scrape({ url: feed.url, cookies: credentialsForFeed(feed), waitMs: feed.waitMs, waitForSelector: feed.waitForSelector, rules: feed.rules });
-      if (!items.length) throw new Error('没有抽取到有效条目：可能是页面结构或规则变化，请检查匹配规则、Cookie 或页面渲染');
+      const rss = feed.sourceType === 'rss' ? await getRss(feed.url, store.translations.sourceState(feed.id)) : undefined;
+      const items = rss ? [] : await browser.scrape({ url: feed.url, cookies: credentialsForFeed(feed), waitMs: feed.waitMs, waitForSelector: feed.waitForSelector, rules: feed.rules });
+      if (!rss && !items.length) throw new Error('没有抽取到有效条目：可能是页面结构或规则变化，请检查匹配规则、Cookie 或页面渲染');
       const result = store.transaction(() => {
         const counts = { itemCount: 0, newItemCount: 0 };
-        store.upsertItems(feed, items, counts);
-        if (!counts.itemCount) throw new Error('没有抽取到有效条目：可能是页面结构或规则变化');
+        if (rss) {
+          if (!rss.unchanged) {
+            Object.assign(counts, store.translations.upsert(feed, store.translations.incoming(feed.id, rss.items)));
+            store.translations.saveSource(feed.id, rss);
+          } else counts.itemCount = feed.itemCount;
+        } else {
+          store.upsertItems(feed, items, counts);
+          if (!counts.itemCount) throw new Error('没有抽取到有效条目：可能是页面结构或规则变化');
+        }
         const updated = store.markFetchSuccess(feed.id, nextFetchAt);
         store.history.succeed(runId, feed.id, performance.now() - started, counts);
         return updated;
       });
       bark.wake();
+      translations.wake();
       return result;
     } catch (error) {
       const message = safeDiagnostic(friendlyError(error, '抓取失败，已保留已有条目'));
@@ -384,7 +416,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const credential = input.credentialId ? store.getCredentialValue(input.credentialId) : null;
     if (input.credentialId && !credential) throw new AppError(400, 'Cookie 凭据不存在');
     return browser.scrape({ ...input, cookies: credential ? cookiesForTarget(credential, input.url) : [] });
-  }, error => friendlyError(error, '识别失败：请检查网址、网络或 Cookie，然后重试或手动调整。'), config.backgroundConcurrency);
+  }, error => friendlyError(error, '识别失败：请检查网址、网络或 Cookie，然后重试或手动调整。'), config.backgroundConcurrency, entry => getRss(entry.url), () => translations.wake());
 
   app.addHook('onRequest', async (request) => {
     if (maintenance) throw new AppError(503, '服务维护中，请稍后重试');
@@ -542,6 +574,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const wasMaintenance = maintenance;
     maintenance = true;
     await bark.stop();
+    await translations.stop();
     try {
       store.transaction(() => {
         write();
@@ -552,7 +585,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       pool.setConcurrency(next.server.backgroundConcurrency);
       jobs.setConcurrency(next.server.backgroundConcurrency);
       store.history.prune();
-    } finally { maintenance = wasMaintenance; bark.start(); }
+    } finally { maintenance = wasMaintenance; bark.start(); translations.start(); }
   };
   app.post('/api/backups/export', async request => {
     backupGuard(request);
@@ -566,13 +599,15 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     let snapshot;
     try {
       snapshot = openBackup(body.archive, asNonEmptyString(body.password, '备份密码', 1024));
-      for (const row of snapshot.tables.feeds) parseFeedInput({ name: row.name, url: row.url, rules: JSON.parse(row.rules_json), ruleOrigins: row.rule_origins_json ? JSON.parse(row.rule_origins_json) : undefined, intervalMinutes: row.interval_minutes, waitMs: row.wait_ms, waitForSelector: row.wait_for_selector });
+      for (const row of snapshot.tables.feeds) parseFeedInput({ sourceType: row.source_type, translationMode: row.translation_mode, name: row.name, url: row.url, rules: JSON.parse(row.rules_json), ruleOrigins: row.rule_origins_json ? JSON.parse(row.rule_origins_json) : undefined, intervalMinutes: row.interval_minutes, waitMs: row.wait_ms, waitForSelector: row.wait_for_selector });
       for (const row of snapshot.tables.credentials) {
         const metadata = cookieMetadata(parseCookies(JSON.parse(row.encrypted_value), row.format, row.url), row.url);
         row.domains_json = JSON.stringify(metadata.domains); row.cookie_count = metadata.count; row.expires_at = metadata.expiresAt;
       }
       const ids = new Set(snapshot.tables.feeds.map(f => f.id));
       const creds = new Set(snapshot.tables.credentials.map(c => c.id));
+      const itemFeeds = new Map(snapshot.tables.feed_items.map(i => [i.id, i.feed_id]));
+      if (snapshot.tables.rss_sources.some(s => !ids.has(s.feed_id)) || snapshot.tables.translations.some(t => itemFeeds.get(t.item_id) !== t.feed_id)) throw Error();
       if (snapshot.tables.feed_items.some(i => !ids.has(i.feed_id)) || snapshot.tables.feeds.some(f => f.credential_id && !creds.has(f.credential_id))) throw Error();
     } catch { limiter.registerFailure(request.ip); throw new AppError(400, '备份密码错误、文件损坏或格式不受支持'); }
     if (action === 'preview') return { appVersion: snapshot.appVersion, createdAt: snapshot.createdAt, feeds: snapshot.tables.feeds.length, items: snapshot.tables.feed_items.length, credentials: snapshot.tables.credentials.length, username: snapshot.tables.admin[0].username, sourceSecurity: snapshot.security, targetSecurity: security(), settings: snapshot.tables.settings.some(row => row.key === 'application') ? settingsPreview(parseSettings(JSON.parse(snapshot.tables.settings.find(row => row.key === 'application')!.value))) : null };
@@ -581,6 +616,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     try {
       await pool.drain();
       await bark.stop();
+      await translations.stop();
       await browser.closeEditors?.();
       store.restoreTables(snapshot.tables);
       const restoredSettings = store.getSettings();
@@ -591,11 +627,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       pool.setConcurrency(restoredSettings.server.backgroundConcurrency);
       jobs.setConcurrency(restoredSettings.server.backgroundConcurrency);
       return { ok: true };
-    } finally { maintenance = false; jobs.recover(); bark.start(); }
+    } finally { maintenance = false; jobs.recover(); bark.start(); translations.start(); }
   });
   app.get('/api/backups/config', async request => {
     feedsGuard(request);
-    return { format: 'feedlantern-config', version: 2, settings: store.getSettings(), feeds: store.listFeeds().map(f => ({ name: f.name, channelTitle: f.channelTitle, url: f.url, rules: f.rules, ruleOrigins: f.ruleOrigins, intervalMinutes: f.intervalMinutes, waitMs: f.waitMs, waitForSelector: f.waitForSelector, enabled: f.enabled, requiresCredential: !!f.credentialId })) };
+    return { format: 'feedlantern-config', version: 2, settings: store.getSettings(), feeds: store.listFeeds().map(f => ({ sourceType: f.sourceType, translationMode: f.translationMode, name: f.name, channelTitle: f.channelTitle, url: f.url, rules: f.rules, ruleOrigins: f.ruleOrigins, intervalMinutes: f.intervalMinutes, waitMs: f.waitMs, waitForSelector: f.waitForSelector, enabled: f.enabled, requiresCredential: !!f.credentialId })) };
   });
   app.post('/api/backups/config', { bodyLimit: 10_000_000 }, async request => {
     feedsGuard(request);
@@ -607,7 +643,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       const value = asRecord(raw);
       return { input: parseFeedInput({ ...value, credentialId: null }), title: asOptionalString(value.channelTitle, '频道名称', 200), enabled: value.enabled !== false, needsCookie: value.requiresCredential === true };
     });
-    const signature = (f: FeedInput) => JSON.stringify([normalizeSource(f.url), ...['item', 'title', 'link', 'description', 'image', 'date'].map(k => f.rules[k as keyof SelectionRules] ?? '')]);
+    const signature = (f: FeedInput) => JSON.stringify([f.sourceType ?? 'website', f.translationMode ?? 'bilingual', normalizeSource(f.url), ...['item', 'title', 'link', 'description', 'image', 'date'].map(k => f.rules[k as keyof SelectionRules] ?? '')]);
     if (body.confirm !== true) {
       const seen = new Set(store.listFeeds().map(signature));
       return { settings: importedSettings ? settingsPreview(importedSettings) : null, entries: entries.map(e => { const duplicate = seen.has(signature(e.input)); seen.add(signature(e.input)); return { name: e.input.name, url: e.input.url, duplicate, needsCookie: e.needsCookie }; }) };
@@ -637,17 +673,22 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   app.post('/api/import-jobs', async request => {
     feedsGuard(request);
     const body = asRecord(request.body);
+    if (body.sourceType !== undefined && !['website', 'rss'].includes(String(body.sourceType))) throw new AppError(400, '订阅类型无效');
+    if (body.translationMode !== undefined && !['chinese', 'bilingual'].includes(String(body.translationMode))) throw new AppError(400, '翻译输出模式无效');
+    const sourceType = body.sourceType === 'rss' ? 'rss' as const : 'website' as const;
+    const translationMode = body.translationMode === 'chinese' ? 'chinese' as const : 'bilingual' as const;
     if (!Array.isArray(body.entries) || !body.entries.length || body.entries.length > 100) throw new AppError(400, '每批支持 1–100 个网址');
     const entries = body.entries.map(raw => {
       const entry = asRecord(raw);
       const url = normalizeSource(parseHttpUrl(entry.url, '网址'));
       const credentialId = entry.credentialId ? asNonEmptyString(entry.credentialId, 'credentialId', 200) : null;
+      if (sourceType === 'rss' && credentialId) throw new AppError(400, 'RSS 翻译不支持 Cookie 凭据');
       if (credentialId) {
         const credential = store.getCredentialValue(credentialId);
         if (!credential) throw new AppError(400, 'Cookie 凭据不存在');
         cookiesForTarget(credential, url);
       }
-      return { url, credentialId, intervalMinutes: asInteger(body.intervalMinutes, '刷新间隔', 5, 1440, 60) };
+      return { url, credentialId, sourceType, translationMode, intervalMinutes: asInteger(body.intervalMinutes, '刷新间隔', 5, 1440, 60) };
     });
     return jobs.create(entries);
   });
@@ -663,15 +704,26 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (action !== 'cancel' && action !== 'retry') throw new AppError(400, '任务操作无效');
     return jobs.update(id, action, asOptionalString(body.entryId, 'entryId', 200));
   });
+  app.post('/api/settings/bark/test', async request => {
+    feedsGuard(request);
+    const input = asRecord(request.body);
+    const settings = parseSettings({ ...store.getSettings(), bark: { ...store.getSettings().bark, ...input, enabled: false } });
+    if (!settings.bark.url) throw new AppError(400, '请先填写 Bark 推送地址');
+    try {
+      await (options.barkSender ?? sendBark)(settings.bark.url, '这是一条 FeedLantern 测试通知，Bark 推送连接正常。', AbortSignal.timeout(settings.bark.timeoutSeconds * 1000), '订阅灯：测试通知');
+      return { ok: true };
+    } catch { throw new AppError(502, '测试通知发送失败，请检查 Bark 地址和网络'); }
+  });
   app.get('/api/settings', async request => { feedsGuard(request); return store.getSettings(); });
   app.put('/api/settings', async request => {
     feedsGuard(request);
     const body = asRecord(request.body);
     if (!Object.keys(body).length || body.bark !== undefined && (typeof body.bark !== 'object' || body.bark === null || Array.isArray(body.bark))
+      || body.translation !== undefined && (typeof body.translation !== 'object' || body.translation === null || Array.isArray(body.translation))
       || body.server !== undefined && (typeof body.server !== 'object' || body.server === null || Array.isArray(body.server))) throw new AppError(400, '设置格式无效');
     return enqueueRefresh(async () => {
       const previous = store.getSettings();
-      const next = parseSettings({ ...previous, ...body, bark: { ...previous.bark, ...asRecord(body.bark) }, server: { ...previous.server, ...asRecord(body.server) } });
+      const next = parseSettings({ ...previous, ...body, translation: { ...previous.translation, ...asRecord(body.translation) }, bark: { ...previous.bark, ...asRecord(body.bark) }, server: { ...previous.server, ...asRecord(body.server) } });
       await applySettings(next);
       return store.getSettings();
     });
@@ -680,6 +732,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     feedsGuard(request);
     const body = asRecord(request.body);
     const input: FeedSettingsInput = {};
+    if ('translationMode' in body) {
+      if (!['original','chinese','bilingual'].includes(String(body.translationMode))) throw new AppError(400, '翻译输出模式无效');
+      input.translationMode = body.translationMode as 'original' | 'chinese' | 'bilingual';
+    }
     if ('channelTitle' in body) input.channelTitle = asNonEmptyString(body.channelTitle, '订阅名称', 200);
     if ('intervalMinutes' in body) {
       if (typeof body.intervalMinutes !== 'number' || !Number.isInteger(body.intervalMinutes) || body.intervalMinutes < 5 || body.intervalMinutes > 1440) {
@@ -691,6 +747,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return enqueueRefresh(() => {
       const feed = store.updateFeedSettings(String((request.params as { id: string }).id), input);
       if (!feed) throw new AppError(404, 'Feed 不存在');
+      translations.wake();
       return feedPayload(feed);
     });
   });
@@ -726,11 +783,37 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
     return { results };
   });
+  app.post('/api/rss/preview', async request => {
+    feedsGuard(request);
+    const url = parseHttpUrl(asRecord(request.body).url, 'RSS 地址');
+    return enqueueRefresh(async () => {
+      try { const result = await getRss(url); return { title: result.title, items: result.items.slice(0, 3).map(item => ({ title: item.title, link: item.link, contentHtml: item.html })) }; }
+      catch (error) { throw new AppError(400, safeDiagnostic(friendlyError(error, 'RSS 获取失败'))); }
+    }, [siteKey(url)]);
+  });
+  app.get('/api/feeds/:id/translation/progress', async request => {
+    feedsGuard(request);
+    const id = String((request.params as { id: string }).id);
+    if (!store.getFeed(id) || !translationEnabled(store.getFeed(id)!)) throw new AppError(404, 'RSS 翻译订阅不存在');
+    return { ...store.translations.progress(id), worker: translations.status() };
+  });
+  app.post('/api/feeds/:id/translation/retry', async request => {
+    feedsGuard(request);
+    const id = String((request.params as { id: string }).id);
+    const feed = store.getFeed(id);
+    if (!feed || !translationEnabled(feed)) throw new AppError(404, 'RSS 翻译订阅不存在');
+    store.translations.retry(id); translations.retry();
+    return feedPayload(store.getFeed(id)!);
+  });
   app.post('/api/feeds', async (request) => {
     feedsGuard(request);
     const input = parseFeedInput(request.body);
     if (input.credentialId && !store.getCredentialSummary(input.credentialId)) throw new AppError(400, 'Cookie 凭据不存在');
     const created = store.createFeed(input);
+    if (input.sourceType === 'rss') {
+      void doRefresh(created.feed.id, false, 'create').catch(() => {});
+      return feedPayload(created.feed);
+    }
     const refreshed = await doRefresh(created.feed.id, false, 'create');
     return feedPayload(refreshed ?? created.feed);
   });
@@ -894,10 +977,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
 
   const cleanup = setInterval(() => {
-    try { store.history.prune(); } catch { console.error('抓取日志清理失败，将自动重试'); }
+    try { store.history.prune(); store.translations.prune(); } catch { console.error('抓取日志清理失败，将自动重试'); }
   }, 60 * 60_000);
   cleanup.unref();
-  app.addHook('onReady', async () => { jobs.recover(); bark.start(); });
+  app.addHook('onReady', async () => { jobs.recover(); bark.start(); translations.start(); });
   if (options.startScheduler !== false) {
     scheduler = setInterval(() => { void refreshDue().catch(() => {}); }, 30_000);
     scheduler.unref();
@@ -909,6 +992,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (scheduler) clearInterval(scheduler);
     clearInterval(cleanup);
     await pool.drain();
+    await translations.stop();
     await bark.stop();
     await browser.dispose();
     if (!options.store) store.close();

@@ -119,3 +119,23 @@ test('错误诊断移除 URL、认证信息和浏览器堆栈并限制长度', (
   }
   assert.equal(safeDiagnostic('x'.repeat(500)).length, 300);
 });
+
+test('翻译告警与抓取告警隔离、连续失败去重、恢复后重新通知', () => {
+  const { store, feed, close } = fixture();
+  try {
+    const settings = store.getSettings(); settings.bark.enabled = true; settings.bark.url = 'https://api.day.app/test-key/'; store.setSettings(settings);
+    assert.equal(store.history.translationFailed(feed, 'Google 限流'), true);
+    const job = store.history.nextAlert()!; assert.equal(job.kind, 'translation');
+    assert.equal(store.history.translationFailed(feed, '再次限流'), false);
+    const run = store.history.start(feed.id, 'manual');
+    store.history.succeed(run, feed.id, 1, { itemCount: 0, newItemCount: 0 });
+    assert.equal(store.history.isPending(job.id), true, '抓取成功不能取消翻译告警');
+    store.history.beginAttempt(job.id); store.history.finishAttempt(job.id, true);
+    store.history.prune(); assert.equal(store.history.translationFailed(feed, '仍然限流'), false);
+    store.history.translationRecovered(feed.id);
+    assert.equal(store.history.translationFailed(feed, '新的翻译故障'), true);
+    store.history.resetNotifications(); assert.equal(store.history.nextAlert(), null);
+    settings.bark.enabled = false; store.setSettings(settings);
+    assert.equal(store.history.translationFailed(feed, '已关闭通知'), false);
+  } finally { close(); }
+});

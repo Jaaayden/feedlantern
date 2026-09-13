@@ -9,7 +9,7 @@ export function safeDiagnostic(value: string): string {
     .replace(/Bearer\s+\S+/gi, '[敏感信息已隐藏]').split(/\r?\n/)[0].slice(0, 300);
 }
 
-export interface PendingAlert { id: string; body: string; attempts: number }
+export interface PendingAlert { id: string; body: string; attempts: number; kind?: string }
 
 export class FetchHistory {
   constructor(private db: DatabaseSync, private settings: () => ApplicationSettings = () => defaultApplicationSettings) {
@@ -36,6 +36,25 @@ export class FetchHistory {
       CREATE INDEX IF NOT EXISTS fetch_logs_retention ON fetch_logs(started_at);
       CREATE INDEX IF NOT EXISTS fetch_alerts_due ON fetch_alerts(status, next_attempt_at);
     `);
+    if (!db.prepare('PRAGMA table_info(fetch_alerts)').all().some(row => row.name === 'kind')) db.exec("ALTER TABLE fetch_alerts ADD COLUMN kind TEXT NOT NULL DEFAULT 'fetch'");
+    db.exec(`CREATE TABLE IF NOT EXISTS translation_incidents (feed_id TEXT PRIMARY KEY REFERENCES feeds(id) ON DELETE CASCADE, alert_id TEXT REFERENCES fetch_alerts(id) ON DELETE SET NULL);`);
+  }
+
+  translationFailed(feed: Feed, message: string, now = Date.now()): boolean {
+    if (!this.settings().bark.enabled || !this.settings().bark.url) return false;
+    const previous = this.db.prepare('SELECT a.* FROM translation_incidents i JOIN fetch_alerts a ON a.id=i.alert_id WHERE i.feed_id=?').get(feed.id);
+    if (previous && !(previous.status === 'failed' && now - Number(previous.last_attempt_at) >= this.settings().bark.cooldownMinutes * 60_000)) return false;
+    const id = randomUUID();
+    const body = `${safeDiagnostic(feed.name)}\nRSS 翻译失败：${safeDiagnostic(message)}\n未完成文章不会发布。系统最多尝试 3 次，达到上限后需手动重试。`;
+    this.db.prepare("INSERT INTO fetch_alerts(id,feed_id,status,body,next_attempt_at,kind) VALUES (?,?,'pending',?,?,'translation')").run(id, feed.id, body, now);
+    this.db.prepare('INSERT INTO translation_incidents(feed_id,alert_id) VALUES (?,?) ON CONFLICT(feed_id) DO UPDATE SET alert_id=excluded.alert_id').run(feed.id, id);
+    return true;
+  }
+
+  translationRecovered(feedId: string): void {
+    if (this.db.prepare("SELECT 1 FROM translations WHERE feed_id=? AND status!='success'").get(feedId)) return;
+    this.db.prepare("UPDATE fetch_alerts SET status='canceled' WHERE feed_id=? AND kind='translation' AND status='pending'").run(feedId);
+    this.db.prepare('DELETE FROM translation_incidents WHERE feed_id=?').run(feedId);
   }
 
   recover(now = Date.now()): void {
@@ -47,7 +66,8 @@ export class FetchHistory {
     this.db.prepare("DELETE FROM fetch_logs WHERE status != 'running' AND started_at < ?").run(new Date(now - this.settings().logRetentionDays * 86400_000).toISOString());
     this.db.exec(`DELETE FROM fetch_alerts WHERE status != 'pending'
       AND id NOT IN (SELECT alert_id FROM fetch_logs WHERE alert_id IS NOT NULL)
-      AND id NOT IN (SELECT alert_id FROM fetch_incidents WHERE alert_id IS NOT NULL)`);
+      AND id NOT IN (SELECT alert_id FROM fetch_incidents WHERE alert_id IS NOT NULL)
+      AND id NOT IN (SELECT alert_id FROM translation_incidents WHERE alert_id IS NOT NULL)`);
   }
 
   start(feedId: string, source: FetchSource, startedAt = new Date().toISOString()): number {
@@ -57,7 +77,7 @@ export class FetchHistory {
   succeed(id: number, feedId: string, durationMs: number, counts: { itemCount: number; newItemCount: number }): void {
     this.db.prepare("UPDATE fetch_logs SET status='success', finished_at=?, duration_ms=?, item_count=?, new_item_count=? WHERE id=? AND status='running'")
       .run(new Date().toISOString(), Math.max(0, Math.round(durationMs)), counts.itemCount, counts.newItemCount, id);
-    this.db.prepare("UPDATE fetch_alerts SET status='canceled' WHERE feed_id=? AND status='pending'").run(feedId);
+    this.db.prepare("UPDATE fetch_alerts SET status='canceled' WHERE feed_id=? AND kind='fetch' AND status='pending'").run(feedId);
     this.db.prepare('DELETE FROM fetch_incidents WHERE feed_id=?').run(feedId);
   }
 
@@ -91,8 +111,8 @@ export class FetchHistory {
   }
 
   nextAlert(now = Date.now()): PendingAlert | null {
-    const row = this.db.prepare("SELECT id, body, attempts FROM fetch_alerts WHERE status='pending' AND next_attempt_at<=? ORDER BY next_attempt_at LIMIT 1").get(now);
-    return row ? { id: String(row.id), body: String(row.body), attempts: Number(row.attempts) } : null;
+    const row = this.db.prepare("SELECT id, body, attempts, kind FROM fetch_alerts WHERE status='pending' AND next_attempt_at<=? ORDER BY next_attempt_at LIMIT 1").get(now);
+    return row ? { id: String(row.id), body: String(row.body), attempts: Number(row.attempts), kind: String(row.kind) } : null;
   }
 
   isPending(id: string): boolean {
@@ -100,7 +120,7 @@ export class FetchHistory {
   }
 
   resetNotifications(): void {
-    this.db.exec("UPDATE fetch_alerts SET status='canceled' WHERE status='pending'; DELETE FROM fetch_incidents;");
+    this.db.exec("UPDATE fetch_alerts SET status='canceled' WHERE status='pending'; DELETE FROM fetch_incidents; DELETE FROM translation_incidents;");
   }
 
   beginAttempt(id: string, now = Date.now()): boolean {

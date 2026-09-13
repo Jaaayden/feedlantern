@@ -13,6 +13,13 @@ export function ApplicationSettingsPanel({ revision }: { revision: number }) {
     try { setValue(await api.settings.save(value)); setMessage('设置已保存。监听地址和端口将在服务重启后生效。'); }
     catch (e) { setError(e instanceof Error ? e.message : '保存失败'); } finally { setBusy(false); }
   }
+  async function testBark() {
+    if (!value) return;
+    setBusy(true); setError(''); setMessage('');
+    try { await api.settings.testBark(value.bark); setMessage('测试通知已发送，请检查设备。当前填写的设置尚未因此保存。'); }
+    catch (e) { setError(e instanceof Error ? e.message : '测试通知发送失败'); }
+    finally { setBusy(false); }
+  }
   if (!value) return <section className="panel settings-form">{error || '正在加载应用设置…'}</section>;
   const bark = <K extends keyof ApplicationSettings['bark']>(key: K, v: ApplicationSettings['bark'][K]) => setValue({ ...value, bark: { ...value.bark, [key]: v } });
   const server = <K extends keyof ApplicationSettings['server']>(key: K, v: ApplicationSettings['server'][K]) => setValue({ ...value, server: { ...value.server, [key]: v } });
@@ -27,10 +34,15 @@ export function ApplicationSettingsPanel({ revision }: { revision: number }) {
     <fieldset disabled={busy}><legend>Bark 故障通知</legend>
       <label className="inline"><input type="checkbox" checked={value.bark.enabled} onChange={e => bark('enabled', e.target.checked)} />启用 Bark 告警</label>
       <label className="field"><span>Bark 推送地址</span><input type="password" autoComplete="off" placeholder="https://api.day.app/设备密钥/" value={value.bark.url} onChange={e => bark('url', e.target.value)} /></label>
-      <p className="hint">首次抓取失败告警，连续失败去重，恢复后重新允许告警。保存不会发送测试通知；关闭或更换地址会取消旧的待发送通知。</p>
+      <p className="hint">首次抓取或翻译失败告警，两类故障分别去重；同一订阅连续翻译失败只通知一次，恢复后重新允许告警。保存不会发送测试通知；关闭或更换地址会取消旧的待发送通知。</p>
+      <button type="button" className="button small" disabled={busy || !value.bark.url.trim()} onClick={() => void testBark()}>发送测试通知</button><p className="hint">使用当前填写的地址，无需先保存或启用告警。</p>
       <div className="form-row">{number('推送超时（秒）', value.bark.timeoutSeconds, 1, 60, n => bark('timeoutSeconds', n))}{number('最多发送次数', value.bark.maxAttempts, 1, 5, n => bark('maxAttempts', n))}</div>
       <div className="form-row">{number('首次重试间隔（秒）', value.bark.retryDelaySeconds, 1, 3600, n => bark('retryDelaySeconds', n))}{number('后续重试间隔（秒）', value.bark.laterRetryDelaySeconds, 1, 3600, n => bark('laterRetryDelaySeconds', n))}</div>
       {number('发送失败后冷却（分钟）', value.bark.cooldownMinutes, 1, 1440, n => bark('cooldownMinutes', n))}
+    </fieldset>
+    <fieldset disabled={busy}><legend>RSS 翻译速度</legend>
+      <div className="form-row">{number('翻译请求并发数', value.translation.concurrency, 1, 16, n => setValue({ ...value, translation: { ...value.translation, concurrency: n } }))}{number('翻译请求启动间隔（毫秒）', value.translation.requestIntervalMs, 0, 5000, n => setValue({ ...value, translation: { ...value.translation, requestIntervalMs: n } }))}</div>
+      <p className="hint">默认 6 并发、间隔 100 毫秒；0 表示不额外间隔。保存后生效，实际速度取决于服务响应；遇到限流自动退避。订阅链接仅包含翻译完成的文章。</p>
     </fieldset>
     <fieldset disabled={busy}><legend>服务器与网络</legend>
       {number('后台并发数', value.server.backgroundConcurrency, 1, 4, n => server('backgroundConcurrency', n))}

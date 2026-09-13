@@ -61,3 +61,27 @@ test('网页设置即时生效、配置完整往返、预览不泄密及旧配�
     assert.equal(store.getSettings().bark.url, endpoint);
   } finally { await app.close(); store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('Bark 测试使用未保存地址、鉴权和 CSRF，不保存设置且错误不泄露密钥', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fl-bark-test-')), store = new Store(dir);
+  let calls = 0, failing = false;
+  const app = await createApp({ dataDir: dir, store, browserService: browser, startScheduler: false, barkSender: async (url, _body, _signal, title) => {
+    calls++; assert.equal(url, endpoint); assert.equal(title, '订阅灯：测试通知');
+    if (failing) throw Error(endpoint);
+  } });
+  const host = '127.0.0.1:4321';
+  try {
+    const setup = await app.inject({ method: 'POST', url: '/api/auth/setup', headers: { host, 'x-feedlantern': '1' }, payload: { setupToken: store.getSetupToken(), username: 'admin', password: 'test-password' } });
+    const headers = { host, cookie: `${setup.cookies[0].name}=${setup.cookies[0].value}`, 'x-feedlantern': '1', 'x-csrf-token': setup.json().csrfToken };
+    const url = '/api/settings/bark/test', payload = { url: endpoint };
+    assert.equal((await app.inject({ method: 'POST', url, headers: { host, 'x-feedlantern': '1' }, payload })).statusCode, 401);
+    assert.equal((await app.inject({ method: 'POST', url, headers: { ...headers, 'x-csrf-token': '' }, payload })).statusCode, 403);
+    const before = store.getSettings();
+    assert.equal((await app.inject({ method: 'POST', url, headers, payload })).statusCode, 200);
+    assert.equal(calls, 1); assert.deepEqual(store.getSettings(), before);
+    assert.equal((await app.inject({ method: 'POST', url, headers, payload: { url: '' } })).statusCode, 400);
+    failing = true;
+    const failed = await app.inject({ method: 'POST', url, headers, payload });
+    assert.equal(failed.statusCode, 502); assert.ok(!failed.body.includes(key));
+  } finally { await app.close(); store.close(); rmSync(dir, { recursive: true, force: true }); }
+});

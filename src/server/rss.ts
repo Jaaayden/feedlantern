@@ -1,3 +1,5 @@
+import { translationEnabled } from '../shared/types.js';
+import { safeHtml } from './rss-source.js';
 import { createHash } from 'node:crypto';
 import type { Feed, FeedItem } from '../shared/types.js';
 
@@ -44,10 +46,15 @@ function fixedDate(value: string | undefined, fallback: string): string {
   return Number.isNaN(parsed.getTime()) ? new Date(0).toUTCString() : parsed.toUTCString();
 }
 
+/** Management can show drafts; public RSS only contains complete translations. */
+export function publishedItems(feed: Feed, items: FeedItem[]): FeedItem[] {
+  return (translationEnabled(feed) ? items.filter(item => item.translationStatus === 'success' && typeof item.contentHtml === 'string') : items).slice(0, 100);
+}
+
 export function renderRss(feed: Feed, items: FeedItem[], feedUrl: string): string {
   const buildDate = fixedDate(feed.lastSuccessAt ?? feed.createdAt, feed.createdAt);
-  const renderedItems = items.slice(0, 100).map((item) => {
-    const description = sanitizeDescription(item.description, feed.url, item.image);
+  const renderedItems = publishedItems(feed, items).map((item) => {
+    const description = translationEnabled(feed) && item.contentHtml !== undefined ? safeHtml(item.contentHtml, item.link) : feed.sourceType === 'rss' ? safeHtml(item.description ?? '', item.link) : sanitizeDescription(item.description, feed.url, item.image);
     // RSS readers interpret the XML-decoded description as HTML. Preserve the
     // HTML escaping through XML decoding, even when there is no image.
     const descriptionXml = cdata(description);
@@ -83,7 +90,7 @@ export function rssEtag(feed: Feed, items: FeedItem[]): string {
     channelTitle: feed.name,
     url: feed.url,
     lastSuccessAt: feed.lastSuccessAt,
-    items: items.slice(0, 100),
+    items: publishedItems(feed, items),
   });
   return `"${createHash('sha256').update(material).digest('hex')}"`;
 }

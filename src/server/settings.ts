@@ -5,6 +5,10 @@ import { defaultApplicationSettings, type ApplicationSettings } from '../shared/
 import type { ServerConfig } from './config.js';
 
 export const applicationSettingsSchema = z.object({
+  translation: z.object({
+    concurrency: z.number().int().min(1).max(16),
+    requestIntervalMs: z.number().int().min(0).max(5000),
+  }).strict().default(defaultApplicationSettings.translation),
   feedView: z.enum(['list', 'cards']),
   logRetentionDays: z.number().int().min(1).max(365),
   bark: z.object({

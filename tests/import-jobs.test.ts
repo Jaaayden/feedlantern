@@ -76,3 +76,27 @@ test('批量识别与刷新共享容量，跨站并行且同站不重入', async
     assert.equal(peak,2); assert.equal(store.listFeeds().length,3);
   } finally {jobs.stop();await pool.drain();store.close();rmSync(dir,{recursive:true,force:true});}
 });
+
+test('RSS 批量导入读取一次、保留模式、失败重试，并与网页订阅独立去重', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fl-rss-jobs-')), store = new Store(dir);
+  let calls = 0, wake = 0, fail = true;
+  const jobs = new ImportJobs(store, async fn => fn(), async () => { throw Error('不应打开浏览器'); }, async () => [], undefined, 2, async entry => {
+    calls++;
+    if (entry.url.includes('bad') && fail) throw Error('invalid RSS');
+    return { title: 'RSS source', etag: 'one', items: [{ key: 'one', title: 'Hello', link: 'https://example.test/a', html: '<p>English</p>' }] };
+  }, () => wake++);
+  const entry = { url: 'https://example.test/feed', credentialId: null, intervalMinutes: 30, sourceType: 'rss' as const, translationMode: 'chinese' as const };
+  try {
+    store.createFeed({ name: 'Website', ...entry, sourceType: 'website', waitMs: 0, rules: { item: 'article', title: 'h2', link: 'a' } });
+    const job = jobs.create([entry, entry, { ...entry, url: 'https://example.test/bad' }]);
+    await until(() => jobs.get(job.id).entries.every(e => ['created', 'failed'].includes(e.state)));
+    assert.equal(calls, 2); assert.equal(wake, 1); assert.equal(jobs.get(job.id).entries.length, 2);
+    const feed = store.getFeed(jobs.get(job.id).entries[0].feedId!)!;
+    assert.equal(feed.translationMode, 'chinese'); assert.equal(feed.sourceType, 'rss');
+    assert.equal(store.translations.stats(feed.id).pending, 1); assert.equal(store.translations.sourceState(feed.id).etag, 'one');
+    assert.equal(jobs.create([entry]).entries[0].state, 'existing');
+    fail = false; jobs.update(job.id, 'retry');
+    await until(() => jobs.get(job.id).entries.every(e => e.state === 'created'));
+    assert.equal(calls, 3); assert.equal(wake, 2);
+  } finally { jobs.stop(); store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
