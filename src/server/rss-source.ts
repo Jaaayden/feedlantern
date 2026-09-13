@@ -36,11 +36,12 @@ export function parseSource(xml: string, base: string): SourceResult {
   if (/<!\s*(DOCTYPE|ENTITY)/i.test(xml) || XMLValidator.validate(xml) !== true) throw Error('RSS XML 无效或包含不支持的实体声明');
   const doc = new XMLParser({ ignoreAttributes: false, parseTagValue: false, trimValues: false, htmlEntities: true, stopNodes: ['*.div'] }).parse(xml);
   const atom = !!doc.feed;
-  const channel = atom ? doc.feed : doc.rss?.channel;
-  if (!channel) throw Error('该地址未返回 RSS 2.0 或 Atom 1.0 订阅');
+  const rdf = doc['rdf:RDF'];
+  const channel = atom ? doc.feed : doc.rss?.channel ?? rdf?.channel;
+  if (!channel) throw Error('该地址未返回 RSS 1.0、RSS 2.0 或 Atom 1.0 订阅');
   const seen = new Set<string>();
   const items: SourceItem[] = [];
-  const ordered = list(atom ? channel.entry : channel.item).slice(0, 1000);
+  const ordered = list(atom ? channel.entry : rdf ? rdf.item : channel.item).slice(0, 1000);
   for (const row of ordered) {
     const title = (atom && (!row.title?.['@_type'] || row.title['@_type'] === 'text') ? valueText(row.title) : plain(valueText(row.title))).trim();
     if (!title) continue;
@@ -55,7 +56,7 @@ export function parseSource(xml: string, base: string): SourceResult {
     } else if (atom && (!content?.['@_type'] || content['@_type'] === 'text')) html = sanitizeHtml(html.replaceAll('&', '&amp;').replaceAll('<', '&lt;'), { allowedTags: [] });
     if (html.length > 200_000 || title.length > 20_000) throw Error('RSS 单条内容超过支持的长度限制');
     html = safeHtml(html, link);
-    const sourceId = valueText(atom ? row.id : row.guid).trim();
+    const sourceId = valueText(atom ? row.id : row.guid ?? row['@_rdf:about']).trim();
     const key = digest(sourceId ? `id:${sourceId}` : rawLink ? `link:${link}` : `content:${title}\n${html}`);
     if (seen.has(key)) continue;
     seen.add(key);

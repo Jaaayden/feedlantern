@@ -417,3 +417,17 @@ test('website translation opt-in preserves originals, IDs, images and output mod
     assert.match(store.getItems(feed.id)[0].title, /中文Changed/); assert.equal(store.getItems(feed.id)[0].id, original.id);
   } finally { await worker.stop(); store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('Science-style RSS 1.0 RDF imports sibling items, stable RDF identity and dc:date', () => {
+  const xml = `<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns="http://purl.org/rss/1.0/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+    <channel rdf:about="https://example.test/toc"><title>Science TOC</title><items><rdf:Seq><rdf:li rdf:resource="urn:one"/></rdf:Seq></items></channel>
+    <item rdf:about="urn:one"><title>First paper</title><link>https://example.test/one?a=1&amp;b=2</link><description>Short</description><content:encoded>&lt;p&gt;Full text&lt;/p&gt;</content:encoded><dc:date>2026-09-10T06:00:02Z</dc:date></item>
+    <item rdf:about="urn:two"><title>Second paper</title><link>https://example.test/two</link><description>Summary</description><dc:date>2026-09-11T00:00:00Z</dc:date></item>
+  </rdf:RDF>`;
+  const result = parseSource(xml, 'https://example.test/action/showFeed?type=etoc&feed=rss');
+  assert.equal(result.title, 'Science TOC'); assert.equal(result.items.length, 2);
+  const one = result.items.find(item => item.title === 'First paper')!;
+  assert.equal(one.key, digest('id:urn:one')); assert.equal(one.link, 'https://example.test/one?a=1&b=2');
+  assert.equal(one.html, '<p>Full text</p>'); assert.equal(one.publishedAt, '2026-09-10T06:00:02.000Z');
+  assert.equal(result.items[0].title, 'Second paper');
+});
