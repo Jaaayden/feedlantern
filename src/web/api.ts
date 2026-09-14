@@ -11,6 +11,7 @@ import type {
   FetchStatus,
   FeedInput,
   FeedSettingsInput,
+  BulkFeedSettingsInput,
   FeedItem,
   PickRequest,
   PickResult,
@@ -123,7 +124,7 @@ export const api = {
     },
     settings: (id: string, body: FeedSettingsInput) => request<{ feed: Feed; feedUrl: string }>(`/api/feeds/${encodeURIComponent(id)}`, { method: 'PATCH', body }),
     title: (id: string, channelTitle: string) => request<{ feed: Feed }>(`/api/feeds/${encodeURIComponent(id)}`, { method: 'PATCH', body: { channelTitle } }),
-    bulk: async (ids: string[], action: string) => {
+    bulk: async (ids: string[], action: string, settings?: BulkFeedSettingsInput) => {
       const results: Array<{ id: string; ok: boolean; feedUrl?: string; error?: string }> = [];
       if (action === 'refresh') {
         // Keep requests short for reverse proxies while allowing the server's
@@ -142,7 +143,7 @@ export const api = {
       const size = 200;
       for (let offset = 0; offset < ids.length; offset += size) {
         const chunk = ids.slice(offset, offset + size);
-        try { results.push(...(await request<{ results: typeof results }>('/api/feeds/bulk', { method: 'POST', body: { ids: chunk, action } })).results); }
+        try { results.push(...(await request<{ results: typeof results }>('/api/feeds/bulk', { method: 'POST', body: { ids: chunk, action, settings } })).results); }
         catch (e) { results.push(...chunk.map(id => ({ id, ok: false, error: e instanceof Error ? e.message : '操作失败' }))); }
       }
       return { results };

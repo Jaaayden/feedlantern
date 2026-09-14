@@ -25,6 +25,7 @@ export interface FeedSettingsInput {
   channelTitle?: string;
   intervalMinutes?: number;
 }
+export type BulkFeedSettingsInput = Pick<FeedSettingsInput, 'translationMode' | 'intervalMinutes'>;
 export interface Feed extends FeedInput {
   id: string;
   channelTitle?: string;

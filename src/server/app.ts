@@ -728,12 +728,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       return store.getSettings();
     });
   });
-  app.patch('/api/feeds/:id', async request => {
-    feedsGuard(request);
-    const body = asRecord(request.body);
+  function parseFeedSettings(body: Record<string, unknown>): FeedSettingsInput {
     const input: FeedSettingsInput = {};
     if ('translationMode' in body) {
-      if (!['original','chinese','bilingual'].includes(String(body.translationMode))) throw new AppError(400, '翻译输出模式无效');
+      if (typeof body.translationMode !== 'string' || !['original','chinese','bilingual'].includes(body.translationMode)) throw new AppError(400, '翻译输出模式无效');
       input.translationMode = body.translationMode as 'original' | 'chinese' | 'bilingual';
     }
     if ('channelTitle' in body) input.channelTitle = asNonEmptyString(body.channelTitle, '订阅名称', 200);
@@ -743,7 +741,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       }
       input.intervalMinutes = body.intervalMinutes;
     }
-    if (!Object.keys(input).length) throw new AppError(400, '请提供订阅名称或刷新间隔');
+    if (!Object.keys(input).length) throw new AppError(400, '请提供需要修改的订阅设置');
+    return input;
+  }
+  app.patch('/api/feeds/:id', async request => {
+    feedsGuard(request);
+    const input = parseFeedSettings(asRecord(request.body));
     return enqueueRefresh(() => {
       const feed = store.updateFeedSettings(String((request.params as { id: string }).id), input);
       if (!feed) throw new AppError(404, 'Feed 不存在');
@@ -756,7 +759,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const body = asRecord(request.body);
     if (!Array.isArray(body.ids) || !body.ids.length || body.ids.length > 200 || !body.ids.every(id => typeof id === 'string')) throw new AppError(400, '请选择 1–200 个订阅');
     const action = body.action;
-    if (!['copy', 'pause', 'resume', 'refresh', 'delete'].includes(String(action))) throw new AppError(400, '操作无效');
+    if (!['copy', 'pause', 'resume', 'refresh', 'delete', 'settings'].includes(String(action))) throw new AppError(400, '操作无效');
+    const settingsBody = asRecord(body.settings);
+    if (action === 'settings' && Object.keys(settingsBody).some(key => !['translationMode', 'intervalMinutes'].includes(key))) throw new AppError(400, '批量设置仅支持翻译输出模式和刷新间隔');
+    const settingsInput = action === 'settings' ? parseFeedSettings(settingsBody) : undefined;
     if (action === 'refresh') {
       const results = await Promise.all([...new Set(body.ids as string[])].map(async id => {
         try {
@@ -774,6 +780,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
           const feed = store.getFeed(id);
           if (!feed) throw new AppError(404, '订阅不存在');
           if (action === 'copy') return { id, ok: true, feedUrl: feedUrl(currentConfig(), store, id) };
+          if (settingsInput) {
+            store.transaction(() => store.updateFeedSettings(id, settingsInput));
+            translations.wake();
+          }
           if (action === 'delete') { store.deleteFeed(id); bark.wake(); }
           if (action === 'pause' && feed.enabled || action === 'resume' && !feed.enabled) store.toggleFeed(id);
           return { id, ok: true };

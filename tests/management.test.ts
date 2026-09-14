@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createApp, type BrowserServiceLike } from '../src/server/app.js';
+import { createApp, Store, type BrowserServiceLike } from '../src/server/app.js';
 const browser: BrowserServiceLike = {
   open() { throw Error('unexpected'); }, snapshot() { throw Error('unexpected'); }, scroll() { throw Error('unexpected'); }, click() { throw Error('unexpected'); }, pick() { throw Error('unexpected'); }, extract() { throw Error('unexpected'); },
   scrape: async () => [{ title: 'Article', link: 'https://example.test/article' }], close() {}, dispose() {},
@@ -135,4 +135,43 @@ test('订阅设置独立保存、严格校验且不抓取网页', async () => {
     assert.equal(combined.json().feed.intervalMinutes, 30);
     assert.equal(scrapes, 1);
   } finally { await app.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+
+test('批量设置校验、权限、逐项结果与只更新指定字段', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fl-bulk-settings-')), store = new Store(dir);
+  let scrapes = 0;
+  const app = await createApp({ store, dataDir: dir, browserService: { ...browser, scrape: async () => { scrapes++; return []; } }, startScheduler: false });
+  const input = { name: '批量测试', url: 'https://example.test', rules: { item: 'article', title: 'h2', link: 'a' }, credentialId: null, intervalMinutes: 60, waitMs: 0 };
+  const a = store.createFeed({ ...input, translationMode: 'original' }).feed;
+  const b = store.createFeed({ ...input, sourceType: 'rss', translationMode: 'bilingual', url: 'https://example.test/rss', intervalMinutes: 120 }).feed;
+  const untouched = store.createFeed({ ...input, url: 'https://other.test' }).feed;
+  store.toggleFeed(b.id);
+  const base = { host: '127.0.0.1:4321', 'x-feedlantern': '1' };
+  try {
+    const setup = await app.inject({ method: 'POST', url: '/api/auth/setup', headers: base, payload: { setupToken: store.getSetupToken(), username: 'admin', password: 'test-password' } });
+    const headers = { ...base, cookie: `${setup.cookies[0].name}=${setup.cookies[0].value}`, 'x-csrf-token': setup.json().csrfToken };
+    const url = '/api/feeds/bulk', payload = { ids: [a.id, b.id], action: 'settings', settings: { translationMode: 'chinese' } };
+    const bulk = (settings: unknown, ids = [a.id, b.id]) => app.inject({ method: 'POST', url, headers, payload: { ...payload, ids, settings } });
+    assert.equal((await app.inject({ method: 'POST', url, headers: base, payload })).statusCode, 401);
+    assert.equal((await app.inject({ method: 'POST', url, headers: { ...headers, 'x-csrf-token': '' }, payload })).statusCode, 403);
+    for (const settings of [{}, null, [], { channelTitle: '不应改名' }, { translationMode: ['chinese'] }, { translationMode: 'invalid' }, { intervalMinutes: 4 }, { intervalMinutes: 1441 }, { intervalMinutes: 5.5 }, { intervalMinutes: '15' }, { translationMode: 'chinese', intervalMinutes: null }]) {
+      assert.equal((await bulk(settings)).statusCode, 400);
+    }
+    assert.equal(store.getFeed(a.id)!.translationMode, 'original');
+    const changed = await bulk({ translationMode: 'chinese' }, [a.id, b.id, a.id, 'missing']);
+    assert.deepEqual(changed.json().results, [{ id: a.id, ok: true }, { id: b.id, ok: true }, { id: 'missing', ok: false, error: '订阅不存在' }]);
+    for (const feed of [a, b]) {
+      const after = store.getFeed(feed.id)!;
+      assert.equal(after.translationMode, 'chinese'); assert.equal(after.intervalMinutes, feed.intervalMinutes);
+      assert.equal(after.name, feed.name); assert.equal(after.nextFetchAt, feed.nextFetchAt);
+    }
+    await bulk({ intervalMinutes: 15 });
+    for (const id of [a.id, b.id]) { assert.equal(store.getFeed(id)!.intervalMinutes, 15); assert.equal(store.getFeed(id)!.translationMode, 'chinese'); }
+    await bulk({ translationMode: 'bilingual', intervalMinutes: 30 });
+    for (const id of [a.id, b.id]) { assert.equal(store.getFeed(id)!.intervalMinutes, 30); assert.equal(store.getFeed(id)!.translationMode, 'bilingual'); }
+    assert.equal(store.getFeed(b.id)!.enabled, false);
+    assert.deepEqual(store.getFeed(untouched.id), untouched);
+    assert.equal(scrapes, 0);
+  } finally { await app.close(); store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
