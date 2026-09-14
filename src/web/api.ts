@@ -1,6 +1,7 @@
 import type { TranslationProgressData } from './TranslationProgress';
 import type {
   UserSummary,
+  BarkSummary,
   AuthState,
   ApplicationSettings,
   ImportJob,
@@ -31,6 +32,11 @@ export class ApiError extends Error {
 
 let csrfToken: string | undefined;
 let sessionGeneration = 0;
+let workspaceUser: string | undefined;
+export function setWorkspaceUser(id?: string) {
+  if (workspaceUser !== id) sessionGeneration++;
+  workspaceUser = id;
+}
 let unauthorizedHandler: (() => void) | undefined;
 
 export function setCsrfToken(token?: string) {
@@ -51,6 +57,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   const generation = sessionGeneration;
   const headers = new Headers(options.headers);
   headers.set('X-FeedLantern', '1');
+  if (workspaceUser && !/^\/api\/(auth|users|backups|settings)(?:\/|$)/.test(path)) headers.set('X-FeedLantern-User', workspaceUser);
   if (csrfToken) headers.set('X-CSRF-Token', csrfToken);
   if (options.body !== undefined) headers.set('Content-Type', 'application/json');
 
@@ -94,7 +101,15 @@ export const api = {
     action: (id: string, action: 'retry' | 'cancel', entryId?: string) => request<ImportJob>(`/api/import-jobs/${id}/${action}`, { method: 'POST', body: { entryId } }),
     confirm: (id: string, entryId: string, input: FeedInput) => request<{ feed: Feed; feedUrl: string }>(`/api/import-jobs/${id}/confirm`, { method: 'POST', body: { entryId, input } }),
   },
+  notifications: {
+    get: () => request<BarkSummary>('/api/notifications/bark'),
+    save: (body: Partial<ApplicationSettings['bark']>) => request<BarkSummary>('/api/notifications/bark', { method: 'PUT', body }),
+    test: (body: Partial<ApplicationSettings['bark']>) => request<{ ok: boolean }>('/api/notifications/bark/test', { method: 'POST', body }),
+  },
   users: {
+    update: (id: string, body: Partial<Pick<UserSummary, 'username' | 'enabled' | 'role'>>) => request<UserSummary>(`/api/users/${encodeURIComponent(id)}`, { method: 'PATCH', body }),
+    deletionPreview: (id: string) => request<{ user: UserSummary; feeds: number; credentials: number; jobs: number }>(`/api/users/${encodeURIComponent(id)}/deletion-preview`),
+    delete: (id: string, username: string) => request<{ ok: boolean }>(`/api/users/${encodeURIComponent(id)}`, { method: 'DELETE', body: { username } }),
     list: () => request<UserSummary[]>('/api/users'),
     create: (username: string, password: string) => request<UserSummary>('/api/users', { method: 'POST', body: { username, password } }),
     enabled: (id: string, enabled: boolean) => request<UserSummary>(`/api/users/${encodeURIComponent(id)}`, { method: 'PATCH', body: { enabled } }),
@@ -102,7 +117,7 @@ export const api = {
   },
   settings: {
     testBark: (body: ApplicationSettings['bark']) => request<{ ok: boolean }>('/api/settings/bark/test', { method: 'POST', body }),
-    save: (body: ApplicationSettings) => request<ApplicationSettings>('/api/settings', { method: 'PUT', body }),
+    save: ({ bark: _bark, ...body }: ApplicationSettings) => request<ApplicationSettings>('/api/settings', { method: 'PUT', body }),
     get: () => request<ApplicationSettings>('/api/settings'),
     update: (feedView: 'list' | 'cards') => request<{ feedView: 'list' | 'cards' }>('/api/settings', { method: 'PUT', body: { feedView } }),
   },

@@ -13,34 +13,15 @@ export function ApplicationSettingsPanel({ revision }: { revision: number }) {
     try { setValue(await api.settings.save(value)); setMessage('设置已保存。监听地址和端口将在服务重启后生效。'); }
     catch (e) { setError(e instanceof Error ? e.message : '保存失败'); } finally { setBusy(false); }
   }
-  async function testBark() {
-    if (!value) return;
-    setBusy(true); setError(''); setMessage('');
-    try { await api.settings.testBark(value.bark); setMessage('测试通知已发送，请检查设备。当前填写的设置尚未因此保存。'); }
-    catch (e) { setError(e instanceof Error ? e.message : '测试通知发送失败'); }
-    finally { setBusy(false); }
-  }
   if (!value) return <section className="panel settings-form">{error || '正在加载应用设置…'}</section>;
-  const bark = <K extends keyof ApplicationSettings['bark']>(key: K, v: ApplicationSettings['bark'][K]) => setValue({ ...value, bark: { ...value.bark, [key]: v } });
   const server = <K extends keyof ApplicationSettings['server']>(key: K, v: ApplicationSettings['server'][K]) => setValue({ ...value, server: { ...value.server, [key]: v } });
   const number = (label: string, v: number, min: number, max: number, change: (n: number) => void) => <label className="field"><span>{label}</span><input type="number" required min={min} max={max} step={1} value={v} onChange={e => change(Number(e.target.value))} /></label>;
   return <form className="panel settings-form application-settings" onSubmit={save} aria-label="应用设置">
-    <h2>应用设置</h2><p className="muted">设置随配置导入导出迁移，Bark 地址在数据库中加密保存。</p>
+    <h2>应用设置</h2><p className="muted">这些设置作用于整个实例；个人通知在下方单独配置。</p>
     <fieldset disabled={busy}><legend>日志与显示</legend>
       <label className="field"><span>订阅视图</span><select value={value.feedView} onChange={e => setValue({ ...value, feedView: e.target.value as 'list' | 'cards' })}><option value="list">列表</option><option value="cards">卡片</option></select></label>
       {number('日志保留天数', value.logRetentionDays, 1, 365, n => setValue({ ...value, logRetentionDays: n }))}
       <p className="hint">缩短保留天数后，超期日志会自动清理。</p>
-    </fieldset>
-    <fieldset disabled={busy}><legend>Bark 故障通知</legend>
-      <label className="inline"><input type="checkbox" checked={value.bark.enabled} onChange={e => bark('enabled', e.target.checked)} />启用 Bark 告警</label>
-      <label className="field"><span>Bark 推送地址</span><input type="password" autoComplete="off" placeholder="https://api.day.app/设备密钥/" value={value.bark.url} onChange={e => bark('url', e.target.value)} /></label>
-      <p className="hint">首次抓取或翻译失败告警，两类故障分别去重；同一订阅连续翻译失败只通知一次，恢复后重新允许告警。保存不会发送测试通知；关闭或更换地址会取消旧的待发送通知。</p>
-      <button type="button" className="button small" disabled={busy || !value.bark.url.trim()} onClick={() => void testBark()}>发送测试通知</button><p className="hint">使用当前填写的地址，无需先保存或启用告警。</p>
-      {number('连续抓取失败告警阈值（次）', value.bark.failureThreshold, 1, 1000, n => bark('failureThreshold', n))}
-      <p className="hint">每个订阅连续抓取失败达到此次数才通知，默认 10 次；成功后重新计数。同一故障通知成功后不重复推送。</p>
-      <div className="form-row">{number('推送超时（秒）', value.bark.timeoutSeconds, 1, 60, n => bark('timeoutSeconds', n))}{number('最多发送次数', value.bark.maxAttempts, 1, 5, n => bark('maxAttempts', n))}</div>
-      <div className="form-row">{number('首次重试间隔（秒）', value.bark.retryDelaySeconds, 1, 3600, n => bark('retryDelaySeconds', n))}{number('后续重试间隔（秒）', value.bark.laterRetryDelaySeconds, 1, 3600, n => bark('laterRetryDelaySeconds', n))}</div>
-      {number('发送失败后冷却（分钟）', value.bark.cooldownMinutes, 1, 1440, n => bark('cooldownMinutes', n))}
     </fieldset>
     <fieldset disabled={busy}><legend>RSS 翻译速度</legend>
       <div className="form-row">{number('翻译请求并发数', value.translation.concurrency, 1, 16, n => setValue({ ...value, translation: { ...value.translation, concurrency: n } }))}{number('翻译请求启动间隔（毫秒）', value.translation.requestIntervalMs, 0, 5000, n => setValue({ ...value, translation: { ...value.translation, requestIntervalMs: n } }))}</div>

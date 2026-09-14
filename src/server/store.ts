@@ -3,6 +3,7 @@ import { translationEnabled } from '../shared/types.js';
 import { RssTranslations } from './rss-translation.js';
 import type { Tables } from './backups.js';
 import { FetchHistory } from './fetch-history.js';
+import { AppError } from './auth.js';
 import { applicationSettingsSchema } from './settings.js';
 import { defaultApplicationSettings, type ApplicationSettings } from '../shared/types.js';
 import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
@@ -281,8 +282,13 @@ export class Store {
       CREATE INDEX import_jobs_owner ON import_jobs(owner_id);
       CREATE INDEX sessions_user ON sessions(user_id);
       PRAGMA user_version=7; COMMIT;`);
+    if (version < 8) this.db.exec(`BEGIN;
+      DROP INDEX IF EXISTS users_single_admin;
+      CREATE TABLE user_notifications (user_id TEXT PRIMARY KEY, value TEXT NOT NULL);
+      PRAGMA user_version=8; COMMIT;`);
     this.translations = new RssTranslations(this.db, id => this.userSignal(id));
-    this.history = new FetchHistory(this.db, () => this.getSettings());
+    this.history = new FetchHistory(this.db, () => this.getSettings(), id => this.getBarkForFeed(id));
+    this.migrateBark();
     this.ensureSetupToken();
   }
 
@@ -353,6 +359,61 @@ export class Store {
     return row ? { id: String(row.id), username: String(row.username), passwordHash: String(row.password_hash) } : null;
   }
 
+  getUser(id: string): UserSummary | undefined { return this.listUsers().find(user => user.id === id); }
+
+  updateUser(actorId: string, id: string, patch: Partial<Pick<UserSummary, 'username' | 'enabled' | 'role'>>): UserSummary {
+    return this.transaction(() => {
+      const user = this.getUser(id);
+      if (!user) throw new AppError(404, '用户不存在');
+      const next = { ...user, ...patch };
+      if (actorId === id && !next.enabled) throw new AppError(403, '不能停用自己');
+      if (user.role === 'admin' && user.enabled && (!next.enabled || next.role !== 'admin') &&
+          !this.listUsers().some(u => u.id !== id && u.role === 'admin' && u.enabled)) throw new AppError(409, '必须保留至少一名启用的管理员');
+      if (this.listUsers().some(u => u.id !== id && u.username === next.username)) throw new AppError(409, '用户名已存在');
+      const identityChanged = next.username !== user.username || next.role !== user.role;
+      if (identityChanged) {
+        this.db.prepare('UPDATE users SET username=?,role=?,generation=generation+1,updated_at=? WHERE id=?').run(next.username, next.role, nowIso(), id);
+        this.revokeUser(id);
+      }
+      if (next.enabled !== user.enabled) this.setUserEnabled(id, next.enabled);
+      return this.getUser(id)!;
+    });
+  }
+
+  private revokeUser(id: string): void {
+    this.db.prepare('DELETE FROM sessions WHERE user_id=?').run(id);
+    this.userControllers.get(id)?.abort(); this.userControllers.delete(id);
+    for (const feed of this.listFeeds(id)) this.translations.invalidate(feed.id);
+    this.translations.cancelActor(id);
+    for (const job of this.listImportJobs()) {
+      if (job.actorId !== id || job.ownerId === id) continue;
+      for (const entry of job.entries) if (['queued', 'running'].includes(entry.state)) { entry.state = 'canceled'; entry.error = '操作人身份已变化，请重新重试'; }
+      this.saveImportJob(job);
+    }
+  }
+
+  deletionPreview(id: string) {
+    const user = this.getUser(id);
+    if (!user) throw new AppError(404, '用户不存在');
+    return { user, feeds: this.listFeeds(id).length, credentials: this.listCredentialSummaries(id).length, jobs: this.listImportJobs(id).length };
+  }
+
+  deleteUser(actorId: string, id: string, confirmation: string): void {
+    this.transaction(() => {
+      const user = this.getUser(id);
+      if (!user) throw new AppError(404, '用户不存在');
+      if (actorId === id) throw new AppError(403, '不能删除自己');
+      if (confirmation !== user.username) throw new AppError(400, '请输入目标用户名确认删除');
+      if (user.role === 'admin' && user.enabled && !this.listUsers().some(u => u.id !== id && u.role === 'admin' && u.enabled)) throw new AppError(409, '必须保留至少一名启用的管理员');
+      this.revokeUser(id);
+      for (const table of ['import_jobs', 'feeds', 'credentials']) this.db.prepare(`DELETE FROM ${table} WHERE owner_id=?`).run(id);
+      // The shared translation cache can contain this user's source fragments.
+      this.db.prepare('DELETE FROM translation_cache').run();
+      this.db.prepare('DELETE FROM user_notifications WHERE user_id=?').run(id);
+      this.db.prepare('DELETE FROM users WHERE id=?').run(id);
+    });
+  }
+
   listUsers(): UserSummary[] {
     return this.db.prepare('SELECT * FROM users ORDER BY created_at,id').all().map(row => ({
       id: String(row.id), username: String(row.username), role: row.role as UserSummary['role'], enabled: !!row.enabled,
@@ -381,10 +442,11 @@ export class Store {
   isFeedActive(id: string): boolean { const feed = this.getFeed(id); return !!feed && this.isUserActive(feed.ownerId); }
 
   setUserEnabled(id: string, enabled: boolean): void {
-    if (this.getAdmin()?.id === id) throw new Error('不能停用管理员');
+    if (!enabled && this.getUser(id)?.role === 'admin' && !this.listUsers().some(u => u.id !== id && u.role === 'admin' && u.enabled)) throw new AppError(409, '必须保留至少一名启用的管理员');
     this.transaction(() => {
       this.db.prepare('UPDATE users SET enabled=?,generation=generation+1,updated_at=? WHERE id=?').run(enabled ? 1 : 0, nowIso(), id);
       if (!enabled) {
+        this.translations.suspendActor(id);
         this.userControllers.get(id)?.abort();
         this.userControllers.delete(id);
         this.db.prepare('DELETE FROM sessions WHERE user_id=?').run(id);
@@ -411,7 +473,7 @@ export class Store {
   changePassword(password: string, userId = this.getAdmin()?.id ?? 'admin'): void {
     this.transaction(() => {
       this.db.prepare('UPDATE users SET password_hash=?,updated_at=? WHERE id=?').run(hashPassword(password), nowIso(), userId);
-      this.db.prepare('DELETE FROM sessions WHERE user_id=?').run(userId);
+      this.revokeUser(userId);
     });
   }
 
@@ -610,8 +672,9 @@ export class Store {
 
   exportTables(): Tables {
     const tables: Record<string, unknown> = {};
-    for (const table of ['users', 'credentials', 'feeds', 'feed_items', 'settings', 'rss_sources', 'translations', 'translation_cache']) {
+    for (const table of ['users', 'user_notifications', 'credentials', 'feeds', 'feed_items', 'settings', 'rss_sources', 'translations', 'translation_cache']) {
       tables[table] = this.db.prepare(`SELECT * FROM ${table}`).all().map(row => {
+        if (table === 'user_notifications') return { ...row, value: decrypt(this.masterKey, String(row.value)) };
         if (table === 'credentials') return { ...row, encrypted_value: decrypt(this.masterKey, String(row.encrypted_value)) };
         if (table === 'feeds') return { ...row, token_ciphertext: decrypt(this.masterKey, String(row.token_ciphertext)) };
         if (table === 'settings' && row.key === 'application') return { ...row, value: decrypt(this.masterKey, String(row.value)) };
@@ -626,10 +689,11 @@ export class Store {
     for (const controller of this.userControllers.values()) controller.abort();
     this.userControllers.clear();
     this.transaction(() => {
-      for (const table of ['sessions', 'import_jobs', 'translations', 'rss_sources', 'translation_cache', 'feed_items', 'feeds', 'credentials', 'users', 'settings']) this.db.exec(`DELETE FROM ${table}`);
-      for (const table of ['users', 'credentials', 'feeds', 'feed_items', 'settings', 'rss_sources', 'translations', 'translation_cache'] as const) {
-        for (const value of tables[table]) {
+      for (const table of ['sessions', 'import_jobs', 'translations', 'rss_sources', 'translation_cache', 'feed_items', 'feeds', 'credentials', 'user_notifications', 'users', 'settings']) this.db.exec(`DELETE FROM ${table}`);
+      for (const table of ['users', 'user_notifications', 'credentials', 'feeds', 'feed_items', 'settings', 'rss_sources', 'translations', 'translation_cache'] as const) {
+        for (const value of tables[table] ?? []) {
           const row: Record<string, string | number | null> = { ...value };
+          if (table === 'user_notifications') row.value = encrypt(this.masterKey, String(row.value));
           if (table === 'credentials') row.encrypted_value = encrypt(this.masterKey, String(row.encrypted_value));
           if (table === 'settings' && row.key === 'application') row.value = encrypt(this.masterKey, JSON.stringify(applicationSettingsSchema.parse(JSON.parse(String(row.value)))));
           if (table === 'feeds') { row.name = String(row.channel_title ?? '').trim() || row.name; row.channel_title = row.name; row.token_hash = hashToken(String(row.token_ciphertext)); row.token_ciphertext = encrypt(this.masterKey, String(row.token_ciphertext)); }
@@ -639,6 +703,7 @@ export class Store {
       }
       // Old backups restore safe defaults, and never reactivate a legacy env URL.
       this.initializeSettings({ ...structuredClone(defaultApplicationSettings), server: previousServer });
+      this.migrateBark();
     });
     this.ensureSetupToken();
   }
@@ -657,22 +722,58 @@ export class Store {
     this.db.prepare('INSERT INTO import_jobs(id,body,owner_id) VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body').run(job.id, JSON.stringify(job), job.ownerId ?? 'admin');
   }
 
+  private migrateBark(): void {
+    if (!this.getUser('admin') && this.listUsers().length) return;
+    if (this.db.prepare("SELECT 1 FROM user_notifications WHERE user_id='admin'").get()) return;
+    const saved = this.db.prepare("SELECT value FROM settings WHERE key='application'").get();
+    if (!saved) return;
+    const value = applicationSettingsSchema.parse(JSON.parse(decrypt(this.masterKey, String(saved.value))));
+    this.writeBark('admin', value.bark);
+    value.bark = structuredClone(defaultApplicationSettings.bark);
+    this.db.prepare("UPDATE settings SET value=? WHERE key='application'").run(encrypt(this.masterKey, JSON.stringify(value)));
+  }
+
+  getBark(userId: string): ApplicationSettings['bark'] {
+    const row = this.db.prepare('SELECT value FROM user_notifications WHERE user_id=?').get(userId);
+    return row ? applicationSettingsSchema.shape.bark.parse(JSON.parse(decrypt(this.masterKey, String(row.value)))) : structuredClone(defaultApplicationSettings.bark);
+  }
+  getBarkForFeed(id: string): ApplicationSettings['bark'] {
+    const row = this.db.prepare('SELECT owner_id FROM feeds WHERE id=?').get(id);
+    return row ? this.getBark(String(row.owner_id)) : structuredClone(defaultApplicationSettings.bark);
+  }
+  private writeBark(userId: string, value: ApplicationSettings['bark']): void {
+    this.db.prepare('INSERT INTO user_notifications(user_id,value) VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET value=excluded.value').run(userId, encrypt(this.masterKey, JSON.stringify(value)));
+  }
+  setBark(userId: string, patch: Partial<ApplicationSettings['bark']>): ApplicationSettings['bark'] {
+    const previous = this.getBark(userId);
+    const value = applicationSettingsSchema.shape.bark.parse({ ...previous, ...patch, ...(patch.url === '' ? { enabled: false } : {}) });
+    this.transaction(() => {
+      this.writeBark(userId, value);
+      if (previous.url !== value.url || previous.enabled !== value.enabled) this.history.resetNotifications(userId);
+    });
+    return value;
+  }
+
   getSettings(): ApplicationSettings {
     const row = this.db.prepare("SELECT value FROM settings WHERE key = 'feedView'").get();
     const saved = this.db.prepare("SELECT value FROM settings WHERE key = 'application'").get();
     const settings = saved ? applicationSettingsSchema.parse(JSON.parse(decrypt(this.masterKey, String(saved.value)))) : structuredClone(defaultApplicationSettings);
-    return { ...settings, feedView: row?.value === 'cards' ? 'cards' : 'list' };
+    return { ...settings, bark: this.getBark('admin'), feedView: row?.value === 'cards' ? 'cards' : 'list' };
   }
 
   initializeSettings(initial?: ApplicationSettings): void {
     if (this.db.prepare("SELECT key FROM settings WHERE key='application'").get()) return;
     const settings = initial ? { ...initial, feedView: this.getSettings().feedView } : this.getSettings();
+    if (this.db.prepare("SELECT 1 FROM user_notifications WHERE user_id='admin'").get()) settings.bark = this.getBark('admin');
     this.setSettings(settings);
   }
 
   setSettings(value: ApplicationSettings): void {
     const settings = applicationSettingsSchema.parse(value);
+    const personalBark = settings.bark;
+    settings.bark = structuredClone(defaultApplicationSettings.bark);
     this.transaction(() => {
+      if (this.getUser('admin') || !this.listUsers().length) this.setBark('admin', personalBark);
       this.setFeedView(settings.feedView);
       this.db.prepare("INSERT INTO settings(key,value) VALUES ('application',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
         .run(encrypt(this.masterKey, JSON.stringify(settings)));

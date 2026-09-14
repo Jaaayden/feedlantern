@@ -1,5 +1,5 @@
 import { getConfig } from './config.js';
-import { Store, verifyPassword } from './store.js';
+import { Store } from './store.js';
 import { StringDecoder } from 'node:string_decoder';
 
 let pipedInput: Promise<string[]> | undefined;
@@ -43,15 +43,23 @@ if (process.argv.slice(2).length > 0) {
 } else {
   const store = new Store(getConfig());
   try {
-    const admin = store.getAdmin();
+    const admins = store.listUsers().filter(u => u.role === 'admin');
+    let selected = admins[0];
+    if (admins.length > 1) {
+      process.stdout.write(`管理员账号：${admins.map(u => u.username).join('、')}\n`);
+      const username = await promptLine('要重置的管理员用户名：');
+      selected = admins.find(u => u.username === username)!;
+      if (!selected) throw new Error('管理员不存在。');
+    }
+    const admin = selected;
     if (!admin) throw new Error('尚未完成初始化，请先运行服务并使用 setup-token 初始化。');
     const current = await promptLine('当前密码（可留空以强制重置）：');
-    if (current && !verifyPassword(current, admin.passwordHash)) throw new Error('当前密码错误。');
+    if (current && !store.authenticate(admin.username, current)) throw new Error('当前密码错误。');
     const next = await promptLine('新密码：');
     if (next.length < 8 || next.length > 1024) throw new Error('新密码长度必须为 8 到 1024 个字符。');
     const confirm = await promptLine('再次输入新密码：');
     if (next !== confirm) throw new Error('两次输入的密码不一致。');
-    store.changePassword(next);
+    store.changePassword(next, admin.id);
     process.stdout.write('密码已重置，管理员的现有登录会话已全部撤销。\n');
   } catch (error) {
     process.stderr.write(`${error instanceof Error ? error.message : '密码重置失败'}\n`);

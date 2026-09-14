@@ -44,10 +44,10 @@ test('管理员创建、停用、启用和重置用户；普通用户独立使�
     await expect(reader.getByRole('button', { name: '登录', exact: true })).toBeVisible();
     await row.getByRole('button', { name: '启用', exact: true }).click();
     await expect(row).toContainText('已启用');
-    await row.getByRole('button', { name: '重置密码', exact: true }).click();
-    await page.getByLabel('新密码', { exact: true }).fill('reader-reset-password');
-    await page.getByRole('button', { name: '确认重置密码', exact: true }).click();
-    await expect(page.getByRole('status')).toContainText('密码已重置');
+    await row.getByRole('button', { name: '编辑账号', exact: true }).click();
+    await page.getByLabel('新密码（留空保留）', { exact: true }).fill('reader-reset-password');
+    await page.getByRole('button', { name: '保存账号', exact: true }).click();
+    await expect(page.getByRole('status')).toContainText('账号已更新');
     await login('reader-reset-password');
     await expect(reader.getByText(`Reader feed ${username}`, { exact: true })).toBeVisible();
     await reader.setViewportSize({ width: 390, height: 844 });
@@ -55,4 +55,55 @@ test('管理员创建、停用、启用和重置用户；普通用户独立使�
     const nextAuth = await (await reader.request.get('/api/auth/status')).json();
     await reader.request.delete(`/api/feeds/${feed.id}`, { headers: protocolHeaders(nextAuth.csrfToken) });
   } finally { await context.close(); }
+});
+
+test('管理员切换用户工作台、配置个人通知、改名和永久删除（桌面及手机）', async ({ page }, testInfo) => {
+  const auth = await loginAsAdmin(page.request), headers = protocolHeaders(auth.csrfToken);
+  const names = [`workspace-a-${Date.now()}`, `workspace-b-${Date.now()}`];
+  const users = [];
+  for (const username of names) users.push(await (await page.request.post('/api/users', { headers, data: { username, password: 'workspace-password' } })).json());
+  try {
+    await page.goto('/');
+    const openUser = async (username: string) => {
+      await page.getByRole('button', { name: '用户管理', exact: true }).click();
+      await page.locator('.user-row').filter({ hasText: username }).getByRole('button', { name: '管理工作台' }).click();
+      await expect(page.locator('.workspace-banner')).toContainText(`正在管理：${username}`);
+    };
+    await openUser(names[0]);
+    await page.getByRole('button', { name: '设置', exact: true }).click();
+    await expect(page.getByRole('form', { name: '应用设置' })).toHaveCount(0);
+    const bark = page.getByRole('form', { name: '个人 Bark 通知' });
+    await expect(bark).toContainText(`接收账号：${names[0]}`);
+    await bark.getByLabel('Bark 推送地址').fill('https://example.test/workspace-test-key');
+    await bark.getByRole('button', { name: '保存个人通知' }).click();
+    await expect(bark.getByRole('status')).toContainText('已保存');
+    await openUser(names[1]);
+    await page.getByRole('button', { name: '设置', exact: true }).click();
+    await expect(bark).toContainText(`接收账号：${names[1]}`);
+    await expect(bark.getByText(/已保存：/)).toHaveCount(0);
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.screenshot({ path: testInfo.outputPath('workspace-desktop.png'), fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+    await page.screenshot({ path: testInfo.outputPath('workspace-mobile.png'), fullPage: true });
+    await page.getByRole('button', { name: '返回我的工作台' }).click();
+    await expect(page.locator('.workspace-banner')).toHaveCount(0);
+    await page.getByRole('button', { name: '用户管理', exact: true }).click();
+    const row = page.locator('.user-row').filter({ hasText: names[1] });
+    await row.getByRole('button', { name: '编辑账号' }).click();
+    await page.getByLabel('用户名', { exact: true }).fill(`${names[1]}-renamed`);
+    await page.getByLabel('角色', { exact: true }).selectOption('admin');
+    await page.getByRole('button', { name: '保存账号' }).click();
+    await expect(row).toContainText('管理员');
+    await row.getByRole('button', { name: '删除用户' }).click();
+    const dialog = page.getByRole('dialog', { name: '永久删除用户' });
+    await expect(dialog.getByRole('button', { name: '永久删除', exact: true })).toBeDisabled();
+    await dialog.getByLabel('输入目标用户名确认').fill(`${names[1]}-renamed`);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+    await page.screenshot({ path: testInfo.outputPath('delete-mobile.png'), fullPage: true });
+    await dialog.getByRole('button', { name: '永久删除', exact: true }).click();
+    await expect(dialog).toHaveCount(0); await expect(row).toHaveCount(0);
+  } finally {
+    for (const user of users) await page.request.delete(`/api/users/${user.id}`, { headers, data: { username: user.username } });
+  }
 });

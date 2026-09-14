@@ -10,7 +10,7 @@ import { safeDiagnostic } from '../src/server/fetch-history.js';
 const input = { name: '日志测试', url: 'https://example.test/list?secret=private', rules: { item: 'article', title: 'h2', link: 'a' }, credentialId: null, intervalMinutes: 60, waitMs: 0 };
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), 'fl-history-')), store = new Store(dir);
-  store.setSettings({ ...store.getSettings(), bark: { ...store.getSettings().bark, failureThreshold: 1 } });
+  store.setSettings({ ...store.getSettings(), bark: { ...store.getSettings().bark, enabled: true, url: 'https://example.test/mock-key', failureThreshold: 1 } });
   const feed = store.createFeed(input).feed;
   return { dir, store, feed, close: () => { store.close(); rmSync(dir, { recursive: true, force: true }); } };
 }
@@ -28,6 +28,7 @@ test('日志分页顺序、状态筛选、200 条上限下准确计数与原子�
     assert.equal(store.getItems(feed.id).length, 200);
     store.upsertItems(feed, items, counts); assert.equal(counts.newItemCount, 0);
     const failed = store.history.start(feed.id, 'edit');
+    store.setBark('admin', { enabled: false });
     store.history.fail(failed, feed, 'edit', 5, 'Cookie: sensitive', false);
     const page = store.history.list(feed.id, undefined, undefined, 1);
     assert.equal(page.logs[0].id, failed); assert.equal(page.nextCursor, String(failed));
@@ -77,7 +78,7 @@ test('30 天清理、重启中断恢复、队列持久化、删除及备份恢�
   const dir = mkdtempSync(join(tmpdir(), 'fl-history-restart-'));
   let store = new Store(dir);
   try {
-    store.setSettings({ ...store.getSettings(), bark: { ...store.getSettings().bark, failureThreshold: 1 } });
+    store.setSettings({ ...store.getSettings(), bark: { ...store.getSettings().bark, enabled: true, url: 'https://example.test/mock-key', failureThreshold: 1 } });
     const feed = store.createFeed(input).feed, now = Date.now();
     const old = store.history.start(feed.id, 'manual', new Date(now - 31 * 86400_000).toISOString());
     store.history.succeed(old, feed.id, 10, { itemCount: 1, newItemCount: 1 });
@@ -169,6 +170,7 @@ test('默认十次阈值、订阅隔离、去重及成功清零', () => {
 test('阈值前计数跨重启与日志清理持久化，动态修改阈值生效', () => {
   const dir = mkdtempSync(join(tmpdir(), 'fl-threshold-'));
   let store = new Store(dir);
+  store.setBark('admin', { enabled: true, url: 'https://example.test/mock-key' });
   try {
     const feed = store.createFeed(input).feed;
     const fail = () => store.history.fail(store.history.start(feed.id, 'manual'), feed, 'manual', 1, '失败', true);
@@ -188,7 +190,7 @@ test('旧故障表迁移保留已发送去重状态，新故障从零累计', ()
   let store = new Store(dir);
   try {
     const feed = store.createFeed(input).feed;
-    store.setSettings({ ...store.getSettings(), bark: { ...store.getSettings().bark, failureThreshold: 1 } });
+    store.setSettings({ ...store.getSettings(), bark: { ...store.getSettings().bark, enabled: true, url: 'https://example.test/mock-key', failureThreshold: 1 } });
     store.history.fail(store.history.start(feed.id, 'manual'), feed, 'manual', 1, '失败', true);
     const alert = store.history.nextAlert()!;
     store.history.beginAttempt(alert.id); store.history.finishAttempt(alert.id, true);

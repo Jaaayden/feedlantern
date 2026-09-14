@@ -35,9 +35,9 @@ export class ImportJobs {
   }
   stop() { this.stopped = true; }
   setConcurrency(value: number) { this.concurrency = value; }
-  create(entries: Array<Pick<ImportEntry, 'url' | 'credentialId' | 'intervalMinutes' | 'sourceType' | 'translationMode'>>, ownerId = 'admin'): ImportJob {
+  create(entries: Array<Pick<ImportEntry, 'url' | 'credentialId' | 'intervalMinutes' | 'sourceType' | 'translationMode'>>, ownerId = 'admin', actorId = ownerId): ImportJob {
     if (this.store.listImportJobs().filter(j => j.entries.some(e => ['queued', 'running'].includes(e.state))).length >= 10) throw new AppError(429, '请等待现有批量任务完成');
-    const job: ImportJob = { ownerId, id: randomUUID(), createdAt: new Date().toISOString(), entries: [] };
+    const job: ImportJob = { actorId, ownerId, id: randomUUID(), createdAt: new Date().toISOString(), entries: [] };
     const seen = new Set<string>();
     for (const input of entries) {
       const url = normalizeSource(input.url);
@@ -53,8 +53,9 @@ export class ImportJobs {
     if (!job) throw new AppError(404, '批量任务不存在');
     return job;
   }
-  update(id: string, action: 'cancel' | 'retry', entryId?: string) {
+  update(id: string, action: 'cancel' | 'retry', entryId?: string, actorId?: string) {
     const job = this.get(id);
+    if (action === 'retry' && actorId) job.actorId = actorId;
     for (const entry of job.entries) {
       if (entryId && entry.id !== entryId) continue;
       if (action === 'cancel' && entry.state === 'queued') entry.state = 'canceled';
@@ -62,12 +63,14 @@ export class ImportJobs {
     }
     this.store.saveImportJob(job); this.wake(); return job;
   }
-  async confirm(id: string, entryId: string, input: FeedInput, authorize?: () => unknown) {
+  async confirm(id: string, entryId: string, input: FeedInput, authorize?: () => unknown, actorId?: string) {
     return this.enqueue(async () => {
       authorize?.();
       const job = this.get(id);
-      if (!this.store.isUserActive(job.ownerId)) throw new AppError(401, '账号已停用');
+      if (actorId) job.actorId = actorId;
+      if (!this.authorized(job)) throw new AppError(401, '账号已停用');
       const generation = this.store.userGeneration(job.ownerId);
+      const actionSignal = this.signal(job);
       if (input.credentialId && !this.store.owns('credentials', input.credentialId, job.ownerId ?? 'admin')) throw new AppError(404, 'Cookie 凭据不存在');
       const entry = job.entries.find(e => e.id === entryId);
       if (!entry) throw new AppError(404, '任务条目不存在');
@@ -78,9 +81,9 @@ export class ImportJobs {
       const existing = this.existing(entry.url, entry, job.ownerId);
       if (existing) { entry.state = 'existing'; entry.feedId = existing.id; this.store.saveImportJob(job); return existing; }
       const startedAt = new Date().toISOString(), started = performance.now();
-      const items = await this.scrape(input, this.store.userSignal(job.ownerId));
+      const items = await this.scrape(input, this.signal(job));
       authorize?.();
-      if (generation !== this.store.userGeneration(job.ownerId)) throw new AppError(401, '账号已停用');
+      if (actionSignal.aborted || !this.authorized(job) || generation !== this.store.userGeneration(job.ownerId)) throw new AppError(401, '账号已停用');
       if (!items.length) throw new AppError(400, '未匹配到有效条目，请调整规则');
       return this.complete(job, entry, input, items, startedAt, performance.now() - started);
     }, [siteKey(input.url)]);
@@ -115,8 +118,16 @@ export class ImportJobs {
       return this.store.getFeed(feed.id)!;
     });
   }
+  private authorized(job: ImportJob): boolean {
+    const ownerId = job.ownerId ?? 'admin', actorId = job.actorId ?? ownerId;
+    return this.store.isUserActive(ownerId) && this.store.isUserActive(actorId) && (ownerId === actorId || this.store.getUser(actorId)?.role === 'admin');
+  }
+  private signal(job: ImportJob): AbortSignal {
+    return AbortSignal.any([this.store.userSignal(job.ownerId), this.store.userSignal(job.actorId ?? job.ownerId)]);
+  }
   private requeue(id: string, entryId: string) {
-    const job = this.get(id);
+    const job = this.store.listImportJobs().find(j => j.id === id);
+    if (!job) return;
     for (const entry of job.entries) if (entry.id === entryId && entry.state === 'running') entry.state = 'queued';
     this.store.saveImportJob(job);
   }
@@ -132,14 +143,15 @@ export class ImportJobs {
   }
   private async worker() {
       while (!this.stopped) {
-        const job = this.store.listImportJobs().reverse().find(j => this.store.isUserActive(j.ownerId) && j.entries.some(e => e.state === 'queued' && !this.claimed.has(e.id)));
+        const job = this.store.listImportJobs().reverse().find(j => this.authorized(j) && j.entries.some(e => e.state === 'queued' && !this.claimed.has(e.id)));
         const pending = job?.entries.find(e => e.state === 'queued' && !this.claimed.has(e.id));
         if (!job || !pending) break;
         this.claimed.add(pending.id);
         try { await this.enqueue(async () => {
-          if (this.stopped || !this.store.isUserActive(job.ownerId)) return;
+          if (this.stopped || !this.authorized(job)) return;
           const generation = this.store.userGeneration(job.ownerId);
-          const stillActive = () => generation === this.store.userGeneration(job.ownerId);
+          const signal = this.signal(job);
+          const stillActive = () => !signal.aborted && this.authorized(job) && generation === this.store.userGeneration(job.ownerId);
           const current = this.get(job.id), entry = current.entries.find(e => e.id === pending.id)!;
           if (entry.state !== 'queued') return;
           const existing = this.existing(entry.url, entry, job.ownerId);
@@ -149,14 +161,14 @@ export class ImportJobs {
             const startedAt = new Date().toISOString(), started = performance.now();
             if (entry.sourceType === 'rss') {
               if (!this.loadRss) throw new AppError(501, 'RSS 批量导入不可用');
-              const rss = await this.loadRss(entry, this.store.userSignal(job.ownerId));
+              const rss = await this.loadRss(entry, this.signal(job));
               if (!stillActive()) { this.requeue(job.id, entry.id); return; }
               entry.title = rss.title;
               this.complete(current, entry, { sourceType: 'rss', translationMode: entry.translationMode ?? 'bilingual', name: (rss.title.trim() || new URL(entry.url).host).slice(0, 200), url: entry.url, credentialId: null, intervalMinutes: entry.intervalMinutes, waitMs: 0, rules: { item: '', title: '', link: '' } }, [], startedAt, performance.now() - started, rss);
               this.wakeTranslation?.();
               return;
             }
-            const { title, detection } = await this.discover(entry, this.store.userSignal(job.ownerId));
+            const { title, detection } = await this.discover(entry, this.signal(job));
             if (!stillActive()) { this.requeue(job.id, entry.id); return; }
             entry.title = title;
             const candidate = detection.candidates.find(c => c.id === detection.recommendedId && c.confidence === 'high');

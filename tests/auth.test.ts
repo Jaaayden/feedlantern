@@ -46,3 +46,15 @@ test('本机密码重置命令支持中文密码并撤销原会话', () => {
     rmSync(dataDir, { recursive: true, force: true });
   }
 });
+
+test('多管理员本机重置必须选择目标，其他管理员会话保持有效', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fl-reset-multi-')), store = new Store(dir);
+  try {
+    store.createAdmin('first', 'first-password'); const second = store.createUser('second', 'second-password');
+    store.updateUser('admin', second.id, { role: 'admin' });
+    const firstSession = store.createSession('first', 60_000), secondSession = store.createSession('second', 60_000);
+    const output = execFileSync(process.execPath, ['--import', 'tsx', 'src/server/reset-password.ts'], { env: { ...process.env, DATA_DIR: dir }, input: 'second\n\nchanged-password\nchanged-password\n', encoding: 'utf8' });
+    assert.match(output, /要重置的管理员用户名/); assert.ok(store.authenticate('second', 'changed-password'));
+    assert.ok(store.findSession(firstSession.id, 60_000)); assert.equal(store.findSession(secondSession.id, 60_000), null);
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});

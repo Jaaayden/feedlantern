@@ -1,4 +1,4 @@
-import { translationEnabled } from '../shared/types.js';
+import { defaultApplicationSettings, translationEnabled } from '../shared/types.js';
 import { fetchSource, type SourceFetcher } from './rss-source.js';
 import { NetworkPolicy } from './network.js';
 import { TranslationWorker, type Translator } from './rss-translation.js';
@@ -236,7 +236,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   applyRuntimeSettings(config, store.getSettings());
   let browser = await makeBrowserService(config, options.browserService);
   store.history.recover();
-  const bark = new BarkWorker(store.history, () => store.getSettings().bark, options.barkSender);
+  const bark = new BarkWorker(store.history, () => store.getSettings().bark, options.barkSender, true);
   const app = Fastify({ logger: false, bodyLimit: 2_500_000, trustProxy: address => {
     try {
       const peer = ipaddr.process(address);
@@ -333,11 +333,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return cookiesForTarget(credential, feed.url);
   };
 
-  const refreshOnce = async (id: string, source: FetchSource): Promise<Feed | null> => {
+  const refreshOnce = async (id: string, source: FetchSource, actorSignal?: AbortSignal): Promise<Feed | null> => {
     const feed = store.getFeed(id);
     if (!feed || !store.isUserActive(feed.ownerId)) return null;
     const generation = store.userGeneration(feed.ownerId);
-    const stillActive = () => store.userGeneration(feed.ownerId) === generation;
+    const stillActive = () => !actorSignal?.aborted && !!store.getFeed(id) && store.userGeneration(feed.ownerId) === generation;
     const nextFetchAt = new Date(Date.now() + feed.intervalMinutes * 60_000).toISOString();
     const started = performance.now();
     const runId = store.transaction(() => {
@@ -345,8 +345,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       return store.history.start(feed.id, source);
     });
     try {
-      const rss = feed.sourceType === 'rss' ? await getRss(feed.url, { ...store.translations.sourceState(feed.id), signal: store.userSignal(feed.ownerId) }) : undefined;
-      const items = rss ? [] : await browser.scrape({ url: feed.url, signal: store.userSignal(feed.ownerId), cookies: credentialsForFeed(feed), waitMs: feed.waitMs, waitForSelector: feed.waitForSelector, rules: feed.rules });
+      const rss = feed.sourceType === 'rss' ? await getRss(feed.url, { ...store.translations.sourceState(feed.id), signal: AbortSignal.any([store.userSignal(feed.ownerId), ...(actorSignal ? [actorSignal] : [])]) }) : undefined;
+      const items = rss ? [] : await browser.scrape({ url: feed.url, signal: AbortSignal.any([store.userSignal(feed.ownerId), ...(actorSignal ? [actorSignal] : [])]), cookies: credentialsForFeed(feed), waitMs: feed.waitMs, waitForSelector: feed.waitForSelector, rules: feed.rules });
       if (!rss && !items.length) throw new Error('没有抽取到有效条目：可能是页面结构或规则变化，请检查匹配规则、Cookie 或页面渲染');
       if (!stillActive()) { store.history.interrupt(runId); return null; }
       const result = store.transaction(() => {
@@ -379,14 +379,15 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   };
 
-  const doRefresh = (id: string, dueOnly = false, source: FetchSource = dueOnly ? 'scheduled' : 'manual'): Promise<Feed | null> => {
+  const doRefresh = (id: string, dueOnly = false, source: FetchSource = dueOnly ? 'scheduled' : 'manual', authorize?: () => AbortSignal): Promise<Feed | null> => {
     const active = refreshInFlight.get(id);
     if (active) { if (!dueOnly) active.force = true; return active.promise; }
     const job = { force: !dueOnly, promise: Promise.resolve<Feed | null>(null) };
     job.promise = enqueueRefresh(() => {
+      const actorSignal = authorize?.();
       const current = store.getFeed(id);
       if (!current || !store.isUserActive(current.ownerId)) return null;
-      if (job.force || current.enabled && current.nextFetchAt <= new Date().toISOString()) return refreshOnce(id, source);
+      if (job.force || current.enabled && current.nextFetchAt <= new Date().toISOString()) return refreshOnce(id, source, actorSignal);
       return current;
     }, () => refreshKeys(id)).finally(() => refreshInFlight.delete(id));
     refreshInFlight.set(id, job);
@@ -503,13 +504,34 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (typeof currentPassword !== 'string' || !store.authenticate(context.username, currentPassword)) throw new AppError(400, '当前密码错误');
     if (!validatePassword(newPassword)) throw new AppError(400, '新密码长度必须为 8 到 1024 个字符');
     store.changePassword(newPassword, context.userId);
+    await closeUserEditors(context.userId);
     clearSessionCookie(reply, currentConfig());
     return authState(store, config, null);
   });
 
-  const browserOwners = new Map<string, { userId: string; touchedAt: number }>();
+  const browserOwners = new Map<string, { userId: string; actorId: string; touchedAt: number }>();
+  const workspace = (request: FastifyRequest, active = false) => {
+    const actor = authenticated(request);
+    const header = request.headers['x-feedlantern-user'];
+    if (header !== undefined && (typeof header !== 'string' || !header)) throw new AppError(400, '目标用户格式无效');
+    const id = header ?? actor.userId;
+    if (id !== actor.userId && actor.role !== 'admin') throw new AppError(403, '仅管理员可以管理其他用户');
+    const user = store.getUser(id);
+    if (!user) throw new AppError(404, '用户不存在');
+    if (active && !user.enabled) throw new AppError(409, '请先启用此用户');
+    return { ...actor, actorId: actor.userId, userId: id, target: user };
+  };
+  const operationSignal = (request: FastifyRequest) => {
+    const context = workspace(request, true);
+    return AbortSignal.any([store.userSignal(context.actorId), store.userSignal(context.userId)]);
+  };
+  const closeUserEditors = async (id: string) => {
+    await Promise.allSettled([...browserOwners].filter(([, owner]) => owner.userId === id || owner.actorId === id).map(async ([sessionId]) => {
+      browserOwners.delete(sessionId); await browser.close(sessionId);
+    }));
+  };
   const requireOwned = (request: FastifyRequest, table: 'feeds' | 'credentials' | 'import_jobs', id: string) => {
-    const context = authenticated(request);
+    const context = workspace(request);
     if (!store.owns(table, id, context.userId)) throw new AppError(404, table === 'feeds' ? '订阅不存在' : table === 'credentials' ? 'Cookie 凭据不存在' : '批量任务不存在');
     return context;
   };
@@ -531,7 +553,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       requireOwned(request, 'credentials', id);
     }
   };
-  const credentialsGuard = (request: FastifyRequest) => resourceGuard(request, 'credentials');
+  const credentialsGuard = (request: FastifyRequest) => { const actor = resourceGuard(request, 'credentials'); workspace(request, request.method === 'POST'); return actor; };
 
   app.get('/api/users', async request => { adminGuard(request); return store.listUsers(); });
   app.post('/api/users', async request => {
@@ -543,42 +565,65 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return store.createUser(username, password);
   });
   app.patch('/api/users/:id', async request => {
-    adminGuard(request);
-    const id = String(asRecord(request.params).id), { enabled } = asRecord(request.body);
-    const user = store.listUsers().find(u => u.id === id);
-    if (!user) throw new AppError(404, '用户不存在');
-    if (user.role === 'admin') throw new AppError(403, '不能停用管理员');
-    if (typeof enabled !== 'boolean') throw new AppError(400, '请指定账号启用状态');
-    if (user.enabled !== enabled) {
-      store.setUserEnabled(id, enabled);
-      if (!enabled) {
-        await Promise.allSettled([...browserOwners].filter(([, owner]) => owner.userId === id).map(async ([sessionId]) => {
-          browserOwners.delete(sessionId); await browser.close(sessionId);
-        }));
-      }
-      jobs.wake(); translations.wake(); bark.wake();
-      if (enabled && options.startScheduler !== false) void refreshDue().catch(() => {});
-    }
-    return store.listUsers().find(u => u.id === id)!;
+    const actor = adminGuard(request), id = String(asRecord(request.params).id), body = asRecord(request.body);
+    if (!Object.keys(body).length || Object.keys(body).some(k => !['username','enabled','role'].includes(k))) throw new AppError(400, '用户修改参数无效');
+    if (body.username !== undefined && !validateUsername(body.username)) throw new AppError(400, '用户名格式无效');
+    if (body.enabled !== undefined && typeof body.enabled !== 'boolean') throw new AppError(400, '请指定账号启用状态');
+    if (body.role !== undefined && !['admin','user'].includes(String(body.role))) throw new AppError(400, '角色无效');
+    const user = store.updateUser(actor.userId, id, body);
+    await closeUserEditors(id); jobs.wake(); translations.wake(); bark.wake();
+    if (user.enabled && options.startScheduler !== false) void refreshDue().catch(() => {});
+    return user;
   });
   app.post('/api/users/:id/password', async request => {
-    adminGuard(request);
+    const actor = adminGuard(request);
     const id = String(asRecord(request.params).id), { password } = asRecord(request.body);
-    const user = store.listUsers().find(u => u.id === id);
-    if (!user) throw new AppError(404, '用户不存在');
-    if (user.role === 'admin') throw new AppError(403, '请使用修改自己的密码功能');
+    if (!store.getUser(id)) throw new AppError(404, '用户不存在');
+    if (actor.userId === id) throw new AppError(403, '请使用修改自己的密码功能');
     if (!validatePassword(password)) throw new AppError(400, '密码长度必须为 8 到 1024 个字符');
-    store.changePassword(password, id);
+    store.changePassword(password, id); await closeUserEditors(id); jobs.wake(); bark.wake();
     return { ok: true };
   });
+  app.get('/api/users/:id/deletion-preview', async request => { adminGuard(request); return store.deletionPreview(String(asRecord(request.params).id)); });
+  app.delete('/api/users/:id', async request => {
+    const actor = adminGuard(request), id = String(asRecord(request.params).id);
+    store.deleteUser(actor.userId, id, asNonEmptyString(asRecord(request.body).username, '确认用户名', 100));
+    await closeUserEditors(id); jobs.wake(); bark.wake();
+    return { ok: true };
+  });
+  const barkSummary = (id: string) => {
+    const { url, ...value } = store.getBark(id);
+    return { ...value, configured: !!url, maskedUrl: url ? `${new URL(url).origin}/••••••` : '' };
+  };
+  const parseBark = (id: string, input: unknown, test = false) => {
+    const body = asRecord(input);
+    const result = applicationSettingsSchema.shape.bark.safeParse({ ...store.getBark(id), ...body, ...(test || body.url === '' ? { enabled: false } : {}) });
+    if (!result.success) throw new AppError(400, 'Bark 设置无效，请检查地址及数值范围');
+    return result.data;
+  };
+  app.get('/api/notifications/bark', async request => { resourceGuard(request); return barkSummary(workspace(request).userId); });
+  app.put('/api/notifications/bark', async request => {
+    resourceGuard(request); const { userId } = workspace(request);
+    store.setBark(userId, parseBark(userId, request.body)); bark.wake();
+    return barkSummary(userId);
+  });
+  app.post('/api/notifications/bark/test', async request => {
+    resourceGuard(request); const { userId, target } = workspace(request, true);
+    const value = parseBark(userId, request.body, true);
+    if (!value.url) throw new AppError(400, '请先填写 Bark 推送地址');
+    try {
+      await (options.barkSender ?? sendBark)(value.url, `这是 ${target.username} 的 FeedLantern 测试通知。`, AbortSignal.any([operationSignal(request), AbortSignal.timeout(value.timeoutSeconds * 1000)]), '订阅灯：测试通知');
+      return { ok: true };
+    } catch { throw new AppError(502, '测试通知发送失败，请检查 Bark 地址和网络'); }
+  });
 
-  app.get('/api/credentials', async (request): Promise<CredentialSummary[]> => { credentialsGuard(request); return store.listCredentialSummaries(authenticated(request).userId); });
+  app.get('/api/credentials', async (request): Promise<CredentialSummary[]> => { credentialsGuard(request); return store.listCredentialSummaries(workspace(request).userId); });
   app.post('/api/credentials', async (request) => {
     credentialsGuard(request);
     const input = parseCredentialInput(request.body);
     let cookies: Cookie[];
     try { cookies = parseCookies(String(input.value), input.format, input.url); } catch (error) { throw new AppError(400, friendlyError(error, 'Cookie 凭据无法解析')); }
-    return store.createCredential(input, cookieMetadata(cookies, input.url), authenticated(request).userId);
+    return store.createCredential(input, cookieMetadata(cookies, input.url), workspace(request).userId);
   });
   app.put('/api/credentials/:id', async (request) => {
     credentialsGuard(request);
@@ -601,7 +646,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const feedsGuard = (request: FastifyRequest) => {
     const table = request.routeOptions.url?.startsWith('/api/import-jobs') ? 'import_jobs' : 'feeds';
     const context = resourceGuard(request, table);
+    const route = request.routeOptions.url ?? '';
     const body = asRecord(request.body);
+    const active = request.method === 'POST' && (!route.includes('/bulk') || ['resume','refresh'].includes(String(body.action))) && !route.endsWith('/cancel') && !route.endsWith('/rotate-token');
+    workspace(request, active);
     checkCredential(request, body.credentialId);
     checkCredential(request, asRecord(body.input).credentialId);
     if (Array.isArray(body.entries)) for (const entry of body.entries) checkCredential(request, asRecord(entry).credentialId);
@@ -609,7 +657,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   };
 
   const feedPayload = (feed: Feed): { feed: Feed; feedUrl: string } => ({ feed, feedUrl: feedUrl(currentConfig(), store, feed.id) });
-  app.get('/api/feeds', async (request): Promise<Feed[]> => { feedsGuard(request); return store.listFeeds(authenticated(request).userId); });
+  app.get('/api/feeds', async (request): Promise<Feed[]> => { feedsGuard(request); return store.listFeeds(workspace(request).userId); });
   const backupGuard = (request: FastifyRequest, allowSetup = false) => {
     const body = asRecord(request.body);
     if (!limiter.allowed(request.ip)) throw new AppError(429, '验证尝试过于频繁');
@@ -621,7 +669,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       }
     } else {
       adminGuard(request);
-      if (!store.authenticate(store.getAdmin()!.username, asNonEmptyString(body.currentPassword, '管理员密码', 1024))) {
+      if (!store.authenticate(authenticated(request).username, asNonEmptyString(body.currentPassword, '管理员密码', 1024))) {
         limiter.registerFailure(request.ip); throw new AppError(403, '管理员密码无效');
       }
     }
@@ -647,7 +695,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     try {
       store.transaction(() => {
         write();
-        if (previous.bark.enabled !== next.bark.enabled || previous.bark.url !== next.bark.url) store.history.resetNotifications();
+
       });
       if (replacement !== browser) { await browser.dispose(); browser = replacement; }
       applyRuntimeSettings(config, next);
@@ -660,7 +708,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     backupGuard(request);
     const password = asNonEmptyString(asRecord(request.body).password, '备份密码', 1024);
     if (password.length < 12) throw new AppError(400, '备份密码至少 12 个字符');
-    return sealBackup(snapshotSchema.parse({ format: 'feedlantern-backup', version: 2, appVersion: config.version, createdAt: new Date().toISOString(), security: security(), tables: store.exportTables() }), password);
+    return sealBackup(snapshotSchema.parse({ format: 'feedlantern-backup', version: 3, appVersion: config.version, createdAt: new Date().toISOString(), security: security(), tables: store.exportTables() }), password);
   });
   for (const action of ['preview', 'restore'] as const) app.post(`/api/backups/${action}`, { bodyLimit: 100_000_000 }, async request => {
     backupGuard(request, true);
@@ -701,7 +749,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
   app.get('/api/backups/config', async request => {
     adminGuard(request);
-    return { format: 'feedlantern-config', version: 2, settings: store.getSettings(), feeds: store.listFeeds(authenticated(request).userId).map(f => ({ sourceType: f.sourceType, translationMode: f.translationMode, name: f.name, channelTitle: f.channelTitle, url: f.url, rules: f.rules, ruleOrigins: f.ruleOrigins, intervalMinutes: f.intervalMinutes, waitMs: f.waitMs, waitForSelector: f.waitForSelector, enabled: f.enabled, requiresCredential: !!f.credentialId })) };
+    return { format: 'feedlantern-config', version: 2, settings: { ...store.getSettings(), bark: store.getBark(authenticated(request).userId) }, feeds: store.listFeeds(authenticated(request).userId).map(f => ({ sourceType: f.sourceType, translationMode: f.translationMode, name: f.name, channelTitle: f.channelTitle, url: f.url, rules: f.rules, ruleOrigins: f.ruleOrigins, intervalMinutes: f.intervalMinutes, waitMs: f.waitMs, waitForSelector: f.waitForSelector, enabled: f.enabled, requiresCredential: !!f.credentialId })) };
   });
   app.post('/api/backups/config', { bodyLimit: 10_000_000 }, async request => {
     adminGuard(request);
@@ -733,14 +781,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         if (entry.needsCookie) store.markFetchFailure(feed.id, '请绑定 Cookie 凭据后恢复订阅', feed.nextFetchAt);
         seen.add(key); created++;
       }
-      if (importedSettings) store.setSettings(importedSettings);
+      if (importedSettings) { const originalBark = store.getBark('admin'); store.setSettings({ ...importedSettings, bark: originalBark }); store.setBark(authenticated(request).userId, importedSettings.bark); }
       result = { created, skipped };
       });
       if (importedSettings) await applySettings(importedSettings, write); else write();
       return result;
     });
   });
-  app.get('/api/import-jobs', async request => { feedsGuard(request); return store.listImportJobs(authenticated(request).userId); });
+  app.get('/api/import-jobs', async request => { feedsGuard(request); return store.listImportJobs(workspace(request).userId); });
   app.post('/api/import-jobs', async request => {
     feedsGuard(request);
     const body = asRecord(request.body);
@@ -761,31 +809,32 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       }
       return { url, credentialId, sourceType, translationMode, intervalMinutes: asInteger(body.intervalMinutes, '刷新间隔', 5, 1440, 60) };
     });
-    return jobs.create(entries, authenticated(request).userId);
+    return jobs.create(entries, workspace(request, true).userId, authenticated(request).userId);
   });
   app.post('/api/import-jobs/:id/:action', async request => {
     feedsGuard(request);
     const { id, action } = request.params as { id: string; action: string };
     const body = asRecord(request.body);
     if (action === 'confirm') {
-      const feed = await jobs.confirm(id, asNonEmptyString(body.entryId, 'entryId', 200), parseFeedInput(body.input), () => feedsGuard(request));
+      const feed = await jobs.confirm(id, asNonEmptyString(body.entryId, 'entryId', 200), parseFeedInput(body.input), () => feedsGuard(request), authenticated(request).userId);
       if (!feed) throw new AppError(404, '订阅已删除');
       return feedPayload(feed);
     }
     if (action !== 'cancel' && action !== 'retry') throw new AppError(400, '任务操作无效');
-    return jobs.update(id, action, asOptionalString(body.entryId, 'entryId', 200));
+    return jobs.update(id, action, asOptionalString(body.entryId, 'entryId', 200), authenticated(request).userId);
   });
   app.post('/api/settings/bark/test', async request => {
     adminGuard(request);
     const input = asRecord(request.body);
-    const settings = parseSettings({ ...store.getSettings(), bark: { ...store.getSettings().bark, ...input, enabled: false } });
+    const settings = parseSettings({ ...store.getSettings(), bark: { ...store.getBark(authenticated(request).userId), ...input, enabled: false } });
     if (!settings.bark.url) throw new AppError(400, '请先填写 Bark 推送地址');
     try {
       await (options.barkSender ?? sendBark)(settings.bark.url, '这是一条 FeedLantern 测试通知，Bark 推送连接正常。', AbortSignal.timeout(settings.bark.timeoutSeconds * 1000), '订阅灯：测试通知');
       return { ok: true };
     } catch { throw new AppError(502, '测试通知发送失败，请检查 Bark 地址和网络'); }
   });
-  app.get('/api/settings', async request => { adminGuard(request); return store.getSettings(); });
+  const globalSettings = () => ({ ...store.getSettings(), bark: structuredClone(defaultApplicationSettings.bark) });
+  app.get('/api/settings', async request => { adminGuard(request); return globalSettings(); });
   app.put('/api/settings', async request => {
     adminGuard(request);
     const body = asRecord(request.body);
@@ -795,9 +844,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return enqueueRefresh(async () => {
       adminGuard(request);
       const previous = store.getSettings();
+      const personal = body.bark === undefined ? undefined : parseBark(authenticated(request).userId, body.bark);
       const next = parseSettings({ ...previous, ...body, translation: { ...previous.translation, ...asRecord(body.translation) }, bark: { ...previous.bark, ...asRecord(body.bark) }, server: { ...previous.server, ...asRecord(body.server) } });
+      next.bark = previous.bark;
       await applySettings(next);
-      return store.getSettings();
+      if (personal) store.setBark(authenticated(request).userId, personal);
+      bark.wake(); return globalSettings();
     });
   });
   function parseFeedSettings(body: Record<string, unknown>): FeedSettingsInput {
@@ -840,7 +892,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       const results = await Promise.all([...new Set(body.ids as string[])].map(async id => {
         try {
           requireOwned(request, 'feeds', id);
-          const feed = await doRefresh(id);
+          const feed = await doRefresh(id, false, 'manual', () => { requireOwned(request, 'feeds', id); return operationSignal(request); });
           if (!feed) return { id, ok: false, error: '订阅不存在' };
           return feed.lastError ? { id, ok: false, error: feed.lastError } : { id, ok: true };
         } catch (error) { return { id, ok: false, error: friendlyError(error, '操作失败') }; }
@@ -873,7 +925,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const url = parseHttpUrl(asRecord(request.body).url, 'RSS 地址');
     return enqueueRefresh(async () => {
       feedsGuard(request);
-      try { const result = await getRss(url); return { title: result.title, items: result.items.slice(0, 3).map(item => ({ title: item.title, link: item.link, contentHtml: item.html })) }; }
+      try { const signal = operationSignal(request); const result = await getRss(url, { signal }); feedsGuard(request); if (signal.aborted) throw new AppError(409, '操作已取消'); return { title: result.title, items: result.items.slice(0, 3).map(item => ({ title: item.title, link: item.link, contentHtml: item.html })) }; }
       catch (error) { throw new AppError(400, safeDiagnostic(friendlyError(error, 'RSS 获取失败'))); }
     }, [siteKey(url)]);
   });
@@ -888,19 +940,19 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const id = String((request.params as { id: string }).id);
     const feed = store.getFeed(id);
     if (!feed || !translationEnabled(feed)) throw new AppError(404, 'RSS 翻译订阅不存在');
-    store.translations.retry(id); translations.retry();
+    store.translations.retry(id, authenticated(request).userId); translations.retry();
     return feedPayload(store.getFeed(id)!);
   });
   app.post('/api/feeds', async (request) => {
     feedsGuard(request);
     const input = parseFeedInput(request.body);
     if (input.credentialId && !store.getCredentialSummary(input.credentialId)) throw new AppError(400, 'Cookie 凭据不存在');
-    const created = store.createFeed(input, authenticated(request).userId);
+    const created = store.createFeed(input, workspace(request).userId);
     if (input.sourceType === 'rss') {
-      void doRefresh(created.feed.id, false, 'create').catch(() => {});
+      void doRefresh(created.feed.id, false, 'create', () => operationSignal(request)).catch(() => {});
       return feedPayload(created.feed);
     }
-    const refreshed = await doRefresh(created.feed.id, false, 'create');
+    const refreshed = await doRefresh(created.feed.id, false, 'create', () => operationSignal(request));
     return feedPayload(refreshed ?? created.feed);
   });
   app.get('/api/feeds/:id/logs', async request => {
@@ -934,13 +986,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       feedsGuard(request);
       const updated = store.updateFeed(id, input);
       if (!updated) throw new AppError(404, 'Feed 不存在');
-      const refreshed = await refreshOnce(id, 'edit');
+      const refreshed = store.isFeedActive(id) ? await refreshOnce(id, 'edit', operationSignal(request)) : updated;
       return feedPayload(refreshed ?? updated);
     });
   });
   app.post('/api/feeds/:id/refresh', async (request) => {
     feedsGuard(request);
-    const refreshed = await doRefresh(String((request.params as { id: string }).id));
+    const refreshed = await doRefresh(String((request.params as { id: string }).id), false, 'manual', () => { feedsGuard(request); return operationSignal(request); });
     if (!refreshed) throw new AppError(404, 'Feed 不存在');
     return feedPayload(refreshed);
   });
@@ -950,7 +1002,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       feedsGuard(request);
       const toggled = store.toggleFeed(String((request.params as { id: string }).id));
       if (!toggled) throw new AppError(404, 'Feed 不存在');
-      const refreshed = toggled.enabled ? await refreshOnce(toggled.id, 'resume') : toggled;
+      const refreshed = toggled.enabled ? await refreshOnce(toggled.id, 'resume', operationSignal(request)) : toggled;
       return feedPayload(refreshed ?? toggled);
     });
   });
@@ -971,10 +1023,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
 
   const browserGuard = (request: FastifyRequest) => {
-    const context = resourceGuard(request);
+    resourceGuard(request);
+    const context = workspace(request, true);
     const id = asRecord(request.params).id;
-    if (typeof id === 'string' && browserOwners.get(id)?.userId !== context.userId) throw new AppError(404, '浏览器会话不存在');
-    if (typeof id === 'string') browserOwners.set(id, { userId: context.userId, touchedAt: Date.now() });
+    if (typeof id === 'string' && (browserOwners.get(id)?.userId !== context.userId || browserOwners.get(id)?.actorId !== context.actorId)) throw new AppError(404, '浏览器会话不存在');
+    if (typeof id === 'string') browserOwners.set(id, { userId: context.userId, actorId: context.actorId, touchedAt: Date.now() });
     checkCredential(request, asRecord(request.body).credentialId);
     return context;
   };
@@ -992,10 +1045,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       cookies = cookiesForTarget(credential, url);
     }
     try {
-      const userId = authenticated(request).userId, generation = store.userGeneration(userId);
-      const frame = await browser.open({ url, cookies, waitMs, waitForSelector, signal: store.userSignal(userId) });
-      if (generation !== store.userGeneration(userId)) { await browser.close(frame.sessionId); throw new AppError(401, '账号已停用，请重新登录'); }
-      browserOwners.set(frame.sessionId, { userId, touchedAt: Date.now() });
+      const { userId, actorId } = workspace(request, true), generation = store.userGeneration(userId);
+      const frame = await browser.open({ url, cookies, waitMs, waitForSelector, signal: operationSignal(request) });
+      try {
+        workspace(request, true);
+        if (generation !== store.userGeneration(userId)) throw new AppError(401, '账号已停用，请重新登录');
+      } catch (error) { await browser.close(frame.sessionId); throw error; }
+      browserOwners.set(frame.sessionId, { userId, actorId, touchedAt: Date.now() });
       return frame;
     } catch (error) { if (error instanceof AppError) throw error; throw frameError(error); }
   });

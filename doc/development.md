@@ -85,3 +85,19 @@ RSS HTTP 获取绑定已检查的 IP，限制 5 次重定向、20 秒和 5 MB �
 `tests/rss-translation.test.ts` 验证解析、受限 HTTP、缓存、竞态、备份与接口。E2E 后端注入确定性翻译器与模拟 Bark 发送器，实际 RSS HTTP 和浏览器抓取仍使用本地 fixture；生产入口不包含模拟翻译。运行真实 Google 连接检查可使用 `node --import tsx scripts/check-translation.ts`。
 
 应用设置新增 `translation: {concurrency: 6, requestIntervalMs: 100}`，旧设置和备份缺失时自动采用默认值。并发范围 1–16，间隔范围 0–5000 毫秒；PUT 支持局部更新。全局请求调度器约束真实 HTTP 并发与启动间隔，正文先并行翻译，再按 DOM 顺序组装；局部失败等待已启动操作收敛后再记录重试，禁止半成品进入 RSS。
+
+## v0.5.1 用户与目标工作台
+
+资源接口支持可选 `X-FeedLantern-User` 用户 ID。省略时使用当前账号；指定其他账号必须是已登录管理员。身份接口、用户管理、全局设置和备份始终以真实操作人为准。服务端从已验证目标写入所有者，不接受请求体伪造归属；跨所有者资源和凭据引用返回 404。
+
+- `GET/POST /api/users`：列出账号、创建普通用户。
+- `PATCH /api/users/:id`：局部更新 `username`、`enabled`、`role`；身份变化撤销目标会话。
+- `POST /api/users/:id/password`：重置其他账号密码，`password` 至少 8 字符。
+- `GET /api/users/:id/deletion-preview`：返回用户与 `feeds`、`credentials`、`jobs` 数量。
+- `DELETE /api/users/:id`：请求体 `{username}` 必须准确匹配目标账号。
+- `GET/PUT /api/notifications/bark`：读取／更新目标个人设置。读取返回 `configured`、`maskedUrl`，不返回 `url`；写入省略地址保持，空地址清除并关闭。
+- `POST /api/notifications/bark/test`：使用目标账号已有或请求中未保存的设置，明确展示接收账号；不保存设置。
+
+SQLite 版本 8 移除单管理员索引并增加加密 `user_notifications`。账号变更在事务内保护最后一名启用管理员；会话仍绑定稳定用户 ID。导入任务持久记录 `actorId` 和 `ownerId`，翻译手动重试记录操作人，浏览器记录操作人及目标。执行前及写入前检查权限与取消信号，删除不能恢复已清除的任务。删除账号也清理可能含来源片段的共享翻译缓存，不删除其他用户已保存的译文。
+
+完整备份 version 3 包含个人通知并兼容 version 1、2；只在加密备份内保存可恢复密钥。轻量配置仅导出操作管理员自己的订阅和个人 Bark。开发测试注入模拟 Bark 发送器，禁止向真实设备地址发送测试消息。

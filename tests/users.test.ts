@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { randomUUID, randomBytes, createCipheriv } from 'node:crypto';
+import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -179,7 +179,7 @@ test('翻译任务在停用时取消，重新启用后完成，通知队列同�
     worker.start(); await until(() => started);
     store.setUserEnabled(user.id, false); await until(() => canceled && worker.status().activeArticles === 0);
     assert.equal(store.translations.stats(feed.id).success, 0); assert.equal(store.translations.next(), undefined);
-    const settings = store.getSettings(); settings.bark.enabled = true; settings.bark.url = 'https://example.test/test-key'; settings.bark.failureThreshold = 1; store.setSettings(settings);
+    const settings = store.getSettings(); settings.bark.enabled = true; settings.bark.url = 'https://example.test/test-key'; settings.bark.failureThreshold = 1; store.setBark(user.id, settings.bark);
     const run = store.history.start(feed.id, 'manual'); store.history.fail(run, feed, 'manual', 1, 'error', true);
     assert.equal(store.history.nextAlert(), null);
     store.setUserEnabled(user.id, true); assert.ok(store.history.nextAlert()); worker.wake();
@@ -219,7 +219,7 @@ test('多用户备份保留归属、状态和 RSS 密钥，旧备份及 v6 数�
     const db = new DatabaseSync(join(dir, 'app.db'));
     db.exec(`CREATE TABLE admin (id INTEGER PRIMARY KEY CHECK(id=1),username TEXT NOT NULL,password_hash TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
       INSERT INTO admin SELECT 1,username,password_hash,created_at,updated_at FROM users WHERE role='admin';
-      DROP INDEX sessions_user; ALTER TABLE sessions DROP COLUMN user_id; DROP TABLE users;
+      DROP INDEX sessions_user; ALTER TABLE sessions DROP COLUMN user_id; DROP TABLE users; DROP TABLE user_notifications;
       DROP INDEX feeds_owner; DROP INDEX credentials_owner; DROP INDEX import_jobs_owner;
       ALTER TABLE feeds DROP COLUMN owner_id; ALTER TABLE credentials DROP COLUMN owner_id; ALTER TABLE import_jobs DROP COLUMN owner_id;
       PRAGMA user_version=6;`); db.close();
@@ -228,5 +228,155 @@ test('多用户备份保留归属、状态和 RSS 密钥，旧备份及 v6 数�
     assert.equal(store.getFeed(feed.id)?.ownerId, 'admin'); assert.equal(store.getFeedToken(feed.id)?.token, token);
     assert.equal(store.getItems(original.feed.id)[0].title, item.title);
     store.close(); store = new Store(dir); assert.equal(store.listUsers().length, 1);
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('管理员跨用户工作台、凭据绑定、角色撤销、改名及删除保护', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fl-full-users-')), store = new Store(dir);
+  store.createAdmin('admin', 'admin-password'); const a = store.createUser('alice', 'alice-password'), b = store.createUser('bob', 'bob-password');
+  const original = store.createFeed(input, a.id), other = store.createFeed(input, b.id);
+  const cred = store.createCredential({ name: 'cookie', url: input.url, format: 'header', value: 'secret=bob' }, { domains: ['example.test'], count: 1, expiresAt: null }, b.id);
+  const app = await createApp({ store, dataDir: dir, browserService: browser, startScheduler: false });
+  try {
+    const admin = headersFor(store, 'admin'), alice = headersFor(store, 'alice'), scoped = { ...admin, 'x-feedlantern-user': a.id };
+    assert.equal((await app.inject({ url: '/api/feeds', headers: { ...alice, 'x-feedlantern-user': b.id } })).statusCode, 403);
+    assert.deepEqual((await app.inject({ url: '/api/feeds', headers: scoped })).json().map((f: { id: string }) => f.id), [original.feed.id]);
+    assert.equal((await app.inject({ method: 'PUT', url: `/api/feeds/${original.feed.id}`, headers: scoped, payload: { ...input, credentialId: cred.id } })).statusCode, 404);
+    assert.equal((await app.inject({ url: `/api/feeds/${other.feed.id}`, headers: scoped })).statusCode, 404);
+    assert.equal((await app.inject({ method: 'PATCH', url: `/api/users/${a.id}`, headers: admin, payload: { username: 'renamed', role: 'admin' } })).statusCode, 200);
+    assert.equal((await app.inject({ url: '/api/feeds', headers: alice })).statusCode, 401);
+    assert.equal(store.getFeedToken(original.feed.id)?.token, original.token);
+    const second = headersFor(store, 'renamed');
+    assert.equal((await app.inject({ method: 'POST', url: '/api/backups/export', headers: second, payload: { currentPassword: 'alice-password', password: 'long-backup-password' } })).statusCode, 200);
+    assert.equal((await app.inject({ method: 'DELETE', url: `/api/users/${a.id}`, headers: second, payload: { username: 'renamed' } })).statusCode, 403);
+    const changes = await Promise.all([
+      app.inject({ method: 'PATCH', url: '/api/users/admin', headers: admin, payload: { role: 'user' } }),
+      app.inject({ method: 'PATCH', url: `/api/users/${a.id}`, headers: second, payload: { role: 'user' } }),
+    ]);
+    assert.deepEqual(changes.map(r => r.statusCode).sort(), [200, 409]);
+    assert.equal(store.listUsers().filter(u => u.role === 'admin' && u.enabled).length, 1);
+    assert.equal((await app.inject({ url: '/api/users', headers: admin })).statusCode, 401);
+    const manageBob = { ...second, 'x-feedlantern-user': b.id };
+    assert.equal((await app.inject({ method: 'PATCH', url: `/api/users/${b.id}`, headers: second, payload: { enabled: false } })).statusCode, 200);
+    assert.equal((await app.inject({ url: `/api/feeds/${other.feed.id}`, headers: manageBob })).statusCode, 200);
+    assert.equal((await app.inject({ method: 'PUT', url: `/api/feeds/${other.feed.id}`, headers: manageBob, payload: { ...input, name: 'static edit' } })).statusCode, 200);
+    assert.equal((await app.inject({ method: 'POST', url: `/api/feeds/${other.feed.id}/refresh`, headers: manageBob, payload: {} })).statusCode, 409);
+    const preview = (await app.inject({ url: `/api/users/${b.id}/deletion-preview`, headers: second })).json();
+    assert.equal(preview.feeds, 1); assert.equal(preview.credentials, 1);
+    assert.equal((await app.inject({ method: 'DELETE', url: `/api/users/${b.id}`, headers: second, payload: { username: 'wrong' } })).statusCode, 400);
+    assert.equal((await app.inject({ method: 'DELETE', url: `/api/users/${b.id}`, headers: second, payload: { username: 'bob' } })).statusCode, 200);
+    assert.equal(store.getUser(b.id), undefined); assert.equal(store.getFeed(other.feed.id), null);
+    assert.equal(store.getCredentialValue(cred.id), null);
+    assert.equal((await app.inject({ url: `/feeds/${other.feed.id}/${other.token}.xml` })).statusCode, 404);
+  } finally { await app.close(); store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('个人 Bark 加密脱敏、保留和清空、故障按所有者发送且没有管理员回退', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fl-personal-bark-')), store = new Store(dir);
+  store.createAdmin('admin', 'admin-password'); const a = store.createUser('alice', 'alice-password'), b = store.createUser('bob', 'bob-password');
+  const sent: string[] = [];
+  const app = await createApp({ store, dataDir: dir, browserService: browser, startScheduler: false, barkSender: async url => { sent.push(url); } });
+  try {
+    const ah = headersFor(store, 'alice'), bh = headersFor(store, 'bob');
+    const save = (headers: typeof ah, payload: object) => app.inject({ method: 'PUT', url: '/api/notifications/bark', headers, payload });
+    store.setBark('admin', { url: 'https://example.test/admin-key', enabled: true, failureThreshold: 1 });
+    const first = await save(ah, { url: 'https://example.test/alice-key', enabled: true, failureThreshold: 1 });
+    assert.equal(first.statusCode, 200); assert.ok(first.json().configured); assert.ok(!first.body.includes('alice-key'));
+    await save(ah, { timeoutSeconds: 3 }); assert.equal(store.getBark(a.id).url, 'https://example.test/alice-key');
+    assert.equal((await app.inject({ url: '/api/notifications/bark', headers: bh })).json().configured, false);
+    assert.equal((await app.inject({ method: 'POST', url: '/api/notifications/bark/test', headers: ah, payload: {} })).statusCode, 200);
+    assert.deepEqual(sent, ['https://example.test/alice-key']); sent.length = 0;
+    const af = store.createFeed(input, a.id).feed, bf = store.createFeed(input, b.id).feed;
+    const fail = (feed: typeof af) => store.history.fail(store.history.start(feed.id, 'manual'), feed, 'manual', 1, 'failed', true);
+    fail(bf); assert.equal(store.history.nextAlert(), null);
+    await save(bh, { url: 'https://example.test/bob-key', enabled: true, failureThreshold: 1 });
+    fail(af); fail(bf);
+    await save(ah, { enabled: false });
+    await until(() => sent.length === 1); assert.deepEqual(sent, ['https://example.test/bob-key']);
+    await save(ah, { url: '' }); assert.equal(store.getBark(a.id).url, '');
+    const { readFileSync } = await import('node:fs');
+    assert.ok(!readFileSync(`${store.dbPath}-wal`).includes(Buffer.from('bob-key')));
+  } finally { await app.close(); store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('删除运行中任务的用户、管理员降级时关闭编辑器并丢弃旧结果', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fl-delete-running-')), store = new Store(dir);
+  store.createAdmin('admin', 'admin-password'); const actor = store.createUser('manager', 'manager-password'), owner = store.createUser('reader', 'reader-password');
+  store.updateUser('admin', actor.id, { role: 'admin' });
+  const { feed } = store.createFeed(input, owner.id); store.upsertItems(feed, [item]);
+  let release!: () => void, entered = false, aborted: AbortSignal | undefined, closed = 0;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const app = await createApp({ store, dataDir: dir, startScheduler: false, browserService: { ...browser,
+    scrape: async options => { entered = true; aborted = options.signal; await gate; return [{ ...item, title: 'must not publish' }]; }, close: async () => { closed++; },
+  } });
+  let jobs: ImportJobs | undefined;
+  try {
+    const admin = headersFor(store, 'admin'), scoped = { ...headersFor(store, 'manager'), 'x-feedlantern-user': owner.id };
+    await app.inject({ method: 'POST', url: '/api/browser', headers: scoped, payload: { url: input.url } });
+    const refresh = app.inject({ method: 'POST', url: `/api/feeds/${feed.id}/refresh`, headers: scoped, payload: {} });
+    await until(() => entered);
+    await app.inject({ method: 'PATCH', url: `/api/users/${actor.id}`, headers: admin, payload: { role: 'user' } });
+    assert.ok(aborted?.aborted); assert.equal(closed, 1); release(); await refresh;
+    assert.equal(store.getItems(feed.id)[0].title, item.title);
+    entered = false;
+    const gate2 = new Promise<void>(resolve => { release = resolve; });
+    jobs = new ImportJobs(store, async fn => fn(), async () => { entered = true; await gate2; return { title: 'stale', detection: { candidates: [], recommendedId: null, warnings: [] } }; }, async () => [item]);
+    const task = jobs.create([{ url: 'https://example.test/new', credentialId: null, intervalMinutes: 60 }], owner.id);
+    await until(() => entered);
+    assert.equal((await app.inject({ method: 'DELETE', url: `/api/users/${owner.id}`, headers: admin, payload: { username: 'reader' } })).statusCode, 200);
+    release(); await new Promise(resolve => setTimeout(resolve, 30));
+    assert.equal(store.listImportJobs().some(j => j.id === task.id), false); assert.equal(store.listFeeds(owner.id).length, 0);
+    assert.equal(store.history.list(feed.id).logs.length, 0);
+  } finally { release?.(); jobs?.stop(); await app.close(); store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('v7 Bark 迁移到原管理员，v3 多管理员备份不生成幽灵账号设置', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fl-v8-')), store = new Store(dir);
+  try {
+    store.createAdmin('original', 'original-password'); const manager = store.createUser('manager', 'manager-password');
+    store.updateUser('admin', manager.id, { role: 'admin' });
+    store.setBark(manager.id, { enabled: true, url: 'https://example.test/manager-key' });
+    store.deleteUser(manager.id, 'admin', 'original');
+    const snapshot = snapshotSchema.parse({ format: 'feedlantern-backup', version: 3, appVersion: 'test', createdAt: new Date().toISOString(), security: { allowedHosts: [], dnsOverHttps: false }, tables: store.exportTables() });
+    store.restoreTables(snapshot.tables);
+    assert.equal(store.getBark(manager.id).url, 'https://example.test/manager-key');
+    assert.equal(store.exportTables().user_notifications.some(n => n.user_id === 'admin'), false);
+    assert.doesNotThrow(() => snapshotSchema.parse({ ...snapshot, tables: store.exportTables() }));
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+  const legacyDir = join(dir, 'legacy'); let legacy = new Store(legacyDir);
+  try {
+    legacy.createAdmin('original', 'original-password'); const { feed, token } = legacy.createFeed(input);
+    const settings = legacy.getSettings(); settings.bark = { ...settings.bark, enabled: true, url: 'https://example.test/legacy-key' };
+    const encrypt = (key: Buffer, value: string) => { const iv = randomBytes(12), cipher = createCipheriv('aes-256-gcm', key, iv); const data = Buffer.concat([cipher.update(value), cipher.final()]); return [iv, cipher.getAuthTag(), data].map(b => b.toString('base64url')).join('.'); };
+    legacy.close();
+    const db = new DatabaseSync(join(legacyDir, 'app.db'));
+    db.exec("DROP TABLE user_notifications; CREATE UNIQUE INDEX users_single_admin ON users(role) WHERE role='admin'; PRAGMA user_version=7;");
+    db.prepare("INSERT INTO settings(key,value) VALUES ('application',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(encrypt(readFileSync(join(legacyDir, 'master.key')), JSON.stringify(settings)));
+    db.close(); legacy = new Store(legacyDir);
+    assert.equal(legacy.getBark('admin').url, settings.bark.url); assert.equal(legacy.getFeedToken(feed.id)?.token, token);
+  } finally { legacy.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('代管翻译和导入记录操作人，降级取消队列，所有者可重新重试', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fl-actor-queues-')), store = new Store(dir);
+  store.createAdmin('admin', 'admin-password'); const actor = store.createUser('manager', 'manager-password'), owner = store.createUser('reader', 'reader-password');
+  store.updateUser('admin', actor.id, { role: 'admin' });
+  const feed = store.createFeed({ ...input, sourceType: 'rss', translationMode: 'chinese' }, owner.id).feed;
+  store.translations.upsert(feed, [{ key: 'one', title: 'Article', link: item.link, html: '<p>Content</p>' }]);
+  store.translations.retry(feed.id, actor.id);
+  const translation = store.translations.next()!;
+  const signal = store.translations.signal(translation);
+  const jobs = new ImportJobs(store, async fn => fn(), async () => ({ title: 'review', detection: { candidates: [], recommendedId: null, warnings: [] } }), async () => [item]);
+  jobs.stop();
+  try {
+    const job = jobs.create([{ url: input.url, credentialId: null, intervalMinutes: 60 }], owner.id, actor.id);
+    store.setUserEnabled(actor.id, false);
+    assert.equal(store.translations.next(), undefined); assert.ok(signal.aborted);
+    store.setUserEnabled(actor.id, true); assert.ok(store.translations.next());
+    store.updateUser('admin', actor.id, { role: 'user' });
+    assert.ok(signal.aborted); assert.equal(store.translations.next(), undefined); assert.equal(store.translations.valid(translation), false);
+    assert.equal(jobs.get(job.id).entries[0].state, 'canceled');
+    jobs.update(job.id, 'retry', undefined, owner.id); assert.equal(jobs.get(job.id).actorId, owner.id);
+    store.translations.retry(feed.id, owner.id); assert.ok(store.translations.next());
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });

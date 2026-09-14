@@ -29,7 +29,7 @@ test('应用设置加密、跨密钥备份往返、旧备份兼容、日志保�
     const feed = b.createFeed({ name: 'test', url: 'https://example.test', rules: { item: 'article', title: 'h2', link: 'a' }, credentialId: null, intervalMinutes: 60, waitMs: 0 }).feed;
     const id = b.history.start(feed.id, 'manual', new Date(Date.now() - 8 * 86400_000).toISOString());
     b.history.succeed(id, feed.id, 1, { itemCount: 1, newItemCount: 1 }); b.history.prune(); assert.equal(b.history.list(feed.id).logs.length, 0);
-    const old = structuredClone(snapshot.tables); old.settings = old.settings.filter(s => s.key === 'feedView');
+    const old = structuredClone(snapshot.tables); old.user_notifications = []; old.settings = old.settings.filter(s => s.key === 'feedView');
     b.restoreTables(old); assert.equal(b.getSettings().bark.enabled, false); assert.equal(b.getSettings().server.backgroundConcurrency, 3);
   } finally { a.close(); b.close(); rmSync(dir, { recursive: true, force: true }); }
 });
@@ -45,7 +45,7 @@ test('网页设置即时生效、配置完整往返、预览不泄密及旧配�
     assert.equal(store.getSettings().bark.url, endpoint);
     const set = (payload: Record<string, unknown>) => app.inject({ method: 'PUT', url: '/api/settings', headers, payload });
     const changed = await set({ bark: { enabled: false, failureThreshold: 3 }, logRetentionDays: 90, server: { backgroundConcurrency: 2, allowedHosts: ['private.test:443'], dnsOverHttps: true } });
-    assert.equal(changed.statusCode, 200); assert.equal(changed.json().bark.url, endpoint); assert.equal(calls, 0);
+    assert.equal(changed.statusCode, 200); assert.equal(changed.json().bark.url, ''); assert.equal(calls, 0);
     for (const payload of [{ bark: { enabled: true, url: '' } }, { server: { allowedHosts: ['localhost'] } }, { server: { trustedProxies: ['*'] } }, { logRetentionDays: 0 }, { server: { port: 0 } }, { bark: { maxAttempts: 6 } }]) assert.equal((await set(payload)).statusCode, 400);
     assert.equal(store.getSettings().bark.failureThreshold, 3);
     for (const failureThreshold of [0, -1, 1.5, 1001, '10', null]) assert.equal((await set({ bark: { failureThreshold } })).statusCode, 400);

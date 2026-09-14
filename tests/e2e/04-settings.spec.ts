@@ -7,12 +7,15 @@ test('网页设置保存、配置导出导入及手机显示', async ({ page }) 
   try {
     await page.goto('/'); await page.getByRole('button', { name: '设置', exact: true }).click();
     const form = page.getByRole('form', { name: '应用设置' });
-    await form.getByLabel('Bark 推送地址').fill('https://api.day.app/e2e-private-key/');
-    await form.getByRole('button', { name: '发送测试通知' }).click();
-    await expect(form.getByRole('status')).toContainText('测试通知已发送');
+    const bark = page.getByRole('form', { name: '个人 Bark 通知' });
+    await bark.getByLabel('Bark 推送地址').fill('https://api.day.app/e2e-private-key/');
+    await bark.getByRole('button', { name: /发送测试通知/ }).click();
+    await expect(bark.getByRole('status')).toContainText('发送测试通知');
     expect((await (await page.request.get('/api/settings')).json()).bark.url).toBe(original.bark.url);
-    await expect(form.getByLabel('连续抓取失败告警阈值（次）')).toHaveValue('10');
-    await form.getByLabel('连续抓取失败告警阈值（次）').fill('3');
+    await expect(bark.getByLabel('连续抓取失败告警阈值（次）')).toHaveValue('10');
+    await bark.getByLabel('连续抓取失败告警阈值（次）').fill('3');
+    await bark.getByRole('button', { name: '保存个人通知' }).click();
+    await expect(bark.getByRole('status')).toContainText('个人通知设置已保存');
     await form.getByLabel('日志保留天数').fill('90');
     await form.getByLabel('后台并发数').fill('2');
     await expect(form.getByLabel('翻译请求并发数')).toHaveValue('6');
@@ -21,11 +24,12 @@ test('网页设置保存、配置导出导入及手机显示', async ({ page }) 
     await form.getByRole('button', { name: '保存应用设置' }).click();
     await expect(form.getByRole('status')).toContainText('设置已保存');
     await page.reload(); await page.getByRole('button', { name: '设置', exact: true }).click();
-    await expect(form.getByLabel('Bark 推送地址')).toHaveValue('https://api.day.app/e2e-private-key/');
+    await expect(bark.getByLabel('Bark 推送地址')).toHaveValue('');
+    await expect(bark).toContainText('已保存：https://api.day.app/');
     await expect(form.getByLabel('日志保留天数')).toHaveValue('90');
     await expect(form.getByLabel('翻译请求并发数')).toHaveValue('8');
     await expect(form.getByLabel('翻译请求启动间隔（毫秒）')).toHaveValue('0');
-    await expect(form.getByLabel('连续抓取失败告警阈值（次）')).toHaveValue('3');
+    await expect(bark.getByLabel('连续抓取失败告警阈值（次）')).toHaveValue('3');
     const archive = await (await page.request.get('/api/backups/config')).json();
     expect(archive.settings.bark.url).toBe('https://api.day.app/e2e-private-key/');
     expect(archive.settings.bark.failureThreshold).toBe(3);
@@ -37,7 +41,7 @@ test('网页设置保存、配置导出导入及手机显示', async ({ page }) 
     await expect(page.getByText('将覆盖的应用及服务器设置（Bark 密钥已隐藏）')).toBeVisible();
     await page.getByRole('button', { name: '确认导入', exact: true }).click();
     await expect(form.getByLabel('日志保留天数')).toHaveValue('60');
-    await expect(form.getByLabel('连续抓取失败告警阈值（次）')).toHaveValue('5');
+    await expect(bark.getByLabel('连续抓取失败告警阈值（次）')).toHaveValue('5');
     await page.setViewportSize({ width: 390, height: 844 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
     await page.screenshot({ path: 'test-results/mobile-settings.png' });

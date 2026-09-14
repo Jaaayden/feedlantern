@@ -64,7 +64,7 @@ export async function googleTranslateBatch(texts: string[], signal: AbortSignal)
 
 export const googleTranslate: Translator = async (text, signal) => (await googleTranslateBatch([text], signal))[0];
 
-interface TranslationBody { sourceTitle?: string; html: string; title?: string; translatedHtml?: string; bilingualHtml?: string }
+interface TranslationBody { actorId?: string; sourceTitle?: string; html: string; title?: string; translatedHtml?: string; bilingualHtml?: string }
 interface Job { owner_id: string; item_id: string; feed_id: string; revision: string; attempts: number; body_json: string; title: string; link: string }
 
 export class RssTranslations {
@@ -160,8 +160,14 @@ export class RssTranslations {
     }
     return result;
   }
-  retry(id: string): void {
-    this.db.prepare("UPDATE translations SET status='pending',attempts=0,next_at=0,error=NULL,revision=? WHERE feed_id=? AND status!='success'").run(randomUUID(), id);
+  retry(id: string, actorId?: string): void {
+    this.db.prepare("UPDATE translations SET status='pending',attempts=0,next_at=0,error=NULL,revision=?,body_json=json_set(body_json,'$.actorId',?) WHERE feed_id=? AND status!='success'").run(randomUUID(), actorId ?? null, id);
+  }
+  suspendActor(id: string): void {
+    this.db.prepare("UPDATE translations SET revision=?,status=CASE WHEN status='running' THEN 'pending' ELSE status END WHERE json_extract(body_json,'$.actorId')=? AND status IN ('pending','running')").run(randomUUID(), id);
+  }
+  cancelActor(id: string): void {
+    this.db.prepare("UPDATE translations SET status='failed',revision=?,error='操作人身份已变化，请手动重试' WHERE json_extract(body_json,'$.actorId')=? AND status IN ('pending','running') AND feed_id IN (SELECT id FROM feeds WHERE owner_id!=?)").run(randomUUID(), id, id);
   }
   invalidate(id: string): void {
     this.db.prepare("UPDATE translations SET revision=?,status=CASE WHEN status='running' THEN 'pending' ELSE status END WHERE feed_id=?").run(randomUUID(), id);
@@ -169,11 +175,11 @@ export class RssTranslations {
   recover(): void { this.db.prepare("UPDATE translations SET status='pending' WHERE status='running'").run(); }
   next(): Job | undefined {
     return this.db.prepare(`SELECT t.*,f.owner_id,i.title,i.link FROM translations t JOIN feeds f ON f.id=t.feed_id JOIN feed_items i ON i.id=t.item_id
-      WHERE f.enabled=1 AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id=f.owner_id AND u.enabled=0) AND f.translation_mode IN ('chinese','bilingual') AND t.status='pending' AND t.next_at<=? ORDER BY t.next_at,i.first_seen_at DESC LIMIT 1`).get(Date.now()) as unknown as Job | undefined;
+      WHERE f.enabled=1 AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id=f.owner_id AND u.enabled=0) AND f.translation_mode IN ('chinese','bilingual') AND (json_extract(t.body_json,'$.actorId') IS NULL OR EXISTS (SELECT 1 FROM users actor WHERE actor.id=json_extract(t.body_json,'$.actorId') AND actor.enabled=1 AND (actor.id=f.owner_id OR actor.role='admin'))) AND t.status='pending' AND t.next_at<=? ORDER BY t.next_at,i.first_seen_at DESC LIMIT 1`).get(Date.now()) as unknown as Job | undefined;
   }
-  signal(job: Job): AbortSignal { return this.userSignal(job.owner_id); }
+  signal(job: Job): AbortSignal { const actor = (JSON.parse(job.body_json) as TranslationBody).actorId; return AbortSignal.any([this.userSignal(job.owner_id), ...(actor ? [this.userSignal(actor)] : [])]); }
   valid(job: Job): boolean {
-    return !!this.db.prepare("SELECT 1 FROM translations t JOIN feeds f ON f.id=t.feed_id WHERE t.item_id=? AND t.revision=? AND f.enabled=1 AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id=f.owner_id AND u.enabled=0) AND f.translation_mode IN ('chinese','bilingual')").get(job.item_id, job.revision);
+    return !!this.db.prepare("SELECT 1 FROM translations t JOIN feeds f ON f.id=t.feed_id WHERE t.item_id=? AND t.revision=? AND f.enabled=1 AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id=f.owner_id AND u.enabled=0) AND f.translation_mode IN ('chinese','bilingual') AND (json_extract(t.body_json,'$.actorId') IS NULL OR EXISTS (SELECT 1 FROM users actor WHERE actor.id=json_extract(t.body_json,'$.actorId') AND actor.enabled=1 AND (actor.id=f.owner_id OR actor.role='admin')))").get(job.item_id, job.revision);
   }
   begin(job: Job): void { this.db.prepare("UPDATE translations SET status='running' WHERE item_id=? AND revision=?").run(job.item_id, job.revision); }
   finish(job: Job, body: TranslationBody): void {

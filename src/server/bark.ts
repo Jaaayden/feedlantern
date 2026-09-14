@@ -37,14 +37,14 @@ export class BarkWorker {
   private paused = true;
   private controller?: AbortController;
   private activeId?: string;
-  constructor(private history: FetchHistory, private config?: string | (() => ApplicationSettings['bark']), private send: BarkSender = sendBark) {}
+  constructor(private history: FetchHistory, private config?: string | (() => ApplicationSettings['bark']), private send: BarkSender = sendBark, private personal = false) {}
 
   private options(): ApplicationSettings['bark'] {
     return typeof this.config === 'function' ? this.config() : { ...defaultApplicationSettings.bark, enabled: !!this.config, url: this.config ?? '' };
   }
 
   start(): void {
-    if (!this.options().enabled || !this.options().url || !this.paused) return;
+    if ((!this.personal && (!this.options().enabled || !this.options().url)) || !this.paused) return;
     this.paused = false;
     this.timer = setInterval(() => this.wake(), 5_000);
     this.timer.unref();
@@ -53,7 +53,7 @@ export class BarkWorker {
 
   wake(): void {
     if (this.activeId && !this.history.isPending(this.activeId)) this.controller?.abort();
-    if (this.paused || this.running || !this.options().enabled || !this.options().url) return;
+    if (this.paused || this.running || (!this.personal && (!this.options().enabled || !this.options().url))) return;
     this.running = this.run().catch(() => {
       // Do not expose URLs, keys or raw fetch errors in process logs.
       console.error('Bark 后台队列处理失败，将自动重试');
@@ -62,10 +62,10 @@ export class BarkWorker {
 
   private async run(): Promise<void> {
     while (!this.paused) {
-      const options = this.options();
-      if (!options.enabled || !options.url) return;
       const job = this.history.nextAlert();
       if (!job) return;
+      const options = this.personal ? this.history.barkOptions(job.feedId) : this.options();
+      if (!options.enabled || !options.url) { if (this.personal) { this.history.cancelAlert(job.id); continue; } return; }
       if (job.attempts >= options.maxAttempts) { this.history.finishAttempt(job.id, false); continue; }
       if (!this.history.beginAttempt(job.id)) continue;
       this.activeId = job.id;

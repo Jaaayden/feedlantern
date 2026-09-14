@@ -9,10 +9,10 @@ export function safeDiagnostic(value: string): string {
     .replace(/Bearer\s+\S+/gi, '[敏感信息已隐藏]').split(/\r?\n/)[0].slice(0, 300);
 }
 
-export interface PendingAlert { id: string; body: string; attempts: number; kind?: string }
+export interface PendingAlert { id: string; body: string; attempts: number; kind?: string; feedId: string }
 
 export class FetchHistory {
-  constructor(private db: DatabaseSync, private settings: () => ApplicationSettings = () => defaultApplicationSettings) {
+  constructor(private db: DatabaseSync, private settings: () => ApplicationSettings = () => defaultApplicationSettings, private barkForFeed?: (id: string) => ApplicationSettings['bark']) {
     db.exec(`
       CREATE TABLE IF NOT EXISTS fetch_alerts (
         id TEXT PRIMARY KEY, feed_id TEXT NOT NULL REFERENCES feeds(id) ON DELETE CASCADE,
@@ -41,10 +41,13 @@ export class FetchHistory {
     db.exec(`CREATE TABLE IF NOT EXISTS translation_incidents (feed_id TEXT PRIMARY KEY REFERENCES feeds(id) ON DELETE CASCADE, alert_id TEXT REFERENCES fetch_alerts(id) ON DELETE SET NULL);`);
   }
 
+  barkOptions(feedId: string): ApplicationSettings['bark'] { return this.barkForFeed?.(feedId) ?? this.settings().bark; }
+  private alertOptions(id: string) { const row = this.db.prepare('SELECT feed_id FROM fetch_alerts WHERE id=?').get(id); return this.barkOptions(String(row?.feed_id ?? '')); }
+
   translationFailed(feed: Feed, message: string, now = Date.now()): boolean {
-    if (!this.settings().bark.enabled || !this.settings().bark.url) return false;
+    if (!this.barkOptions(feed.id).enabled || !this.barkOptions(feed.id).url) return false;
     const previous = this.db.prepare('SELECT a.* FROM translation_incidents i JOIN fetch_alerts a ON a.id=i.alert_id WHERE i.feed_id=?').get(feed.id);
-    if (previous && !(previous.status === 'failed' && now - Number(previous.last_attempt_at) >= this.settings().bark.cooldownMinutes * 60_000)) return false;
+    if (previous && !(previous.status === 'failed' && now - Number(previous.last_attempt_at) >= this.barkOptions(feed.id).cooldownMinutes * 60_000)) return false;
     const id = randomUUID();
     const body = `${safeDiagnostic(feed.name)}\nRSS 翻译失败：${safeDiagnostic(message)}\n未完成文章不会发布。系统最多尝试 3 次，达到上限后需手动重试。`;
     this.db.prepare("INSERT INTO fetch_alerts(id,feed_id,status,body,next_attempt_at,kind) VALUES (?,?,'pending',?,?,'translation')").run(id, feed.id, body, now);
@@ -85,13 +88,14 @@ export class FetchHistory {
   fail(id: number, feed: Feed, source: FetchSource, durationMs: number, message: string, barkEnabled: boolean, now = Date.now()): void {
     // Only completed, previously running fetches count; duplicate completion is ignored.
     if (!this.db.prepare("SELECT 1 FROM fetch_logs WHERE id=? AND feed_id=? AND status='running'").get(id, feed.id)) return;
+    if (this.barkForFeed) barkEnabled = this.barkOptions(feed.id).enabled && !!this.barkOptions(feed.id).url;
     const error = safeDiagnostic(message);
     const incident = this.db.prepare(`INSERT INTO fetch_incidents(feed_id,failure_count) VALUES (?,1)
       ON CONFLICT(feed_id) DO UPDATE SET failure_count=failure_count+1 RETURNING failure_count`).get(feed.id)!;
     const failureCount = Number(incident.failure_count);
     const previous = this.db.prepare(`SELECT a.* FROM fetch_incidents i JOIN fetch_alerts a ON a.id=i.alert_id WHERE i.feed_id=?`).get(feed.id);
     let alertId = previous ? String(previous.id) : null;
-    if (barkEnabled && failureCount >= this.settings().bark.failureThreshold && (!previous || previous.status === 'failed' && now - Number(previous.last_attempt_at) >= this.settings().bark.cooldownMinutes * 60_000)) {
+    if (barkEnabled && failureCount >= this.barkOptions(feed.id).failureThreshold && (!previous || previous.status === 'failed' && now - Number(previous.last_attempt_at) >= this.barkOptions(feed.id).cooldownMinutes * 60_000)) {
       alertId = randomUUID();
       const body = `${safeDiagnostic(feed.name)}\n目标：${new URL(feed.url).hostname}\n失败时间：${new Date(now).toISOString()}\n连续失败：${failureCount} 次\n来源：${fetchSourceLabels[source]}\n原因：${error}`;
       this.db.prepare("INSERT INTO fetch_alerts(id,feed_id,status,body,next_attempt_at) VALUES (?,?,'pending',?,?)").run(alertId, feed.id, body, now);
@@ -116,15 +120,22 @@ export class FetchHistory {
   }
 
   nextAlert(now = Date.now()): PendingAlert | null {
-    const row = this.db.prepare("SELECT id, body, attempts, kind FROM fetch_alerts WHERE status='pending' AND EXISTS (SELECT 1 FROM feeds f LEFT JOIN users u ON u.id=f.owner_id WHERE f.id=fetch_alerts.feed_id AND COALESCE(u.enabled,1)=1) AND next_attempt_at<=? ORDER BY next_attempt_at LIMIT 1").get(now);
-    return row ? { id: String(row.id), body: String(row.body), attempts: Number(row.attempts), kind: String(row.kind) } : null;
+    const row = this.db.prepare("SELECT id, feed_id, body, attempts, kind FROM fetch_alerts WHERE status='pending' AND EXISTS (SELECT 1 FROM feeds f LEFT JOIN users u ON u.id=f.owner_id WHERE f.id=fetch_alerts.feed_id AND COALESCE(u.enabled,1)=1) AND next_attempt_at<=? ORDER BY next_attempt_at LIMIT 1").get(now);
+    return row ? { feedId: String(row.feed_id), id: String(row.id), body: String(row.body), attempts: Number(row.attempts), kind: String(row.kind) } : null;
   }
 
   isPending(id: string): boolean {
     return !!this.db.prepare("SELECT id FROM fetch_alerts WHERE id=? AND status='pending' AND EXISTS (SELECT 1 FROM feeds f LEFT JOIN users u ON u.id=f.owner_id WHERE f.id=fetch_alerts.feed_id AND COALESCE(u.enabled,1)=1)").get(id);
   }
 
-  resetNotifications(): void {
+  cancelAlert(id: string): void { this.db.prepare("UPDATE fetch_alerts SET status='canceled' WHERE id=?").run(id); }
+
+  resetNotifications(userId?: string): void {
+    if (userId !== undefined) {
+      this.db.prepare("UPDATE fetch_alerts SET status='canceled' WHERE status='pending' AND feed_id IN (SELECT id FROM feeds WHERE owner_id=?)").run(userId);
+      for (const table of ['fetch_incidents','translation_incidents']) this.db.prepare(`DELETE FROM ${table} WHERE feed_id IN (SELECT id FROM feeds WHERE owner_id=?)`).run(userId);
+      return;
+    }
     this.db.exec("UPDATE fetch_alerts SET status='canceled' WHERE status='pending'; DELETE FROM fetch_incidents; DELETE FROM translation_incidents;");
   }
 
@@ -134,13 +145,13 @@ export class FetchHistory {
 
   beginAttempt(id: string, now = Date.now()): boolean {
     // Persist the lease before I/O so a crash cannot cause immediate repeated sends.
-    const policy = this.settings().bark;
+    const policy = this.alertOptions(id);
     return this.db.prepare("UPDATE fetch_alerts SET attempts=attempts+1, last_attempt_at=?, next_attempt_at=? WHERE id=? AND status='pending'").run(now, now + Math.max(policy.timeoutSeconds + 5, policy.retryDelaySeconds) * 1000, id).changes > 0;
   }
 
   finishAttempt(id: string, ok: boolean, now = Date.now()): void {
     if (!this.isPending(id)) return;
-    const policy = this.settings().bark;
+    const policy = this.alertOptions(id);
     this.db.prepare(`UPDATE fetch_alerts SET status=CASE WHEN ? THEN 'sent' WHEN attempts>=? THEN 'failed' ELSE 'pending' END,
       error=CASE WHEN ? THEN NULL ELSE 'Bark 推送失败，请检查网络及私有配置' END,
       next_attempt_at=? + CASE WHEN attempts=1 THEN ? ELSE ? END

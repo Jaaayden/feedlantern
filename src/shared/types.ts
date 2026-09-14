@@ -125,10 +125,12 @@ export interface ImportEntry {
   state: 'queued' | 'running' | 'created' | 'existing' | 'review' | 'failed' | 'canceled';
   feedId?: string; error?: string; title?: string; detection?: DetectionResult;
 }
-export interface ImportJob { ownerId?: string; id: string; createdAt: string; entries: ImportEntry[] }
+export interface ImportJob { actorId?: string; ownerId?: string; id: string; createdAt: string; entries: ImportEntry[] }
 
 export function translationEnabled(feed: Pick<FeedInput, 'sourceType' | 'translationMode'>): boolean {
   return feed.translationMode === 'chinese' || feed.translationMode === 'bilingual' || feed.sourceType === 'rss' && feed.translationMode !== 'original';
 }
 
 export interface UserSummary { id: string; username: string; role: "admin" | "user"; enabled: boolean; createdAt: string; updatedAt: string }
+
+export type BarkSummary = Omit<ApplicationSettings["bark"], "url"> & { configured: boolean; maskedUrl: string };
