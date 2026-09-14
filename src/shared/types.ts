@@ -65,7 +65,7 @@ export interface ApplicationSettings {
   feedView: 'list' | 'cards';
   logRetentionDays: number;
   bark: {
-    enabled: boolean; url: string; timeoutSeconds: number; maxAttempts: number;
+    enabled: boolean; url: string; failureThreshold: number; timeoutSeconds: number; maxAttempts: number;
     retryDelaySeconds: number; laterRetryDelaySeconds: number; cooldownMinutes: number;
   };
   server: {
@@ -77,7 +77,7 @@ export interface ApplicationSettings {
 export const defaultApplicationSettings: ApplicationSettings = {
   translation: { concurrency: 6, requestIntervalMs: 100 },
   feedView: 'list', logRetentionDays: 30,
-  bark: { enabled: false, url: '', timeoutSeconds: 10, maxAttempts: 3, retryDelaySeconds: 60, laterRetryDelaySeconds: 300, cooldownMinutes: 30 },
+  bark: { enabled: false, url: '', failureThreshold: 10, timeoutSeconds: 10, maxAttempts: 3, retryDelaySeconds: 60, laterRetryDelaySeconds: 300, cooldownMinutes: 30 },
   server: { backgroundConcurrency: 1, allowedHosts: [], dnsOverHttps: false, trustedProxies: [], publicOrigin: 'http://127.0.0.1:4321', cookieSecure: false, sessionTtlDays: 30, host: '127.0.0.1', port: 4321 },
 };
 export interface CredentialSummary { id: string; name: string; url: string; format: 'header' | 'json'; domains: string[]; count: number; updatedAt: string; expiresAt: string | null }

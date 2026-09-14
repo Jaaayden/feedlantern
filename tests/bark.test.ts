@@ -38,6 +38,7 @@ test('Bark 使用 JSON POST，验证服务端结果、HTTP 错误、超时和禁
 
 test('后台发送不阻塞，恢复／删除取消进行中的通知，重启处理持久化队列', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'fl-bark-')); const store = new Store(dir);
+  store.setSettings({ ...store.getSettings(), bark: { ...store.getSettings().bark, failureThreshold: 1 } });
   const feed = store.createFeed({ name: 'test', url: 'https://example.test', rules: { item: 'article', title: 'h2', link: 'a' }, credentialId: null, intervalMinutes: 60, waitMs: 0 }).feed;
   const h = store.history;
   const fail = () => { const id = h.start(feed.id, 'scheduled'); h.fail(id, feed, 'scheduled', 1, '网络错误', true); return id; };
@@ -65,6 +66,7 @@ test('后台发送不阻塞，恢复／删除取消进行中的通知，重启�
 
 test('后台发送错误不泄漏密钥；重启后不会发送第四次重试', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'fl-bark-retry-')), store = new Store(dir);
+  store.setSettings({ ...store.getSettings(), bark: { ...store.getSettings().bark, failureThreshold: 1 } });
   const feed = store.createFeed({ name: 'test', url: 'https://example.test', rules: { item: 'article', title: 'h2', link: 'a' }, credentialId: null, intervalMinutes: 60, waitMs: 0 }).feed;
   const h = store.history, run = h.start(feed.id, 'scheduled');
   h.fail(run, feed, 'scheduled', 1, '超时', true);

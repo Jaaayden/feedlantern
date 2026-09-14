@@ -17,6 +17,7 @@ export const applicationSettingsSchema = z.object({
       try { return validateBarkUrl(value) ?? ''; }
       catch { ctx.addIssue({ code: 'custom', message: 'Bark 地址必须是包含设备密钥的 HTTPS 地址' }); return z.NEVER; }
     }),
+    failureThreshold: z.number().int().min(1).max(1000).default(defaultApplicationSettings.bark.failureThreshold),
     timeoutSeconds: z.number().int().min(1).max(60),
     maxAttempts: z.number().int().min(1).max(5),
     retryDelaySeconds: z.number().int().min(1).max(3600),

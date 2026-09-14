@@ -36,6 +36,8 @@ export function ApplicationSettingsPanel({ revision }: { revision: number }) {
       <label className="field"><span>Bark 推送地址</span><input type="password" autoComplete="off" placeholder="https://api.day.app/设备密钥/" value={value.bark.url} onChange={e => bark('url', e.target.value)} /></label>
       <p className="hint">首次抓取或翻译失败告警，两类故障分别去重；同一订阅连续翻译失败只通知一次，恢复后重新允许告警。保存不会发送测试通知；关闭或更换地址会取消旧的待发送通知。</p>
       <button type="button" className="button small" disabled={busy || !value.bark.url.trim()} onClick={() => void testBark()}>发送测试通知</button><p className="hint">使用当前填写的地址，无需先保存或启用告警。</p>
+      {number('连续抓取失败告警阈值（次）', value.bark.failureThreshold, 1, 1000, n => bark('failureThreshold', n))}
+      <p className="hint">每个订阅连续抓取失败达到此次数才通知，默认 10 次；成功后重新计数。同一故障通知成功后不重复推送。</p>
       <div className="form-row">{number('推送超时（秒）', value.bark.timeoutSeconds, 1, 60, n => bark('timeoutSeconds', n))}{number('最多发送次数', value.bark.maxAttempts, 1, 5, n => bark('maxAttempts', n))}</div>
       <div className="form-row">{number('首次重试间隔（秒）', value.bark.retryDelaySeconds, 1, 3600, n => bark('retryDelaySeconds', n))}{number('后续重试间隔（秒）', value.bark.laterRetryDelaySeconds, 1, 3600, n => bark('laterRetryDelaySeconds', n))}</div>
       {number('发送失败后冷却（分钟）', value.bark.cooldownMinutes, 1, 1440, n => bark('cooldownMinutes', n))}

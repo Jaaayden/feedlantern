@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createApp, Store, type BrowserServiceLike } from '../src/server/app.js';
+import { applicationSettingsSchema } from '../src/server/settings.js';
 import { defaultApplicationSettings } from '../src/shared/types.js';
 import { openBackup, sealBackup, snapshotSchema } from '../src/server/backups.js';
 
@@ -16,7 +17,7 @@ test('应用设置加密、跨密钥备份往返、旧备份兼容、日志保�
   try {
     a.createAdmin('admin', 'source-password');
     const value = structuredClone(defaultApplicationSettings);
-    value.bark.enabled = true; value.bark.url = endpoint; value.logRetentionDays = 7;
+    value.bark.failureThreshold = 4; value.bark.enabled = true; value.bark.url = endpoint; value.logRetentionDays = 7;
     value.server.backgroundConcurrency = 3; value.server.allowedHosts = ['internal.test:443']; value.server.dnsOverHttps = true;
     a.setSettings(value);
     assert.deepEqual(a.getSettings(), value);
@@ -43,9 +44,11 @@ test('网页设置即时生效、配置完整往返、预览不泄密及旧配�
     const headers = { host, cookie: `${setup.cookies[0].name}=${setup.cookies[0].value}`, 'x-feedlantern': '1', 'x-csrf-token': setup.json().csrfToken };
     assert.equal(store.getSettings().bark.url, endpoint);
     const set = (payload: Record<string, unknown>) => app.inject({ method: 'PUT', url: '/api/settings', headers, payload });
-    const changed = await set({ bark: { enabled: false }, logRetentionDays: 90, server: { backgroundConcurrency: 2, allowedHosts: ['private.test:443'], dnsOverHttps: true } });
+    const changed = await set({ bark: { enabled: false, failureThreshold: 3 }, logRetentionDays: 90, server: { backgroundConcurrency: 2, allowedHosts: ['private.test:443'], dnsOverHttps: true } });
     assert.equal(changed.statusCode, 200); assert.equal(changed.json().bark.url, endpoint); assert.equal(calls, 0);
     for (const payload of [{ bark: { enabled: true, url: '' } }, { server: { allowedHosts: ['localhost'] } }, { server: { trustedProxies: ['*'] } }, { logRetentionDays: 0 }, { server: { port: 0 } }, { bark: { maxAttempts: 6 } }]) assert.equal((await set(payload)).statusCode, 400);
+    assert.equal(store.getSettings().bark.failureThreshold, 3);
+    for (const failureThreshold of [0, -1, 1.5, 1001, '10', null]) assert.equal((await set({ bark: { failureThreshold } })).statusCode, 400);
     const archive = (await app.inject({ url: '/api/backups/config', headers })).json();
     assert.equal(archive.version, 2); assert.equal(archive.settings.bark.url, endpoint);
     await set({ bark: { url: '' }, server: { backgroundConcurrency: 1 } });
@@ -84,4 +87,10 @@ test('Bark 测试使用未保存地址、鉴权和 CSRF，不保存设置且错�
     const failed = await app.inject({ method: 'POST', url, headers, payload });
     assert.equal(failed.statusCode, 502); assert.ok(!failed.body.includes(key));
   } finally { await app.close(); store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('旧应用配置缺少失败阈值时使用默认 10 次', () => {
+  const settings = JSON.parse(JSON.stringify(defaultApplicationSettings));
+  delete settings.bark.failureThreshold;
+  assert.equal(applicationSettingsSchema.parse(settings).bark.failureThreshold, 10);
 });

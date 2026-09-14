@@ -10,6 +10,7 @@ import { safeDiagnostic } from '../src/server/fetch-history.js';
 const input = { name: '日志测试', url: 'https://example.test/list?secret=private', rules: { item: 'article', title: 'h2', link: 'a' }, credentialId: null, intervalMinutes: 60, waitMs: 0 };
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), 'fl-history-')), store = new Store(dir);
+  store.setSettings({ ...store.getSettings(), bark: { ...store.getSettings().bark, failureThreshold: 1 } });
   const feed = store.createFeed(input).feed;
   return { dir, store, feed, close: () => { store.close(); rmSync(dir, { recursive: true, force: true }); } };
 }
@@ -76,6 +77,7 @@ test('30 天清理、重启中断恢复、队列持久化、删除及备份恢�
   const dir = mkdtempSync(join(tmpdir(), 'fl-history-restart-'));
   let store = new Store(dir);
   try {
+    store.setSettings({ ...store.getSettings(), bark: { ...store.getSettings().bark, failureThreshold: 1 } });
     const feed = store.createFeed(input).feed, now = Date.now();
     const old = store.history.start(feed.id, 'manual', new Date(now - 31 * 86400_000).toISOString());
     store.history.succeed(old, feed.id, 10, { itemCount: 1, newItemCount: 1 });
@@ -138,4 +140,66 @@ test('翻译告警与抓取告警隔离、连续失败去重、恢复后重新�
     settings.bark.enabled = false; store.setSettings(settings);
     assert.equal(store.history.translationFailed(feed, '已关闭通知'), false);
   } finally { close(); }
+});
+
+test('默认十次阈值、订阅隔离、去重及成功清零', () => {
+  const { store, feed, close } = fixture();
+  try {
+    store.setSettings({ ...store.getSettings(), bark: { ...store.getSettings().bark, failureThreshold: 10 } });
+    const other = store.createFeed({ ...input, url: 'https://other.test' }).feed;
+    const fail = (target = feed) => {
+      const id = store.history.start(target.id, 'scheduled');
+      store.history.fail(id, target, 'scheduled', 1, '失败', true);
+      store.history.fail(id, target, 'scheduled', 1, '重复回调', true);
+    };
+    for (let i = 0; i < 9; i++) fail();
+    fail(other); assert.equal(store.history.nextAlert(), null);
+    assert.equal(store.history.list(feed.id).logs[0].notification, null);
+    fail(); const alert = store.history.nextAlert()!;
+    assert.match(alert.body, /连续失败：10 次/);
+    store.history.beginAttempt(alert.id); store.history.finishAttempt(alert.id, true);
+    fail(); assert.equal(store.history.nextAlert(), null);
+    store.history.succeed(store.history.start(feed.id, 'manual'), feed.id, 1, { itemCount: 0, newItemCount: 0 });
+    for (let i = 0; i < 9; i++) fail();
+    assert.equal(store.history.nextAlert(), null);
+    fail(); assert.ok(store.history.nextAlert());
+  } finally { close(); }
+});
+
+test('阈值前计数跨重启与日志清理持久化，动态修改阈值生效', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fl-threshold-'));
+  let store = new Store(dir);
+  try {
+    const feed = store.createFeed(input).feed;
+    const fail = () => store.history.fail(store.history.start(feed.id, 'manual'), feed, 'manual', 1, '失败', true);
+    fail(); fail(); assert.equal(store.history.nextAlert(), null);
+    store.history.start(feed.id, 'manual');
+    store.close(); store = new Store(dir); store.history.recover();
+    store.history.prune(Date.now() + 31 * 86400_000);
+    assert.equal(store.history.list(feed.id).logs.length, 0);
+    store.setSettings({ ...store.getSettings(), bark: { ...store.getSettings().bark, failureThreshold: 4 } });
+    fail(); assert.equal(store.history.nextAlert(), null);
+    fail(); assert.match(store.history.nextAlert()!.body, /连续失败：4 次/);
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('旧故障表迁移保留已发送去重状态，新故障从零累计', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fl-incident-upgrade-'));
+  let store = new Store(dir);
+  try {
+    const feed = store.createFeed(input).feed;
+    store.setSettings({ ...store.getSettings(), bark: { ...store.getSettings().bark, failureThreshold: 1 } });
+    store.history.fail(store.history.start(feed.id, 'manual'), feed, 'manual', 1, '失败', true);
+    const alert = store.history.nextAlert()!;
+    store.history.beginAttempt(alert.id); store.history.finishAttempt(alert.id, true);
+    store.close();
+    const db = new DatabaseSync(join(dir, 'app.db'));
+    db.exec('ALTER TABLE fetch_incidents DROP COLUMN failure_count'); db.close();
+    store = new Store(dir);
+    store.history.fail(store.history.start(feed.id, 'manual'), feed, 'manual', 1, '仍然失败', true);
+    assert.equal(store.history.nextAlert(), null);
+    store.history.succeed(store.history.start(feed.id, 'manual'), feed.id, 1, { itemCount: 0, newItemCount: 0 });
+    store.history.fail(store.history.start(feed.id, 'manual'), feed, 'manual', 1, '新故障', true);
+    assert.match(store.history.nextAlert()!.body, /连续失败：1 次/);
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });

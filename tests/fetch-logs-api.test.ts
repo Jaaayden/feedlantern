@@ -37,7 +37,9 @@ test('日志接口鉴权、分页校验、所有交互入口、错误与恢复�
     for (const query of ['limit=0', 'limit=101', 'limit=x', 'cursor=-1', 'cursor=1.5', 'cursor=9007199254740992', 'status=invalid', 'limit=1&limit=2']) assert.equal((await app.inject({ method: 'GET', url: `/api/feeds/${id}/logs?${query}`, headers })).statusCode, 400);
     const refresh = () => app.inject({ method: 'POST', url: `/api/feeds/${id}/refresh`, headers });
     await refresh(); assert.equal((await logs())[0].newItemCount, 0);
-    behavior = 'empty'; await refresh(); await until(() => notifications === 1);
+    behavior = 'empty';
+    for (let i = 0; i < 9; i++) { await refresh(); assert.equal(notifications, 0); }
+    await refresh(); await until(() => notifications === 1);
     assert.equal((await logs())[0].status, 'failure'); assert.match((await logs())[0].error!, /可能是页面结构或规则变化/);
     assert.equal(store.getItems(id).length, 1);
     behavior = 'error'; await refresh();
@@ -60,7 +62,9 @@ test('日志接口鉴权、分页校验、所有交互入口、错误与恢复�
     assert.equal(calls, before + 1); assert.equal((await logs()).length, beforeLogs + 1);
     const page = await app.inject({ method: 'GET', url: `/api/feeds/${id}/logs?status=success&limit=1`, headers });
     assert.equal(page.headers['cache-control'], 'no-store'); assert.equal(page.json().logs.length, 1); assert.ok(page.json().nextCursor);
-    behavior = 'error'; await refresh(); await until(() => notifications === 2);
+    behavior = 'error';
+    for (let i = 0; i < 9; i++) { await refresh(); assert.equal(notifications, 1); }
+    await refresh(); await until(() => notifications === 2);
     const cred = store.createCredential({ name: 'wrong-domain', url: 'https://other.test', format: 'header', value: 'session=private-cookie' }, { domains: ['other.test'], count: 1, expiresAt: null });
     const cookieFailure = await app.inject({ method: 'PUT', url: `/api/feeds/${id}`, headers, payload: { ...input, credentialId: cred.id } });
     assert.equal(cookieFailure.statusCode, 200);

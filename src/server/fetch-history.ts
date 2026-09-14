@@ -37,6 +37,7 @@ export class FetchHistory {
       CREATE INDEX IF NOT EXISTS fetch_alerts_due ON fetch_alerts(status, next_attempt_at);
     `);
     if (!db.prepare('PRAGMA table_info(fetch_alerts)').all().some(row => row.name === 'kind')) db.exec("ALTER TABLE fetch_alerts ADD COLUMN kind TEXT NOT NULL DEFAULT 'fetch'");
+    if (!db.prepare('PRAGMA table_info(fetch_incidents)').all().some(row => row.name === 'failure_count')) db.exec('ALTER TABLE fetch_incidents ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0');
     db.exec(`CREATE TABLE IF NOT EXISTS translation_incidents (feed_id TEXT PRIMARY KEY REFERENCES feeds(id) ON DELETE CASCADE, alert_id TEXT REFERENCES fetch_alerts(id) ON DELETE SET NULL);`);
   }
 
@@ -82,13 +83,17 @@ export class FetchHistory {
   }
 
   fail(id: number, feed: Feed, source: FetchSource, durationMs: number, message: string, barkEnabled: boolean, now = Date.now()): void {
+    // Only completed, previously running fetches count; duplicate completion is ignored.
+    if (!this.db.prepare("SELECT 1 FROM fetch_logs WHERE id=? AND feed_id=? AND status='running'").get(id, feed.id)) return;
     const error = safeDiagnostic(message);
-    this.db.prepare("INSERT OR IGNORE INTO fetch_incidents(feed_id) VALUES (?)").run(feed.id);
+    const incident = this.db.prepare(`INSERT INTO fetch_incidents(feed_id,failure_count) VALUES (?,1)
+      ON CONFLICT(feed_id) DO UPDATE SET failure_count=failure_count+1 RETURNING failure_count`).get(feed.id)!;
+    const failureCount = Number(incident.failure_count);
     const previous = this.db.prepare(`SELECT a.* FROM fetch_incidents i JOIN fetch_alerts a ON a.id=i.alert_id WHERE i.feed_id=?`).get(feed.id);
     let alertId = previous ? String(previous.id) : null;
-    if (barkEnabled && (!previous || previous.status === 'failed' && now - Number(previous.last_attempt_at) >= this.settings().bark.cooldownMinutes * 60_000)) {
+    if (barkEnabled && failureCount >= this.settings().bark.failureThreshold && (!previous || previous.status === 'failed' && now - Number(previous.last_attempt_at) >= this.settings().bark.cooldownMinutes * 60_000)) {
       alertId = randomUUID();
-      const body = `${safeDiagnostic(feed.name)}\n目标：${new URL(feed.url).hostname}\n失败时间：${new Date(now).toISOString()}\n来源：${fetchSourceLabels[source]}\n原因：${error}`;
+      const body = `${safeDiagnostic(feed.name)}\n目标：${new URL(feed.url).hostname}\n失败时间：${new Date(now).toISOString()}\n连续失败：${failureCount} 次\n来源：${fetchSourceLabels[source]}\n原因：${error}`;
       this.db.prepare("INSERT INTO fetch_alerts(id,feed_id,status,body,next_attempt_at) VALUES (?,?,'pending',?,?)").run(alertId, feed.id, body, now);
       this.db.prepare('UPDATE fetch_incidents SET alert_id=? WHERE feed_id=?').run(alertId, feed.id);
     }
