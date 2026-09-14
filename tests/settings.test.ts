@@ -22,7 +22,7 @@ test('应用设置加密、跨密钥备份往返、旧备份兼容、日志保�
     a.setSettings(value);
     assert.deepEqual(a.getSettings(), value);
     for (const path of [a.dbPath, `${a.dbPath}-wal`]) assert.ok(!readFileSync(path).includes(Buffer.from(key)));
-    const snapshot = snapshotSchema.parse({ format: 'feedlantern-backup', version: 1, appVersion: 'test', createdAt: new Date().toISOString(), security: { allowedHosts: [], dnsOverHttps: false }, tables: a.exportTables() });
+    const snapshot = snapshotSchema.parse({ format: 'feedlantern-backup', version: 2, appVersion: 'test', createdAt: new Date().toISOString(), security: { allowedHosts: [], dnsOverHttps: false }, tables: a.exportTables() });
     const sealed = sealBackup(snapshot, 'long-backup-password');
     assert.ok(!JSON.stringify(sealed).includes(key)); b.restoreTables(openBackup(sealed, 'long-backup-password').tables);
     assert.deepEqual(b.getSettings(), value);

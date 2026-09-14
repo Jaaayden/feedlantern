@@ -32,6 +32,7 @@ const ACTION_SETTLE_MS = 80;
 const BROWSER_OPERATION_TIMEOUT_MS = 60_000;
 
 export interface BrowserOpenOptions {
+  signal?: AbortSignal;
   url: string;
   cookies?: Cookie[];
   waitMs: number;
@@ -431,8 +432,12 @@ export class BrowserService {
     const id = randomUUID();
     let context: BrowserContext | undefined;
     let page: Page | undefined;
+    const abort = () => { void context?.close().catch(() => undefined); };
+    options.signal?.addEventListener('abort', abort, { once: true });
     try {
+      options.signal?.throwIfAborted();
       context = await this.createContext(options.cookies, options.url);
+      options.signal?.throwIfAborted();
       page = await context.newPage();
       // Keep the visual editor focused on one page. Popups are deliberately
       // closed because a separate page would bypass the REST session model.
@@ -452,6 +457,7 @@ export class BrowserService {
       await context?.close().catch(() => undefined);
       throw error instanceof BrowserServiceError ? error : cleanError(error, '打开页面失败');
     } finally {
+      options.signal?.removeEventListener('abort', abort);
       this.openingSessions -= 1;
     }
   }
@@ -541,8 +547,12 @@ export class BrowserService {
     if (this.scrapeSessions >= this.backgroundConcurrency) throw new BrowserBusyError('已有抓取任务正在运行');
     this.scrapeSessions += 1;
     let context: BrowserContext | undefined;
+    const abort = () => { void context?.close().catch(() => undefined); };
+    options.signal?.addEventListener('abort', abort, { once: true });
     try {
+      options.signal?.throwIfAborted();
       context = await this.createContext(options.cookies, options.url);
+      options.signal?.throwIfAborted();
       const page = await context.newPage();
       let timeout: NodeJS.Timeout | undefined;
       const deadline = new Promise<never>((_, reject) => {
@@ -564,6 +574,7 @@ export class BrowserService {
       if (error instanceof BrowserServiceError) throw error;
       throw cleanError(error, '抓取页面失败');
     } finally {
+      options.signal?.removeEventListener('abort', abort);
       if (context) this.activeContexts.delete(context);
       await context?.close().catch(() => undefined);
       this.scrapeSessions -= 1;

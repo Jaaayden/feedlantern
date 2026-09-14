@@ -60,3 +60,10 @@ summary { cursor:pointer; }
 .translation-progress p { font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
 .translation-progress summary { cursor: pointer; margin: 10px 0; }
 .translation-log-list { max-height: 240px; overflow-y: auto; }
+
+.user-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.user-row:last-child { border-bottom: 0; }
+.user-row p { margin: 6px 0 0; }
+
+.users-list { margin-top: 20px; }
+.user-row strong { overflow-wrap: anywhere; }

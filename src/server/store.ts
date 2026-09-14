@@ -1,3 +1,4 @@
+import type { UserSummary } from '../shared/types.js';
 import { translationEnabled } from '../shared/types.js';
 import { RssTranslations } from './rss-translation.js';
 import type { Tables } from './backups.js';
@@ -23,6 +24,8 @@ export interface StoredSession {
   id: string;
   csrfToken: string;
   username: string;
+  userId: string;
+  role: UserSummary["role"];
   expiresAt: number;
 }
 
@@ -51,12 +54,6 @@ function parseJson<T>(value: unknown, fallback: T): T {
 
 function hashToken(value: string): string {
   return createHash('sha256').update(value).digest('hex');
-}
-
-function safeEqualText(a: string, b: string): boolean {
-  const left = Buffer.from(a);
-  const right = Buffer.from(b);
-  return left.length === right.length && timingSafeEqual(left, right);
 }
 
 function randomId(prefix: string): string {
@@ -127,6 +124,7 @@ function mergeRuleOrigins(current: RuleOrigins | undefined, next: RuleOrigins | 
 function rowToFeed(row: Record<string, unknown>): Feed {
   return {
     id: String(row.id),
+    ownerId: String(row.owner_id),
     sourceType: row.source_type === 'rss' ? 'rss' : 'website',
     translationMode: row.translation_mode === 'original' ? 'original' : row.translation_mode === 'chinese' ? 'chinese' : 'bilingual',
     name: String(row.name),
@@ -169,6 +167,7 @@ export class Store {
   readonly masterKeyPath: string;
   readonly setupTokenPath: string;
   private readonly db: DatabaseSync;
+  private readonly userControllers = new Map<string, AbortController>();
   private readonly masterKey: Buffer;
 
   constructor(config: Pick<ServerConfig, 'dataDir'> | string) {
@@ -183,13 +182,6 @@ export class Store {
     chmodSync(this.dbPath, 0o600);
     this.db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
     this.db.exec(`
-      CREATE TABLE IF NOT EXISTS admin (
-        id INTEGER PRIMARY KEY CHECK (id = 1),
-        username TEXT NOT NULL,
-        password_hash TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
       CREATE TABLE IF NOT EXISTS sessions (
         id_hash TEXT PRIMARY KEY,
         csrf_hash TEXT NOT NULL,
@@ -265,7 +257,31 @@ export class Store {
       ALTER TABLE feeds ADD COLUMN translation_mode TEXT NOT NULL DEFAULT 'bilingual';
       PRAGMA user_version=5; COMMIT;`);
     if (version < 6) this.db.exec("BEGIN; UPDATE feeds SET translation_mode='original' WHERE source_type='website'; PRAGMA user_version=6; COMMIT;");
-    this.translations = new RssTranslations(this.db);
+    if (version < 7) this.db.exec(`BEGIN;
+      CREATE TABLE IF NOT EXISTS admin (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        username TEXT NOT NULL,
+        password_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL,
+        role TEXT NOT NULL CHECK(role IN ('admin','user')), enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
+        generation INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE UNIQUE INDEX users_single_admin ON users(role) WHERE role='admin';
+      INSERT INTO users SELECT 'admin',username,password_hash,'admin',1,0,created_at,updated_at FROM admin;
+      DROP TABLE admin;
+      DELETE FROM sessions;
+      ALTER TABLE sessions ADD COLUMN user_id TEXT REFERENCES users(id);
+      ALTER TABLE credentials ADD COLUMN owner_id TEXT NOT NULL DEFAULT 'admin';
+      ALTER TABLE feeds ADD COLUMN owner_id TEXT NOT NULL DEFAULT 'admin';
+      ALTER TABLE import_jobs ADD COLUMN owner_id TEXT NOT NULL DEFAULT 'admin';
+      CREATE INDEX feeds_owner ON feeds(owner_id);
+      CREATE INDEX credentials_owner ON credentials(owner_id);
+      CREATE INDEX import_jobs_owner ON import_jobs(owner_id);
+      CREATE INDEX sessions_user ON sessions(user_id);
+      PRAGMA user_version=7; COMMIT;`);
+    this.translations = new RssTranslations(this.db, id => this.userSignal(id));
     this.history = new FetchHistory(this.db, () => this.getSettings());
     this.ensureSetupToken();
   }
@@ -295,11 +311,12 @@ export class Store {
   }
 
   close(): void {
+    for (const controller of this.userControllers.values()) controller.abort();
     this.db.close();
   }
 
   hasAdmin(): boolean {
-    return Boolean(this.db.prepare('SELECT 1 AS present FROM admin WHERE id = 1').get());
+    return Boolean(this.db.prepare("SELECT 1 AS present FROM users WHERE role = 'admin'").get());
   }
 
   getSetupToken(): string | null {
@@ -328,37 +345,91 @@ export class Store {
   createAdmin(username: string, password: string): void {
     if (this.hasAdmin()) throw new Error('admin already exists');
     const timestamp = nowIso();
-    this.db.prepare('INSERT INTO admin(id, username, password_hash, created_at, updated_at) VALUES (1, ?, ?, ?, ?)').run(username, hashPassword(password), timestamp, timestamp);
+    this.db.prepare("INSERT INTO users(id,username,password_hash,role,created_at,updated_at) VALUES ('admin',?,?,'admin',?,?)").run(username, hashPassword(password), timestamp, timestamp);
   }
 
-  getAdmin(): { username: string; passwordHash: string } | null {
-    const row = this.db.prepare('SELECT username, password_hash FROM admin WHERE id = 1').get() as Record<string, unknown> | undefined;
-    return row ? { username: String(row.username), passwordHash: String(row.password_hash) } : null;
+  getAdmin(): { id: string; username: string; passwordHash: string } | null {
+    const row = this.db.prepare("SELECT * FROM users WHERE role='admin'").get();
+    return row ? { id: String(row.id), username: String(row.username), passwordHash: String(row.password_hash) } : null;
+  }
+
+  listUsers(): UserSummary[] {
+    return this.db.prepare('SELECT * FROM users ORDER BY created_at,id').all().map(row => ({
+      id: String(row.id), username: String(row.username), role: row.role as UserSummary['role'], enabled: !!row.enabled,
+      createdAt: String(row.created_at), updatedAt: String(row.updated_at),
+    }));
+  }
+
+  createUser(username: string, password: string): UserSummary {
+    const id = randomId('user'), timestamp = nowIso();
+    this.db.prepare("INSERT INTO users(id,username,password_hash,role,created_at,updated_at) VALUES (?,?,?,'user',?,?)").run(id, username, hashPassword(password), timestamp, timestamp);
+    return this.listUsers().find(u => u.id === id)!;
+  }
+
+  userGeneration(id = 'admin'): number | null {
+    const row = this.db.prepare('SELECT enabled,generation FROM users WHERE id=?').get(id);
+    // Store-only extraction fixtures may operate before first-run setup.
+    return row ? (row.enabled ? Number(row.generation) : null) : id === 'admin' && !this.hasAdmin() ? 0 : null;
+  }
+  userSignal(id = 'admin'): AbortSignal {
+    if (!this.isUserActive(id)) return AbortSignal.abort();
+    let controller = this.userControllers.get(id);
+    if (!controller) { controller = new AbortController(); this.userControllers.set(id, controller); }
+    return controller.signal;
+  }
+  isUserActive(id = 'admin'): boolean { return this.userGeneration(id) !== null; }
+  isFeedActive(id: string): boolean { const feed = this.getFeed(id); return !!feed && this.isUserActive(feed.ownerId); }
+
+  setUserEnabled(id: string, enabled: boolean): void {
+    if (this.getAdmin()?.id === id) throw new Error('不能停用管理员');
+    this.transaction(() => {
+      this.db.prepare('UPDATE users SET enabled=?,generation=generation+1,updated_at=? WHERE id=?').run(enabled ? 1 : 0, nowIso(), id);
+      if (!enabled) {
+        this.userControllers.get(id)?.abort();
+        this.userControllers.delete(id);
+        this.db.prepare('DELETE FROM sessions WHERE user_id=?').run(id);
+        for (const feed of this.listFeeds(id)) this.translations.invalidate(feed.id);
+      } else {
+        this.db.prepare('UPDATE feeds SET next_fetch_at=? WHERE owner_id=? AND enabled=1').run(nowIso(), id);
+      }
+    });
+  }
+
+  owns(table: 'feeds' | 'credentials' | 'import_jobs', id: string, userId: string): boolean {
+    return !!this.db.prepare(`SELECT 1 FROM ${table} WHERE id=? AND owner_id=?`).get(id, userId);
   }
 
   authenticate(username: string, password: string): boolean {
-    const admin = this.getAdmin();
-    return Boolean(admin && safeEqualText(username, admin.username) && verifyPassword(password, admin.passwordHash));
+    const row = this.db.prepare('SELECT password_hash,enabled FROM users WHERE username=?').get(username);
+    // Always perform scrypt, including unknown and disabled accounts.
+    const valid = verifyPassword(password, row ? String(row.password_hash) : this.dummyPasswordHash);
+    return !!row?.enabled && valid;
   }
 
-  changePassword(password: string): void {
-    this.db.prepare('UPDATE admin SET password_hash = ?, updated_at = ? WHERE id = 1').run(hashPassword(password), nowIso());
-    this.destroyAllSessions();
+  private readonly dummyPasswordHash = hashPassword(randomBytes(32).toString('hex'));
+
+  changePassword(password: string, userId = this.getAdmin()?.id ?? 'admin'): void {
+    this.transaction(() => {
+      this.db.prepare('UPDATE users SET password_hash=?,updated_at=? WHERE id=?').run(hashPassword(password), nowIso(), userId);
+      this.db.prepare('DELETE FROM sessions WHERE user_id=?').run(userId);
+    });
   }
 
   createSession(username: string, ttlMs: number): StoredSession {
+    const user = this.listUsers().find(u => u.username === username && u.enabled);
+    if (!user) throw new Error('用户不存在或已停用');
     const id = randomBytes(32).toString('base64url');
     const csrfToken = this.deriveCsrfToken(id);
     const createdAt = Date.now();
     const expiresAt = createdAt + ttlMs;
-    this.db.prepare('INSERT INTO sessions(id_hash, csrf_hash, username, created_at, expires_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)').run(hashToken(id), hashToken(csrfToken), username, createdAt, expiresAt, createdAt);
-    return { id, csrfToken, username, expiresAt };
+    this.db.prepare('INSERT INTO sessions(id_hash, csrf_hash, username, created_at, expires_at, last_seen_at, user_id) VALUES (?, ?, ?, ?, ?, ?, ?)').run(hashToken(id), hashToken(csrfToken), username, createdAt, expiresAt, createdAt, user.id);
+    return { id, csrfToken, username, expiresAt, userId: user.id, role: user.role };
   }
 
   findSession(id: string | undefined, ttlMs: number): StoredSession | null {
     if (!id) return null;
     const idHash = hashToken(id);
-    const row = this.db.prepare('SELECT id_hash, csrf_hash, username, expires_at FROM sessions WHERE id_hash = ?').get(idHash) as Record<string, unknown> | undefined;
+    const row = this.db.prepare('SELECT s.*,u.role FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.id_hash = ? AND u.enabled=1').get(idHash) as Record<string, unknown> | undefined;
     if (!row) return null;
     const expiresAt = Number(row.expires_at);
     if (expiresAt <= Date.now()) {
@@ -368,7 +439,7 @@ export class Store {
     this.db.prepare('UPDATE sessions SET last_seen_at = ? WHERE id_hash = ?').run(Date.now(), idHash);
     // The raw CSRF token is deliberately not retained. The app checks a
     // supplied token against the stored digest using checkCsrf().
-    return { id, csrfToken: '', username: String(row.username), expiresAt };
+    return { id, csrfToken: '', username: String(row.username), expiresAt, userId: String(row.user_id), role: row.role as UserSummary['role'] };
   }
 
   checkCsrf(id: string | undefined, csrfToken: string | undefined): boolean {
@@ -399,7 +470,7 @@ export class Store {
     this.db.prepare('DELETE FROM sessions').run();
   }
 
-  createCredential(input: CredentialValue, metadata: { domains: string[]; count: number; expiresAt: string | null }): CredentialSummary {
+  createCredential(input: CredentialValue, metadata: { domains: string[]; count: number; expiresAt: string | null }, ownerId = 'admin'): CredentialSummary {
     const id = randomId('cred');
     const updatedAt = nowIso();
     this.db.prepare('INSERT INTO credentials(id, name, url, format, encrypted_value, domains_json, cookie_count, updated_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
@@ -413,6 +484,7 @@ export class Store {
       updatedAt,
       metadata.expiresAt,
     );
+    this.db.prepare('UPDATE credentials SET owner_id=? WHERE id=?').run(ownerId,id);
     return { id, name: input.name, url: input.url, format: input.format, domains: metadata.domains, count: metadata.count, updatedAt, expiresAt: metadata.expiresAt };
   }
 
@@ -459,8 +531,8 @@ export class Store {
     };
   }
 
-  listCredentialSummaries(): CredentialSummary[] {
-    const rows = this.db.prepare('SELECT id, name, url, format, domains_json, cookie_count, updated_at, expires_at FROM credentials ORDER BY updated_at DESC').all() as Array<Record<string, unknown>>;
+  listCredentialSummaries(ownerId?: string): CredentialSummary[] {
+    const rows = this.db.prepare('SELECT id, name, url, format, domains_json, cookie_count, updated_at, expires_at FROM credentials WHERE (? IS NULL OR owner_id=?) ORDER BY updated_at DESC').all(ownerId ?? null, ownerId ?? null) as Array<Record<string, unknown>>;
     return rows.map((row) => ({
       id: String(row.id),
       name: String(row.name),
@@ -482,7 +554,8 @@ export class Store {
     return Boolean(result.changes);
   }
 
-  createFeed(input: FeedInput): { feed: Feed; token: string } {
+  createFeed(input: FeedInput, ownerId = 'admin'): { feed: Feed; token: string } {
+    if (input.credentialId && !this.owns('credentials', input.credentialId, ownerId)) throw new Error('Cookie 凭据不存在');
     const id = randomId('feed');
     const token = randomBytes(32).toString('base64url');
     const timestamp = nowIso();
@@ -494,12 +567,14 @@ export class Store {
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL, NULL, ?, NULL, 0, ?, ?)`)
       .run(id, input.name, input.url, JSON.stringify(input.rules), input.ruleOrigins ? JSON.stringify(input.ruleOrigins) : null, input.credentialId, input.intervalMinutes, input.waitMs, input.waitForSelector ?? null, timestamp, nextFetchAt, encrypt(this.masterKey, token), hashToken(token));
     this.db.prepare("UPDATE feeds SET channel_title = ?, source_type=?, translation_mode=? WHERE id = ?").run(input.name, input.sourceType ?? 'website', input.translationMode ?? (input.sourceType === 'rss' ? 'bilingual' : 'original'), id);
+    this.db.prepare('UPDATE feeds SET owner_id=? WHERE id=?').run(ownerId,id);
     return { feed: this.getFeed(id)!, token };
   }
 
   updateFeed(id: string, input: FeedInput): Feed | null {
     const existing = this.getFeed(id);
     if (!existing) return null;
+    if (input.credentialId && !this.owns('credentials', input.credentialId, existing.ownerId!)) throw new Error('Cookie 凭据不存在');
     this.translations.invalidate(id);
     if ((existing.sourceType === 'rss' || input.sourceType === 'rss') && (existing.url !== input.url || existing.sourceType !== (input.sourceType ?? 'website'))) {
       this.db.prepare('DELETE FROM feed_items WHERE feed_id=?').run(id);
@@ -535,7 +610,7 @@ export class Store {
 
   exportTables(): Tables {
     const tables: Record<string, unknown> = {};
-    for (const table of ['admin', 'credentials', 'feeds', 'feed_items', 'settings', 'rss_sources', 'translations', 'translation_cache']) {
+    for (const table of ['users', 'credentials', 'feeds', 'feed_items', 'settings', 'rss_sources', 'translations', 'translation_cache']) {
       tables[table] = this.db.prepare(`SELECT * FROM ${table}`).all().map(row => {
         if (table === 'credentials') return { ...row, encrypted_value: decrypt(this.masterKey, String(row.encrypted_value)) };
         if (table === 'feeds') return { ...row, token_ciphertext: decrypt(this.masterKey, String(row.token_ciphertext)) };
@@ -548,9 +623,11 @@ export class Store {
 
   restoreTables(tables: Tables): void {
     const previousServer = this.getSettings().server;
+    for (const controller of this.userControllers.values()) controller.abort();
+    this.userControllers.clear();
     this.transaction(() => {
-      for (const table of ['sessions', 'import_jobs', 'translations', 'rss_sources', 'translation_cache', 'feed_items', 'feeds', 'credentials', 'admin', 'settings']) this.db.exec(`DELETE FROM ${table}`);
-      for (const table of ['admin', 'credentials', 'feeds', 'feed_items', 'settings', 'rss_sources', 'translations', 'translation_cache'] as const) {
+      for (const table of ['sessions', 'import_jobs', 'translations', 'rss_sources', 'translation_cache', 'feed_items', 'feeds', 'credentials', 'users', 'settings']) this.db.exec(`DELETE FROM ${table}`);
+      for (const table of ['users', 'credentials', 'feeds', 'feed_items', 'settings', 'rss_sources', 'translations', 'translation_cache'] as const) {
         for (const value of tables[table]) {
           const row: Record<string, string | number | null> = { ...value };
           if (table === 'credentials') row.encrypted_value = encrypt(this.masterKey, String(row.encrypted_value));
@@ -572,12 +649,12 @@ export class Store {
     catch (error) { this.db.exec('ROLLBACK TO operation; RELEASE operation'); throw error; }
   }
 
-  listImportJobs(): ImportJob[] {
-    return (this.db.prepare('SELECT body FROM import_jobs ORDER BY rowid DESC').all() as { body: string }[]).map(row => JSON.parse(row.body));
+  listImportJobs(ownerId?: string): ImportJob[] {
+    return (this.db.prepare('SELECT body,owner_id FROM import_jobs WHERE (? IS NULL OR owner_id=?) ORDER BY rowid DESC').all(ownerId ?? null, ownerId ?? null) as { body: string; owner_id: string }[]).map(row => ({ ...JSON.parse(row.body), ownerId: row.owner_id }));
   }
 
   saveImportJob(job: ImportJob): void {
-    this.db.prepare('INSERT INTO import_jobs(id,body) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body').run(job.id, JSON.stringify(job));
+    this.db.prepare('INSERT INTO import_jobs(id,body,owner_id) VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body').run(job.id, JSON.stringify(job), job.ownerId ?? 'admin');
   }
 
   getSettings(): ApplicationSettings {
@@ -614,8 +691,8 @@ export class Store {
     return feed;
   }
 
-  listFeeds(): Feed[] {
-    const rows = this.db.prepare(`SELECT f.*, (SELECT COUNT(*) FROM feed_items i WHERE i.feed_id = f.id) AS item_count FROM feeds f ORDER BY f.created_at DESC`).all() as Array<Record<string, unknown>>;
+  listFeeds(ownerId?: string): Feed[] {
+    const rows = this.db.prepare(`SELECT f.*, (SELECT COUNT(*) FROM feed_items i WHERE i.feed_id = f.id) AS item_count FROM feeds f WHERE (? IS NULL OR f.owner_id=?) ORDER BY f.created_at DESC`).all(ownerId ?? null, ownerId ?? null) as Array<Record<string, unknown>>;
     return rows.map(row => {
       const feed = rowToFeed(row);
       if (translationEnabled(feed)) feed.translation = this.translations.stats(feed.id);
@@ -652,6 +729,7 @@ export class Store {
   }
 
   checkFeedToken(id: string, token: string): boolean {
+    if (!this.isFeedActive(id)) return false;
     const row = this.db.prepare('SELECT token_hash FROM feeds WHERE id = ?').get(id) as Record<string, unknown> | undefined;
     if (!row) return false;
     const expected = Buffer.from(String(row.token_hash));
@@ -720,7 +798,7 @@ export class Store {
 
   dueFeeds(now = new Date()): Feed[] {
     const rows = this.db.prepare(`SELECT f.*, (SELECT COUNT(*) FROM feed_items i WHERE i.feed_id = f.id) AS item_count FROM feeds f WHERE f.enabled = 1 AND f.next_fetch_at <= ? ORDER BY f.next_fetch_at ASC`).all(now.toISOString()) as Array<Record<string, unknown>>;
-    return rows.map(row => {
+    return rows.filter(row => this.isUserActive(String(row.owner_id))).map(row => {
       const feed = rowToFeed(row);
       if (translationEnabled(feed)) feed.translation = this.translations.stats(feed.id);
       return feed;

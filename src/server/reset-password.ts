@@ -52,7 +52,7 @@ if (process.argv.slice(2).length > 0) {
     const confirm = await promptLine('再次输入新密码：');
     if (next !== confirm) throw new Error('两次输入的密码不一致。');
     store.changePassword(next);
-    process.stdout.write('密码已重置，现有登录会话已全部撤销。\n');
+    process.stdout.write('密码已重置，管理员的现有登录会话已全部撤销。\n');
   } catch (error) {
     process.stderr.write(`${error instanceof Error ? error.message : '密码重置失败'}\n`);
     process.exitCode = 1;

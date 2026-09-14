@@ -128,7 +128,7 @@ test('new and old encrypted backups restore RSS state and cache across master ke
     store.createAdmin('admin', 'password123'); const { feed } = store.createFeed(input);
     store.translations.upsert(feed, [sourceItem]); store.translations.cache('Hello', '你好');
     store.translations.saveSource(feed.id, { title: 'Feed', items: [sourceItem], etag: 'v1' });
-    const snapshot = snapshotSchema.parse({ format: 'feedlantern-backup', version: 1, appVersion: '0.3.0', createdAt: new Date().toISOString(), security: { allowedHosts: [], dnsOverHttps: false }, tables: store.exportTables() });
+    const snapshot = snapshotSchema.parse({ format: 'feedlantern-backup', version: 2, appVersion: '0.3.0', createdAt: new Date().toISOString(), security: { allowedHosts: [], dnsOverHttps: false }, tables: store.exportTables() });
     other.restoreTables(openBackup(sealBackup(snapshot, 'backup-password'), 'backup-password').tables);
     assert.equal(other.getFeed(feed.id)?.sourceType, 'rss'); assert.equal(other.translations.cached('Hello'), '你好');
     assert.deepEqual(other.translations.sourceState(feed.id), { etag: 'v1', modified: undefined });
@@ -227,7 +227,7 @@ test('public RSS excludes pending, failed and partially translated items; comple
     const tables = store.exportTables();
     // Mark the second title failed before the worker starts, without touching the pending item.
     const failedItem = store.getItems(feed.id).find(item => item.title === 'Failed article')!;
-    const failJob = { item_id: failedItem.id, feed_id: feed.id, revision: tables.translations.find(t => t.item_id === failedItem.id)!.revision, attempts: 2, body_json: '{}', title: failedItem.title, link: failedItem.link };
+    const failJob = { owner_id: 'admin', item_id: failedItem.id, feed_id: feed.id, revision: tables.translations.find(t => t.item_id === failedItem.id)!.revision, attempts: 2, body_json: '{}', title: failedItem.title, link: failedItem.link };
     store.translations.fail(failJob, '测试失败', 0, false);
     const url = `/feeds/${feed.id}/${token}.xml`;
     const before = await app.inject({ url }); await until(() => bodyStarted);

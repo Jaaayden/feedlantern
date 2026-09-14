@@ -28,18 +28,25 @@ React/Vite 前端；Fastify API；SQLite Store；Playwright BrowserService；共
 
 SQLite `PRAGMA user_version` 记录迁移：版本 1 增加频道名称与设置表，版本 2 增加持久化任务，版本 3 将频道名称与管理名称统一（保留已设置的频道名称）。已有 v0.1.0 数据在首次启动时迁移，旧名称填入频道名称。更改迁移前必须考虑已有数据库和备份格式兼容。
 
+多用户迁移版本为 7：统一 `users` 表替代 `admin`，会话引用用户 ID，订阅、凭据和批量任务记录 `owner_id`。原数据迁移到稳定 ID `admin`，旧会话清空。HTTP 层所有资源入口检查归属，批量操作逐项校验；队列执行时重新检查。用户停用递增 `generation`、撤销会话及发出取消信号，后台结果只有代次仍一致时可落库；翻译同时使用任务 revision。
+
+Store 的无 owner 参数列表方法保留给整站后台调度和备份使用，HTTP 工作台必须传入认证的用户 ID。客户端提交的 ownerId 不决定归属。普通用户不读取全局设置，列表偏好存储在浏览器中。
+
 ## API 摘要
 
-所有管理接口要求登录；写操作需要 `X-FeedLantern: 1` 和 `X-CSRF-Token`，并校验 Host/Origin。错误返回 `{error:string}`，响应不缓存。
+所有管理接口要求登录；账号管理、全局设置及备份仅管理员可用，跨用户资源与不存在资源均返回 404。写操作需要 `X-FeedLantern: 1` 和 `X-CSRF-Token`，并校验 Host/Origin。错误返回 `{error:string}`，响应不缓存。
 
 | 接口 | 用途 |
 |---|---|
-| `/api/auth/*` | 初始化、登录、退出、修改密码 |
+| `/api/auth/*` | 初始化、登录、退出、修改自己的密码；登录状态包含 userId、role |
+| `GET/POST /api/users` | 管理员列出用户／以 `{username,password}` 创建普通用户 |
+| `PATCH /api/users/:id` | 管理员以 `{enabled:boolean}` 停用／启用普通用户，不允许停用管理员 |
+| `POST /api/users/:id/password` | 管理员以 `{password}` 重置普通用户密码，撤销目标账号会话 |
 | `/api/credentials` | 凭据元数据及导入更新 |
 | `/api/browser/*` | 打开页面、截图、自动发现、点选、预览 |
 | `/api/feeds` | 单个订阅创建及管理 |
 | `PATCH /api/feeds/:id` | `{channelTitle?, intervalMinutes?}`，至少提供一个；名称同步 RSS 标题，间隔为 5–1440 的整数，变化时重新计时；不触发抓取，兼容仅改名称的旧客户端 |
-| `GET/PUT /api/settings` | `{feedView:'list'|'cards'}` |
+| `GET/PUT /api/settings` | 仅管理员读取／修改全局配置及管理员视图偏好 |
 | `POST /api/feeds/bulk` | `{ids,action}`；copy/pause/resume/refresh/delete，逐项结果 |
 | `GET/POST /api/import-jobs` | 列出/创建批量任务，创建参数 entries 与 intervalMinutes |
 | `POST /api/import-jobs/:id/:action` | cancel/retry/confirm；confirm 带 entryId 与完整 input |
@@ -50,7 +57,7 @@ SQLite `PRAGMA user_version` 记录迁移：版本 1 增加频道名称与设置
 
 `POST /api/browser/:id/scroll` 接受 `{deltaY,x?,y?}`，坐标须同时提供并位于远端视口内；省略时使用视口中心。截图仍为 data URL，编码改用 JPEG 质量 80。显式关闭编辑会话会取消进行中的操作并释放容量。
 
-完整备份格式版本为 1，独立于数据库迁移版本；敏感值只在加密包内部携带可迁移明文，目标实例使用自己的主密钥重新加密。
+完整备份格式版本为 2（兼容导入 version 1），独立于数据库迁移版本；敏感值只在加密包内部携带可迁移明文，目标实例使用自己的主密钥重新加密。
 
 ## 发布
 

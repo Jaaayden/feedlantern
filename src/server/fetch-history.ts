@@ -116,16 +116,20 @@ export class FetchHistory {
   }
 
   nextAlert(now = Date.now()): PendingAlert | null {
-    const row = this.db.prepare("SELECT id, body, attempts, kind FROM fetch_alerts WHERE status='pending' AND next_attempt_at<=? ORDER BY next_attempt_at LIMIT 1").get(now);
+    const row = this.db.prepare("SELECT id, body, attempts, kind FROM fetch_alerts WHERE status='pending' AND EXISTS (SELECT 1 FROM feeds f LEFT JOIN users u ON u.id=f.owner_id WHERE f.id=fetch_alerts.feed_id AND COALESCE(u.enabled,1)=1) AND next_attempt_at<=? ORDER BY next_attempt_at LIMIT 1").get(now);
     return row ? { id: String(row.id), body: String(row.body), attempts: Number(row.attempts), kind: String(row.kind) } : null;
   }
 
   isPending(id: string): boolean {
-    return !!this.db.prepare("SELECT id FROM fetch_alerts WHERE id=? AND status='pending'").get(id);
+    return !!this.db.prepare("SELECT id FROM fetch_alerts WHERE id=? AND status='pending' AND EXISTS (SELECT 1 FROM feeds f LEFT JOIN users u ON u.id=f.owner_id WHERE f.id=fetch_alerts.feed_id AND COALESCE(u.enabled,1)=1)").get(id);
   }
 
   resetNotifications(): void {
     this.db.exec("UPDATE fetch_alerts SET status='canceled' WHERE status='pending'; DELETE FROM fetch_incidents; DELETE FROM translation_incidents;");
+  }
+
+  interrupt(runId: number): void {
+    this.db.prepare("UPDATE fetch_logs SET status='interrupted',finished_at=?,error='账号已停用，本次抓取结果已丢弃' WHERE id=? AND status='running'").run(new Date().toISOString(), runId);
   }
 
   beginAttempt(id: string, now = Date.now()): boolean {
@@ -135,6 +139,7 @@ export class FetchHistory {
   }
 
   finishAttempt(id: string, ok: boolean, now = Date.now()): void {
+    if (!this.isPending(id)) return;
     const policy = this.settings().bark;
     this.db.prepare(`UPDATE fetch_alerts SET status=CASE WHEN ? THEN 'sent' WHEN attempts>=? THEN 'failed' ELSE 'pending' END,
       error=CASE WHEN ? THEN NULL ELSE 'Bark 推送失败，请检查网络及私有配置' END,

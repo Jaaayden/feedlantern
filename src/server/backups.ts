@@ -12,16 +12,35 @@ export const backupTables = {
   translations: z.array(z.object({ item_id: short, feed_id: short, revision: short, status: z.enum(['pending','running','success','failed']), attempts: z.number().int().min(0).max(3), next_at: z.number().int().nonnegative(), error: nullable,
     body_json: z.string().max(20_000_000).refine(value => { try { const b=JSON.parse(value); return typeof b.html==='string' && ['title','translatedHtml','bilingualHtml'].every(k => b[k]===undefined || typeof b[k]==='string'); } catch { return false; } }) }).strict()).max(2_000_000).default([]),
   translation_cache: z.array(z.object({ key: z.string().regex(/^[a-f0-9]{64}$/), text, touched_at: z.number().int().nonnegative() }).strict()).max(20000).default([]),
-  admin: z.array(z.object({ id: z.literal(1), username: z.string().regex(/^\S{1,100}$/), password_hash: z.string().regex(/^scrypt\$16384\$8\$1\$[A-Za-z0-9_-]{22}\$[A-Za-z0-9_-]{86}$/), created_at: date, updated_at: date }).strict()).length(1),
-  credentials: z.array(z.object({ id: short, name: short, url, format: z.enum(['header', 'json']), encrypted_value: text, domains_json: text, cookie_count: z.number().int().nonnegative(), updated_at: date, expires_at: date.nullable() }).strict()).max(10000),
-  feeds: z.array(z.object({ source_type: z.enum(['website', 'rss']).default('website'), translation_mode: z.enum(['original', 'chinese', 'bilingual']).optional(), id: short, name: short, channel_title: z.string().min(1).max(200).nullable(), url, rules_json: text, rule_origins_json: nullable, credential_id: short.nullable(), interval_minutes: z.number().int().min(5).max(1440), wait_ms: z.number().int().min(0).max(10000), wait_for_selector: nullable, enabled: flag, created_at: date, last_fetched_at: date.nullable(), last_success_at: date.nullable(), next_fetch_at: date, last_error: nullable, item_count: z.number().int().nonnegative(), token_ciphertext: z.string().regex(/^[A-Za-z0-9_-]{43}$/), token_hash: z.string().regex(/^[a-f0-9]{64}$/) }).strict().transform(row => ({ ...row, translation_mode: row.translation_mode ?? (row.source_type === 'rss' ? 'bilingual' as const : 'original' as const) }))).max(10000),
+  users: z.array(z.object({ id: short, role: z.enum(['admin','user']), enabled: flag, generation: z.number().int().nonnegative(), username: z.string().regex(/^\S{1,100}$/), password_hash: z.string().regex(/^scrypt\$16384\$8\$1\$[A-Za-z0-9_-]{22}\$[A-Za-z0-9_-]{86}$/), created_at: date, updated_at: date }).strict()).min(1).max(10000).refine(rows => rows.filter(u => u.role === 'admin' && u.enabled === 1).length === 1 && rows.filter(u => u.role === 'admin').length === 1 && new Set(rows.map(u => u.id)).size === rows.length && new Set(rows.map(u => u.username)).size === rows.length, '用户列表无效'),
+  credentials: z.array(z.object({ owner_id: short, id: short, name: short, url, format: z.enum(['header', 'json']), encrypted_value: text, domains_json: text, cookie_count: z.number().int().nonnegative(), updated_at: date, expires_at: date.nullable() }).strict()).max(10000),
+  feeds: z.array(z.object({ owner_id: short, source_type: z.enum(['website', 'rss']).default('website'), translation_mode: z.enum(['original', 'chinese', 'bilingual']).optional(), id: short, name: short, channel_title: z.string().min(1).max(200).nullable(), url, rules_json: text, rule_origins_json: nullable, credential_id: short.nullable(), interval_minutes: z.number().int().min(5).max(1440), wait_ms: z.number().int().min(0).max(10000), wait_for_selector: nullable, enabled: flag, created_at: date, last_fetched_at: date.nullable(), last_success_at: date.nullable(), next_fetch_at: date, last_error: nullable, item_count: z.number().int().nonnegative(), token_ciphertext: z.string().regex(/^[A-Za-z0-9_-]{43}$/), token_hash: z.string().regex(/^[a-f0-9]{64}$/) }).strict().transform(row => ({ ...row, translation_mode: row.translation_mode ?? (row.source_type === 'rss' ? 'bilingual' as const : 'original' as const) }))).max(10000),
   feed_items: z.array(z.object({ id: short, feed_id: short, normalized_key: short, title: text, link: url, description: nullable, image: nullable, published_at: date.nullable(), published_at_source: z.enum(['absolute', 'relative']).nullable().default(null), first_seen_at: date }).strict()).max(2_000_000),
   settings: z.array(z.union([
     z.object({ key: z.literal('feedView'), value: z.enum(['list', 'cards']) }).strict(),
     z.object({ key: z.literal('application'), value: text.refine(isApplicationSettingsJson, '应用设置无效') }).strict(),
   ])).max(2).refine(rows => new Set(rows.map(row => row.key)).size === rows.length, '设置键重复'),
 };
-export const snapshotSchema = z.object({ format: z.literal('feedlantern-backup'), version: z.literal(1), appVersion: short, createdAt: date, security: z.object({ allowedHosts: z.array(z.string()), dnsOverHttps: z.boolean() }), tables: z.object(backupTables).strict() }).strict();
+const currentSnapshotSchema = z.object({ format: z.literal('feedlantern-backup'), version: z.literal(2), appVersion: short, createdAt: date, security: z.object({ allowedHosts: z.array(z.string()), dnsOverHttps: z.boolean() }), tables: z.object(backupTables).strict() }).strict();
+/** Legacy snapshots are normalized before validation; exported snapshots are always v2. */
+export const snapshotSchema = z.preprocess(value => {
+  if (!value || typeof value !== 'object') return value;
+  const snapshot = value as Record<string, any>;
+  if (snapshot.version !== 1 || !Array.isArray(snapshot.tables?.admin)) return value;
+  const { admin, ...tables } = snapshot.tables;
+  if (admin.length !== 1 || admin[0].id !== 1) return value;
+  return { ...snapshot, version: 2, tables: { ...tables,
+    users: admin.map(({ id, ...user }: Record<string, unknown>) => ({ ...user, id: 'admin', role: 'admin', enabled: 1, generation: 0 })),
+    feeds: tables.feeds?.map((row: object) => ({ ...row, owner_id: 'admin' })),
+    credentials: tables.credentials?.map((row: object) => ({ ...row, owner_id: 'admin' })),
+  } };
+}, currentSnapshotSchema).superRefine((snapshot, context) => {
+  const { users, feeds, credentials } = snapshot.tables;
+  const owners = new Set(users.map(u => u.id)), creds = new Map(credentials.map(c => [c.id, c.owner_id]));
+  if (feeds.some(f => !owners.has(f.owner_id) || f.credential_id && creds.get(f.credential_id) !== f.owner_id) || credentials.some(c => !owners.has(c.owner_id))) {
+    context.addIssue({ code: 'custom', message: '备份中的数据归属无效' });
+  }
+});
 export type Snapshot = z.infer<typeof snapshotSchema>;
 export type Tables = Snapshot['tables'];
 export function sealBackup(snapshot: Snapshot, password: string) {

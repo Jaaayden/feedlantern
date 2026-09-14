@@ -65,10 +65,10 @@ export async function googleTranslateBatch(texts: string[], signal: AbortSignal)
 export const googleTranslate: Translator = async (text, signal) => (await googleTranslateBatch([text], signal))[0];
 
 interface TranslationBody { sourceTitle?: string; html: string; title?: string; translatedHtml?: string; bilingualHtml?: string }
-interface Job { item_id: string; feed_id: string; revision: string; attempts: number; body_json: string; title: string; link: string }
+interface Job { owner_id: string; item_id: string; feed_id: string; revision: string; attempts: number; body_json: string; title: string; link: string }
 
 export class RssTranslations {
-  constructor(private db: DatabaseSync) {
+  constructor(private db: DatabaseSync, private userSignal: (id: string) => AbortSignal = () => new AbortController().signal) {
     db.exec(`CREATE TABLE IF NOT EXISTS rss_sources (feed_id TEXT PRIMARY KEY REFERENCES feeds(id) ON DELETE CASCADE, etag TEXT, modified TEXT, seen_json TEXT NOT NULL DEFAULT '[]');
       CREATE TABLE IF NOT EXISTS translations (
         item_id TEXT PRIMARY KEY REFERENCES feed_items(id) ON DELETE CASCADE,
@@ -168,11 +168,12 @@ export class RssTranslations {
   }
   recover(): void { this.db.prepare("UPDATE translations SET status='pending' WHERE status='running'").run(); }
   next(): Job | undefined {
-    return this.db.prepare(`SELECT t.*,i.title,i.link FROM translations t JOIN feeds f ON f.id=t.feed_id JOIN feed_items i ON i.id=t.item_id
-      WHERE f.enabled=1 AND f.translation_mode IN ('chinese','bilingual') AND t.status='pending' AND t.next_at<=? ORDER BY t.next_at,i.first_seen_at DESC LIMIT 1`).get(Date.now()) as unknown as Job | undefined;
+    return this.db.prepare(`SELECT t.*,f.owner_id,i.title,i.link FROM translations t JOIN feeds f ON f.id=t.feed_id JOIN feed_items i ON i.id=t.item_id
+      WHERE f.enabled=1 AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id=f.owner_id AND u.enabled=0) AND f.translation_mode IN ('chinese','bilingual') AND t.status='pending' AND t.next_at<=? ORDER BY t.next_at,i.first_seen_at DESC LIMIT 1`).get(Date.now()) as unknown as Job | undefined;
   }
+  signal(job: Job): AbortSignal { return this.userSignal(job.owner_id); }
   valid(job: Job): boolean {
-    return !!this.db.prepare("SELECT 1 FROM translations t JOIN feeds f ON f.id=t.feed_id WHERE t.item_id=? AND t.revision=? AND f.enabled=1 AND f.translation_mode IN ('chinese','bilingual')").get(job.item_id, job.revision);
+    return !!this.db.prepare("SELECT 1 FROM translations t JOIN feeds f ON f.id=t.feed_id WHERE t.item_id=? AND t.revision=? AND f.enabled=1 AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id=f.owner_id AND u.enabled=0) AND f.translation_mode IN ('chinese','bilingual')").get(job.item_id, job.revision);
   }
   begin(job: Job): void { this.db.prepare("UPDATE translations SET status='running' WHERE item_id=? AND revision=?").run(job.item_id, job.revision); }
   finish(job: Job, body: TranslationBody): void {
@@ -247,6 +248,7 @@ export async function translateBody(html: string, translate: (text: string) => P
 }
 
 interface QueuedTranslation {
+  ownerId: string;
   text: string;
   signal: AbortSignal;
   resolve: (text: string) => void;
@@ -288,14 +290,15 @@ export class TranslationWorker {
       this.active.add(work);
     }
   }
-  private segment(text: string, signal: AbortSignal): Promise<string> {
+  private segment(text: string, signal: AbortSignal, ownerId: string): Promise<string> {
     signal.throwIfAborted();
     const cached = this.store.cached(text); if (cached !== undefined) return Promise.resolve(cached);
-    const active = this.requests.get(text); if (active) return active;
+    const key = `${ownerId}:${text}`;
+    const active = this.requests.get(key); if (active) return active;
     const work = new Promise<string>((resolve, reject) => {
-      this.requestQueue.push({ text, signal, resolve, reject });
-    }).finally(() => this.requests.delete(text));
-    this.requests.set(text, work);
+      this.requestQueue.push({ ownerId, text, signal, resolve, reject });
+    }).finally(() => this.requests.delete(key));
+    this.requests.set(key, work);
     if (!this.requestTimer) this.requestTimer = setTimeout(() => { this.requestTimer = undefined; this.pumpRequests(); }, 10);
     return work;
   }
@@ -314,7 +317,7 @@ export class TranslationWorker {
       const batch = [job];
       let size = job.text.length;
       if (this.translate === googleTranslate) {
-        while (this.requestQueue.length && batch.length < googleBatchLimits.segments && size + this.requestQueue[0].text.length <= googleBatchLimits.characters) {
+        while (this.requestQueue.length && this.requestQueue[0].ownerId === job.ownerId && batch.length < googleBatchLimits.segments && size + this.requestQueue[0].text.length <= googleBatchLimits.characters) {
           const next = this.requestQueue.shift()!;
           if (next.signal.aborted) { next.reject(next.signal.reason); continue; }
           size += next.text.length; batch.push(next);
@@ -343,7 +346,7 @@ export class TranslationWorker {
     }
   }
   private async run(job: Job): Promise<void> {
-    const signal = this.controller.signal;
+    const signal = AbortSignal.any([this.controller.signal, this.store.signal(job)]);
     let completed = 0, submitted = 0, cached = 0;
     try {
       const translate = async (text: string): Promise<string> => {
@@ -353,7 +356,7 @@ export class TranslationWorker {
           signal.throwIfAborted(); if (!this.store.valid(job)) throw Error('stale');
           submitted++;
           if (this.store.cached(part) !== undefined) cached++;
-          const result = await this.segment(part, signal);
+          const result = await this.segment(part, signal, job.owner_id);
           completed++;
           this.store.event(job, `已完成 ${completed} 个片段（已提交 ${submitted}，缓存命中 ${cached}）`);
           return result;

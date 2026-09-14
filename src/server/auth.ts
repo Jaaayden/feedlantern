@@ -62,6 +62,8 @@ export class LoginRateLimiter {
 }
 
 export interface AuthContext {
+  userId: string;
+  role: "admin" | "user";
   sessionId: string;
   username: string;
   expiresAt: number;
@@ -70,7 +72,7 @@ export interface AuthContext {
 export function sessionFromRequest(request: FastifyRequest, store: Store, config: ServerConfig): AuthContext | null {
   const raw = request.cookies?.[config.cookieName] ?? request.cookies?.[SESSION_COOKIE];
   const session = store.findSession(raw, config.sessionTtlMs);
-  return session ? { sessionId: raw!, username: session.username, expiresAt: session.expiresAt } : null;
+  return session ? { userId: session.userId, role: session.role, sessionId: raw!, username: session.username, expiresAt: session.expiresAt } : null;
 }
 
 export function requireAuth(request: FastifyRequest, store: Store, config: ServerConfig): AuthContext {
@@ -108,7 +110,7 @@ export function authState(store: Store, config: ServerConfig, context: AuthConte
   return {
     setupRequired: !store.hasAdmin(),
     authenticated: Boolean(context),
-    ...(context ? { username: context.username, csrfToken } : {}),
+    ...(context ? { userId: context.userId, role: context.role, username: context.username, csrfToken } : {}),
     version: config.version,
   };
 }

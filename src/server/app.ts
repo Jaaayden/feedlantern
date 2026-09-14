@@ -53,14 +53,14 @@ import { renderRss, rssEtag } from './rss.js';
 import { Store, type CredentialValue } from './store.js';
 
 export interface BrowserServiceLike {
-  discover?(options: { url: string; cookies?: Cookie[]; waitMs: number }): Promise<{ title: string; detection: DetectionResult }>;
-  open(options: { url: string; cookies?: Cookie[]; waitMs: number; waitForSelector?: string }): Promise<ScreenFrame> | ScreenFrame;
+  discover?(options: { url: string; signal?: AbortSignal; cookies?: Cookie[]; waitMs: number }): Promise<{ title: string; detection: DetectionResult }>;
+  open(options: { url: string; signal?: AbortSignal; cookies?: Cookie[]; waitMs: number; waitForSelector?: string }): Promise<ScreenFrame> | ScreenFrame;
   snapshot(id: string): Promise<ScreenFrame> | ScreenFrame;
   scroll(id: string, deltaY: number, point?: { x: number; y: number }): Promise<ScreenFrame> | ScreenFrame;
   click(id: string, x: number, y: number): Promise<ScreenFrame> | ScreenFrame;
   pick(id: string, request: PickRequest): Promise<PickResult> | PickResult;
   extract(id: string, rules: SelectionRules): Promise<ExtractedItem[]> | ExtractedItem[];
-  scrape(options: { url: string; cookies?: Cookie[]; waitMs: number; waitForSelector?: string; rules: SelectionRules }): Promise<ExtractedItem[]> | ExtractedItem[];
+  scrape(options: { url: string; signal?: AbortSignal; cookies?: Cookie[]; waitMs: number; waitForSelector?: string; rules: SelectionRules }): Promise<ExtractedItem[]> | ExtractedItem[];
   detect?(id: string): Promise<DetectionResult> | DetectionResult;
   close(id: string): Promise<void> | void;
   closeEditors?(): Promise<void>;
@@ -335,7 +335,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
   const refreshOnce = async (id: string, source: FetchSource): Promise<Feed | null> => {
     const feed = store.getFeed(id);
-    if (!feed) return null;
+    if (!feed || !store.isUserActive(feed.ownerId)) return null;
+    const generation = store.userGeneration(feed.ownerId);
+    const stillActive = () => store.userGeneration(feed.ownerId) === generation;
     const nextFetchAt = new Date(Date.now() + feed.intervalMinutes * 60_000).toISOString();
     const started = performance.now();
     const runId = store.transaction(() => {
@@ -343,9 +345,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       return store.history.start(feed.id, source);
     });
     try {
-      const rss = feed.sourceType === 'rss' ? await getRss(feed.url, store.translations.sourceState(feed.id)) : undefined;
-      const items = rss ? [] : await browser.scrape({ url: feed.url, cookies: credentialsForFeed(feed), waitMs: feed.waitMs, waitForSelector: feed.waitForSelector, rules: feed.rules });
+      const rss = feed.sourceType === 'rss' ? await getRss(feed.url, { ...store.translations.sourceState(feed.id), signal: store.userSignal(feed.ownerId) }) : undefined;
+      const items = rss ? [] : await browser.scrape({ url: feed.url, signal: store.userSignal(feed.ownerId), cookies: credentialsForFeed(feed), waitMs: feed.waitMs, waitForSelector: feed.waitForSelector, rules: feed.rules });
       if (!rss && !items.length) throw new Error('没有抽取到有效条目：可能是页面结构或规则变化，请检查匹配规则、Cookie 或页面渲染');
+      if (!stillActive()) { store.history.interrupt(runId); return null; }
       const result = store.transaction(() => {
         const counts = { itemCount: 0, newItemCount: 0 };
         if (rss) {
@@ -365,6 +368,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       translations.wake();
       return result;
     } catch (error) {
+      if (!stillActive()) { store.history.interrupt(runId); return null; }
       const message = safeDiagnostic(friendlyError(error, '抓取失败，已保留已有条目'));
       store.transaction(() => {
         store.markFetchFailure(feed.id, message, nextFetchAt);
@@ -381,7 +385,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const job = { force: !dueOnly, promise: Promise.resolve<Feed | null>(null) };
     job.promise = enqueueRefresh(() => {
       const current = store.getFeed(id);
-      if (!current) return null;
+      if (!current || !store.isUserActive(current.ownerId)) return null;
       if (job.force || current.enabled && current.nextFetchAt <= new Date().toISOString()) return refreshOnce(id, source);
       return current;
     }, () => refreshKeys(id)).finally(() => refreshInFlight.delete(id));
@@ -407,16 +411,16 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   };
 
-  const jobs = new ImportJobs(store, enqueueRefresh, async entry => {
+  const jobs = new ImportJobs(store, enqueueRefresh, async (entry, signal) => {
     if (!browser.discover) throw new AppError(501, '当前浏览器不支持批量识别');
     const credential = entry.credentialId ? store.getCredentialValue(entry.credentialId) : null;
     if (entry.credentialId && !credential) throw new AppError(400, 'Cookie 凭据不存在');
-    return browser.discover({ url: entry.url, waitMs: 1000, cookies: credential ? cookiesForTarget(credential, entry.url) : [] });
-  }, async input => {
+    return browser.discover({ signal, url: entry.url, waitMs: 1000, cookies: credential ? cookiesForTarget(credential, entry.url) : [] });
+  }, async (input, signal) => {
     const credential = input.credentialId ? store.getCredentialValue(input.credentialId) : null;
     if (input.credentialId && !credential) throw new AppError(400, 'Cookie 凭据不存在');
-    return browser.scrape({ ...input, cookies: credential ? cookiesForTarget(credential, input.url) : [] });
-  }, error => friendlyError(error, '识别失败：请检查网址、网络或 Cookie，然后重试或手动调整。'), config.backgroundConcurrency, entry => getRss(entry.url), () => translations.wake());
+    return browser.scrape({ ...input, signal, cookies: credential ? cookiesForTarget(credential, input.url) : [] });
+  }, error => friendlyError(error, '识别失败：请检查网址、网络或 Cookie，然后重试或手动调整。'), config.backgroundConcurrency, (entry, signal) => getRss(entry.url, { signal }), () => translations.wake());
 
   app.addHook('onRequest', async (request) => {
     if (maintenance) throw new AppError(503, '服务维护中，请稍后重试');
@@ -441,7 +445,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
   app.get('/api/auth/status', async (request): Promise<AuthState> => {
     const session = currentSession(request);
-    const context = session ? { sessionId: request.cookies[config.cookieName]!, username: session.username, expiresAt: session.expiresAt } : null;
+    const context = session;
     const csrf = context ? issueCsrf(store, context) : undefined;
     return authState(store, config, context, csrf);
   });
@@ -463,7 +467,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     try { store.createAdmin(username, password); } catch { throw new AppError(409, '管理员已经完成初始化'); }
     const session = store.createSession(username, config.sessionTtlMs);
     setSessionCookie(reply, currentConfig(), session.id);
-    return authState(store, config, { sessionId: session.id, username, expiresAt: session.expiresAt }, session.csrfToken);
+    return authState(store, config, { ...session, sessionId: session.id }, session.csrfToken);
   });
 
   app.post('/api/auth/login', async (request, reply) => {
@@ -479,7 +483,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     limiter.clear(key);
     const session = store.createSession(username, config.sessionTtlMs);
     setSessionCookie(reply, currentConfig(), session.id);
-    return authState(store, config, { sessionId: session.id, username, expiresAt: session.expiresAt }, session.csrfToken);
+    return authState(store, config, { ...session, sessionId: session.id }, session.csrfToken);
   });
 
   app.post('/api/auth/logout', async (request, reply) => {
@@ -498,23 +502,83 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const newPassword = body.newPassword;
     if (typeof currentPassword !== 'string' || !store.authenticate(context.username, currentPassword)) throw new AppError(400, '当前密码错误');
     if (!validatePassword(newPassword)) throw new AppError(400, '新密码长度必须为 8 到 1024 个字符');
-    store.changePassword(newPassword);
+    store.changePassword(newPassword, context.userId);
     clearSessionCookie(reply, currentConfig());
     return authState(store, config, null);
   });
 
-  const credentialsGuard = (request: FastifyRequest): void => {
+  const browserOwners = new Map<string, { userId: string; touchedAt: number }>();
+  const requireOwned = (request: FastifyRequest, table: 'feeds' | 'credentials' | 'import_jobs', id: string) => {
+    const context = authenticated(request);
+    if (!store.owns(table, id, context.userId)) throw new AppError(404, table === 'feeds' ? '订阅不存在' : table === 'credentials' ? 'Cookie 凭据不存在' : '批量任务不存在');
+    return context;
+  };
+  const resourceGuard = (request: FastifyRequest, table?: 'feeds' | 'credentials' | 'import_jobs') => {
     const context = authenticated(request);
     if (request.method !== 'GET' && request.method !== 'HEAD') requireCsrf(request, store, context);
+    const id = asRecord(request.params).id;
+    if (table && typeof id === 'string') requireOwned(request, table, id);
+    return context;
   };
+  const adminGuard = (request: FastifyRequest) => {
+    const context = resourceGuard(request);
+    if (context.role !== 'admin') throw new AppError(403, '仅管理员可执行此操作');
+    return context;
+  };
+  const checkCredential = (request: FastifyRequest, id: unknown) => {
+    if (id !== undefined && id !== null && id !== '') {
+      if (typeof id !== 'string') throw new AppError(400, 'Cookie 凭据格式无效');
+      requireOwned(request, 'credentials', id);
+    }
+  };
+  const credentialsGuard = (request: FastifyRequest) => resourceGuard(request, 'credentials');
 
-  app.get('/api/credentials', async (request): Promise<CredentialSummary[]> => { credentialsGuard(request); return store.listCredentialSummaries(); });
+  app.get('/api/users', async request => { adminGuard(request); return store.listUsers(); });
+  app.post('/api/users', async request => {
+    adminGuard(request);
+    const { username, password } = asRecord(request.body);
+    if (!validateUsername(username)) throw new AppError(400, '用户名格式无效');
+    if (!validatePassword(password)) throw new AppError(400, '密码长度必须为 8 到 1024 个字符');
+    if (store.listUsers().some(u => u.username === username)) throw new AppError(409, '用户名已存在');
+    return store.createUser(username, password);
+  });
+  app.patch('/api/users/:id', async request => {
+    adminGuard(request);
+    const id = String(asRecord(request.params).id), { enabled } = asRecord(request.body);
+    const user = store.listUsers().find(u => u.id === id);
+    if (!user) throw new AppError(404, '用户不存在');
+    if (user.role === 'admin') throw new AppError(403, '不能停用管理员');
+    if (typeof enabled !== 'boolean') throw new AppError(400, '请指定账号启用状态');
+    if (user.enabled !== enabled) {
+      store.setUserEnabled(id, enabled);
+      if (!enabled) {
+        await Promise.allSettled([...browserOwners].filter(([, owner]) => owner.userId === id).map(async ([sessionId]) => {
+          browserOwners.delete(sessionId); await browser.close(sessionId);
+        }));
+      }
+      jobs.wake(); translations.wake(); bark.wake();
+      if (enabled && options.startScheduler !== false) void refreshDue().catch(() => {});
+    }
+    return store.listUsers().find(u => u.id === id)!;
+  });
+  app.post('/api/users/:id/password', async request => {
+    adminGuard(request);
+    const id = String(asRecord(request.params).id), { password } = asRecord(request.body);
+    const user = store.listUsers().find(u => u.id === id);
+    if (!user) throw new AppError(404, '用户不存在');
+    if (user.role === 'admin') throw new AppError(403, '请使用修改自己的密码功能');
+    if (!validatePassword(password)) throw new AppError(400, '密码长度必须为 8 到 1024 个字符');
+    store.changePassword(password, id);
+    return { ok: true };
+  });
+
+  app.get('/api/credentials', async (request): Promise<CredentialSummary[]> => { credentialsGuard(request); return store.listCredentialSummaries(authenticated(request).userId); });
   app.post('/api/credentials', async (request) => {
     credentialsGuard(request);
     const input = parseCredentialInput(request.body);
     let cookies: Cookie[];
     try { cookies = parseCookies(String(input.value), input.format, input.url); } catch (error) { throw new AppError(400, friendlyError(error, 'Cookie 凭据无法解析')); }
-    return store.createCredential(input, cookieMetadata(cookies, input.url));
+    return store.createCredential(input, cookieMetadata(cookies, input.url), authenticated(request).userId);
   });
   app.put('/api/credentials/:id', async (request) => {
     credentialsGuard(request);
@@ -534,13 +598,18 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return { ok: true };
   });
 
-  const feedsGuard = (request: FastifyRequest): void => {
-    const context = authenticated(request);
-    if (request.method !== 'GET' && request.method !== 'HEAD') requireCsrf(request, store, context);
+  const feedsGuard = (request: FastifyRequest) => {
+    const table = request.routeOptions.url?.startsWith('/api/import-jobs') ? 'import_jobs' : 'feeds';
+    const context = resourceGuard(request, table);
+    const body = asRecord(request.body);
+    checkCredential(request, body.credentialId);
+    checkCredential(request, asRecord(body.input).credentialId);
+    if (Array.isArray(body.entries)) for (const entry of body.entries) checkCredential(request, asRecord(entry).credentialId);
+    return context;
   };
 
   const feedPayload = (feed: Feed): { feed: Feed; feedUrl: string } => ({ feed, feedUrl: feedUrl(currentConfig(), store, feed.id) });
-  app.get('/api/feeds', async (request): Promise<Feed[]> => { feedsGuard(request); return store.listFeeds(); });
+  app.get('/api/feeds', async (request): Promise<Feed[]> => { feedsGuard(request); return store.listFeeds(authenticated(request).userId); });
   const backupGuard = (request: FastifyRequest, allowSetup = false) => {
     const body = asRecord(request.body);
     if (!limiter.allowed(request.ip)) throw new AppError(429, '验证尝试过于频繁');
@@ -551,7 +620,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         limiter.registerFailure(request.ip); throw new AppError(403, '一次性设置码无效');
       }
     } else {
-      feedsGuard(request);
+      adminGuard(request);
       if (!store.authenticate(store.getAdmin()!.username, asNonEmptyString(body.currentPassword, '管理员密码', 1024))) {
         limiter.registerFailure(request.ip); throw new AppError(403, '管理员密码无效');
       }
@@ -591,7 +660,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     backupGuard(request);
     const password = asNonEmptyString(asRecord(request.body).password, '备份密码', 1024);
     if (password.length < 12) throw new AppError(400, '备份密码至少 12 个字符');
-    return sealBackup(snapshotSchema.parse({ format: 'feedlantern-backup', version: 1, appVersion: config.version, createdAt: new Date().toISOString(), security: security(), tables: store.exportTables() }), password);
+    return sealBackup(snapshotSchema.parse({ format: 'feedlantern-backup', version: 2, appVersion: config.version, createdAt: new Date().toISOString(), security: security(), tables: store.exportTables() }), password);
   });
   for (const action of ['preview', 'restore'] as const) app.post(`/api/backups/${action}`, { bodyLimit: 100_000_000 }, async request => {
     backupGuard(request, true);
@@ -610,7 +679,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       if (snapshot.tables.rss_sources.some(s => !ids.has(s.feed_id)) || snapshot.tables.translations.some(t => itemFeeds.get(t.item_id) !== t.feed_id)) throw Error();
       if (snapshot.tables.feed_items.some(i => !ids.has(i.feed_id)) || snapshot.tables.feeds.some(f => f.credential_id && !creds.has(f.credential_id))) throw Error();
     } catch { limiter.registerFailure(request.ip); throw new AppError(400, '备份密码错误、文件损坏或格式不受支持'); }
-    if (action === 'preview') return { appVersion: snapshot.appVersion, createdAt: snapshot.createdAt, feeds: snapshot.tables.feeds.length, items: snapshot.tables.feed_items.length, credentials: snapshot.tables.credentials.length, username: snapshot.tables.admin[0].username, sourceSecurity: snapshot.security, targetSecurity: security(), settings: snapshot.tables.settings.some(row => row.key === 'application') ? settingsPreview(parseSettings(JSON.parse(snapshot.tables.settings.find(row => row.key === 'application')!.value))) : null };
+    if (action === 'preview') return { appVersion: snapshot.appVersion, createdAt: snapshot.createdAt, feeds: snapshot.tables.feeds.length, items: snapshot.tables.feed_items.length, credentials: snapshot.tables.credentials.length, username: snapshot.tables.users.find(u => u.role === 'admin')!.username, sourceSecurity: snapshot.security, targetSecurity: security(), settings: snapshot.tables.settings.some(row => row.key === 'application') ? settingsPreview(parseSettings(JSON.parse(snapshot.tables.settings.find(row => row.key === 'application')!.value))) : null };
     if (body.confirm !== true) throw new AppError(400, '请先预览并确认覆盖恢复');
     maintenance = true; jobs.stop();
     try {
@@ -618,6 +687,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       await bark.stop();
       await translations.stop();
       await browser.closeEditors?.();
+      browserOwners.clear();
       store.restoreTables(snapshot.tables);
       const restoredSettings = store.getSettings();
       const nextConfig = { ...config }; applyRuntimeSettings(nextConfig, restoredSettings);
@@ -630,11 +700,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     } finally { maintenance = false; jobs.recover(); bark.start(); translations.start(); }
   });
   app.get('/api/backups/config', async request => {
-    feedsGuard(request);
-    return { format: 'feedlantern-config', version: 2, settings: store.getSettings(), feeds: store.listFeeds().map(f => ({ sourceType: f.sourceType, translationMode: f.translationMode, name: f.name, channelTitle: f.channelTitle, url: f.url, rules: f.rules, ruleOrigins: f.ruleOrigins, intervalMinutes: f.intervalMinutes, waitMs: f.waitMs, waitForSelector: f.waitForSelector, enabled: f.enabled, requiresCredential: !!f.credentialId })) };
+    adminGuard(request);
+    return { format: 'feedlantern-config', version: 2, settings: store.getSettings(), feeds: store.listFeeds(authenticated(request).userId).map(f => ({ sourceType: f.sourceType, translationMode: f.translationMode, name: f.name, channelTitle: f.channelTitle, url: f.url, rules: f.rules, ruleOrigins: f.ruleOrigins, intervalMinutes: f.intervalMinutes, waitMs: f.waitMs, waitForSelector: f.waitForSelector, enabled: f.enabled, requiresCredential: !!f.credentialId })) };
   });
   app.post('/api/backups/config', { bodyLimit: 10_000_000 }, async request => {
-    feedsGuard(request);
+    adminGuard(request);
     const body = asRecord(request.body), archive = asRecord(body.archive);
     if (archive.format !== 'feedlantern-config' || ![1, 2].includes(Number(archive.version)) || !Array.isArray(archive.feeds) || archive.feeds.length > 10000) throw new AppError(400, '配置格式无效');
     if (archive.version === 2 && archive.settings === undefined) throw new AppError(400, '配置文件缺少应用设置');
@@ -645,18 +715,19 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
     const signature = (f: FeedInput) => JSON.stringify([f.sourceType ?? 'website', f.translationMode ?? 'bilingual', normalizeSource(f.url), ...['item', 'title', 'link', 'description', 'image', 'date'].map(k => f.rules[k as keyof SelectionRules] ?? '')]);
     if (body.confirm !== true) {
-      const seen = new Set(store.listFeeds().map(signature));
+      const seen = new Set(store.listFeeds(authenticated(request).userId).map(signature));
       return { settings: importedSettings ? settingsPreview(importedSettings) : null, entries: entries.map(e => { const duplicate = seen.has(signature(e.input)); seen.add(signature(e.input)); return { name: e.input.name, url: e.input.url, duplicate, needsCookie: e.needsCookie }; }) };
     }
     return enqueueRefresh(async () => {
+      adminGuard(request);
       let result = { created: 0, skipped: 0 };
       const write = () => store.transaction(() => {
-      const seen = new Set(store.listFeeds().map(signature));
+      const seen = new Set(store.listFeeds(authenticated(request).userId).map(signature));
       let created = 0, skipped = 0;
       for (const entry of entries) {
         const key = signature(entry.input);
         if (seen.has(key)) { skipped++; continue; }
-        const { feed } = store.createFeed(entry.input);
+        const { feed } = store.createFeed(entry.input, authenticated(request).userId);
         if (entry.title) store.setChannelTitle(feed.id, entry.title);
         if (!entry.enabled || entry.needsCookie) store.toggleFeed(feed.id);
         if (entry.needsCookie) store.markFetchFailure(feed.id, '请绑定 Cookie 凭据后恢复订阅', feed.nextFetchAt);
@@ -669,7 +740,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       return result;
     });
   });
-  app.get('/api/import-jobs', async request => { feedsGuard(request); return store.listImportJobs(); });
+  app.get('/api/import-jobs', async request => { feedsGuard(request); return store.listImportJobs(authenticated(request).userId); });
   app.post('/api/import-jobs', async request => {
     feedsGuard(request);
     const body = asRecord(request.body);
@@ -690,14 +761,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       }
       return { url, credentialId, sourceType, translationMode, intervalMinutes: asInteger(body.intervalMinutes, '刷新间隔', 5, 1440, 60) };
     });
-    return jobs.create(entries);
+    return jobs.create(entries, authenticated(request).userId);
   });
   app.post('/api/import-jobs/:id/:action', async request => {
     feedsGuard(request);
     const { id, action } = request.params as { id: string; action: string };
     const body = asRecord(request.body);
     if (action === 'confirm') {
-      const feed = await jobs.confirm(id, asNonEmptyString(body.entryId, 'entryId', 200), parseFeedInput(body.input));
+      const feed = await jobs.confirm(id, asNonEmptyString(body.entryId, 'entryId', 200), parseFeedInput(body.input), () => feedsGuard(request));
       if (!feed) throw new AppError(404, '订阅已删除');
       return feedPayload(feed);
     }
@@ -705,7 +776,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return jobs.update(id, action, asOptionalString(body.entryId, 'entryId', 200));
   });
   app.post('/api/settings/bark/test', async request => {
-    feedsGuard(request);
+    adminGuard(request);
     const input = asRecord(request.body);
     const settings = parseSettings({ ...store.getSettings(), bark: { ...store.getSettings().bark, ...input, enabled: false } });
     if (!settings.bark.url) throw new AppError(400, '请先填写 Bark 推送地址');
@@ -714,14 +785,15 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       return { ok: true };
     } catch { throw new AppError(502, '测试通知发送失败，请检查 Bark 地址和网络'); }
   });
-  app.get('/api/settings', async request => { feedsGuard(request); return store.getSettings(); });
+  app.get('/api/settings', async request => { adminGuard(request); return store.getSettings(); });
   app.put('/api/settings', async request => {
-    feedsGuard(request);
+    adminGuard(request);
     const body = asRecord(request.body);
     if (!Object.keys(body).length || body.bark !== undefined && (typeof body.bark !== 'object' || body.bark === null || Array.isArray(body.bark))
       || body.translation !== undefined && (typeof body.translation !== 'object' || body.translation === null || Array.isArray(body.translation))
       || body.server !== undefined && (typeof body.server !== 'object' || body.server === null || Array.isArray(body.server))) throw new AppError(400, '设置格式无效');
     return enqueueRefresh(async () => {
+      adminGuard(request);
       const previous = store.getSettings();
       const next = parseSettings({ ...previous, ...body, translation: { ...previous.translation, ...asRecord(body.translation) }, bark: { ...previous.bark, ...asRecord(body.bark) }, server: { ...previous.server, ...asRecord(body.server) } });
       await applySettings(next);
@@ -748,6 +820,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     feedsGuard(request);
     const input = parseFeedSettings(asRecord(request.body));
     return enqueueRefresh(() => {
+      feedsGuard(request);
       const feed = store.updateFeedSettings(String((request.params as { id: string }).id), input);
       if (!feed) throw new AppError(404, 'Feed 不存在');
       translations.wake();
@@ -766,6 +839,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (action === 'refresh') {
       const results = await Promise.all([...new Set(body.ids as string[])].map(async id => {
         try {
+          requireOwned(request, 'feeds', id);
           const feed = await doRefresh(id);
           if (!feed) return { id, ok: false, error: '订阅不存在' };
           return feed.lastError ? { id, ok: false, error: feed.lastError } : { id, ok: true };
@@ -777,6 +851,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     for (const id of new Set(body.ids as string[])) {
       try {
         const result = await enqueueRefresh(async () => {
+          requireOwned(request, 'feeds', id);
           const feed = store.getFeed(id);
           if (!feed) throw new AppError(404, '订阅不存在');
           if (action === 'copy') return { id, ok: true, feedUrl: feedUrl(currentConfig(), store, id) };
@@ -797,6 +872,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     feedsGuard(request);
     const url = parseHttpUrl(asRecord(request.body).url, 'RSS 地址');
     return enqueueRefresh(async () => {
+      feedsGuard(request);
       try { const result = await getRss(url); return { title: result.title, items: result.items.slice(0, 3).map(item => ({ title: item.title, link: item.link, contentHtml: item.html })) }; }
       catch (error) { throw new AppError(400, safeDiagnostic(friendlyError(error, 'RSS 获取失败'))); }
     }, [siteKey(url)]);
@@ -819,7 +895,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     feedsGuard(request);
     const input = parseFeedInput(request.body);
     if (input.credentialId && !store.getCredentialSummary(input.credentialId)) throw new AppError(400, 'Cookie 凭据不存在');
-    const created = store.createFeed(input);
+    const created = store.createFeed(input, authenticated(request).userId);
     if (input.sourceType === 'rss') {
       void doRefresh(created.feed.id, false, 'create').catch(() => {});
       return feedPayload(created.feed);
@@ -855,6 +931,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const input = parseFeedInput(request.body);
     if (input.credentialId && !store.getCredentialSummary(input.credentialId)) throw new AppError(400, 'Cookie 凭据不存在');
     return enqueueRefresh(async () => {
+      feedsGuard(request);
       const updated = store.updateFeed(id, input);
       if (!updated) throw new AppError(404, 'Feed 不存在');
       const refreshed = await refreshOnce(id, 'edit');
@@ -870,6 +947,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   app.post('/api/feeds/:id/toggle', async (request) => {
     feedsGuard(request);
     return enqueueRefresh(async () => {
+      feedsGuard(request);
       const toggled = store.toggleFeed(String((request.params as { id: string }).id));
       if (!toggled) throw new AppError(404, 'Feed 不存在');
       const refreshed = toggled.enabled ? await refreshOnce(toggled.id, 'resume') : toggled;
@@ -885,15 +963,20 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   app.delete('/api/feeds/:id', async (request) => {
     feedsGuard(request);
     return enqueueRefresh(() => {
+      feedsGuard(request);
       if (!store.deleteFeed(String((request.params as { id: string }).id))) throw new AppError(404, 'Feed 不存在');
       bark.wake();
       return { ok: true };
     });
   });
 
-  const browserGuard = (request: FastifyRequest): void => {
-    const context = authenticated(request);
-    if (request.method !== 'GET' && request.method !== 'HEAD') requireCsrf(request, store, context);
+  const browserGuard = (request: FastifyRequest) => {
+    const context = resourceGuard(request);
+    const id = asRecord(request.params).id;
+    if (typeof id === 'string' && browserOwners.get(id)?.userId !== context.userId) throw new AppError(404, '浏览器会话不存在');
+    if (typeof id === 'string') browserOwners.set(id, { userId: context.userId, touchedAt: Date.now() });
+    checkCredential(request, asRecord(request.body).credentialId);
+    return context;
   };
   app.post('/api/browser', async (request) => {
     browserGuard(request);
@@ -908,7 +991,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       if (!credential || typeof credential.value !== 'string') throw new AppError(400, 'Cookie 凭据不存在或无效');
       cookies = cookiesForTarget(credential, url);
     }
-    try { return await browser.open({ url, cookies, waitMs, waitForSelector }); } catch (error) { throw frameError(error); }
+    try {
+      const userId = authenticated(request).userId, generation = store.userGeneration(userId);
+      const frame = await browser.open({ url, cookies, waitMs, waitForSelector, signal: store.userSignal(userId) });
+      if (generation !== store.userGeneration(userId)) { await browser.close(frame.sessionId); throw new AppError(401, '账号已停用，请重新登录'); }
+      browserOwners.set(frame.sessionId, { userId, touchedAt: Date.now() });
+      return frame;
+    } catch (error) { if (error instanceof AppError) throw error; throw frameError(error); }
   });
   app.get('/api/browser/:id', async (request) => {
     browserGuard(request);
@@ -958,7 +1047,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
   app.delete('/api/browser/:id', async (request) => {
     browserGuard(request);
-    try { await browser.close(String((request.params as { id: string }).id)); } catch (error) { throw frameError(error); }
+    try { const id = String((request.params as { id: string }).id); await browser.close(id); browserOwners.delete(id); } catch (error) { throw frameError(error); }
     return { ok: true };
   });
 
@@ -987,6 +1076,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
 
   const cleanup = setInterval(() => {
+    for (const [id, owner] of browserOwners) if (Date.now() - owner.touchedAt > 10 * 60_000) browserOwners.delete(id);
     try { store.history.prune(); store.translations.prune(); } catch { console.error('抓取日志清理失败，将自动重试'); }
   }, 60 * 60_000);
   cleanup.unref();

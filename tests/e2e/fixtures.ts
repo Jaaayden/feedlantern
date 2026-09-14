@@ -26,7 +26,8 @@ export const test = base.extend<{ remoteEditors: void }>({
         const response = await page.request.delete(`/api/browser/${encodeURIComponent(id)}`, {
           headers: { 'X-FeedLantern': '1', 'X-CSRF-Token': csrf },
         });
-        expect(response.ok(), `释放编辑会话 ${id}: ${response.status()}`).toBeTruthy();
+        // A session already closed by the UI no longer has an ownership record.
+        expect(response.ok() || response.status() === 404, `释放编辑会话 ${id}: ${response.status()}`).toBeTruthy();
       }
     }
   }, { auto: true }],

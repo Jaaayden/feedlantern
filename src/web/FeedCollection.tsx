@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
-import { translationEnabled, type BulkFeedSettingsInput, type Feed } from '../shared/types';
+import { translationEnabled, type AuthState, type BulkFeedSettingsInput, type Feed } from '../shared/types';
 import { api } from './api';
 
-export function FeedCollection({ feeds, query, detail, settings, changed, notify }: {
-  feeds: Feed[]; query: string; detail: (id: string) => void; settings: (id: string) => void;
+export function FeedCollection({ auth, feeds, query, detail, settings, changed, notify }: {
+  auth: AuthState; feeds: Feed[]; query: string; detail: (id: string) => void; settings: (id: string) => void;
   changed: () => void; notify: (text: string) => void;
 }) {
   const [sourceFilter, setSourceFilter] = useState('all');
@@ -17,11 +17,11 @@ export function FeedCollection({ feeds, query, detail, settings, changed, notify
   const [interval, setInterval] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  useEffect(() => { void api.settings.get().then(s => setView(s.feedView)).catch(e => setError(e.message)); }, []);
+  useEffect(() => { if (auth.role === 'admin') { void api.settings.get().then(s => setView(s.feedView)).catch(e => setError(e.message)); } else { try { setView(localStorage.getItem(`feedlantern:view:${auth.userId}`) === 'cards' ? 'cards' : 'list'); } catch {} } }, [auth.userId, auth.role]);
   useEffect(() => { setSelected([]); setEditing(false); }, [query, sourceFilter, outputFilter, statusFilter]);
   useEffect(() => setSelected(previous => previous.filter(id => feeds.some(f => f.id === id))), [feeds]);
   async function changeView(next: 'list' | 'cards') {
-    try { await api.settings.update(next); setView(next); } catch (e) { setError(String(e)); }
+    try { if (auth.role === 'admin') await api.settings.update(next); else localStorage.setItem(`feedlantern:view:${auth.userId}`, next); setView(next); } catch (e) { setError(String(e)); }
   }
   async function operate(action: string, ids = selected, patch?: BulkFeedSettingsInput) {
     if (action === 'delete' && !confirm(`删除选中的 ${ids.length} 个订阅及其历史条目？`)) return;

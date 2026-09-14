@@ -27,6 +27,7 @@ export interface FeedSettingsInput {
 }
 export type BulkFeedSettingsInput = Pick<FeedSettingsInput, 'translationMode' | 'intervalMinutes'>;
 export interface Feed extends FeedInput {
+  ownerId?: string;
   id: string;
   channelTitle?: string;
   enabled: boolean;
@@ -98,7 +99,7 @@ export interface DetectionCandidate {
   warnings: string[];
 }
 export interface DetectionResult { candidates: DetectionCandidate[]; recommendedId: string | null; warnings: string[] }
-export interface AuthState { setupRequired: boolean; authenticated: boolean; username?: string; csrfToken?: string; version: string }
+export interface AuthState { userId?: string; role?: "admin" | "user"; setupRequired: boolean; authenticated: boolean; username?: string; csrfToken?: string; version: string }
 
 // JSON API: errors always { error: string }; all mutations require X-FeedLantern: 1.
 // GET /api/auth/status -> AuthState; POST /api/auth/setup {setupToken,username,password}
@@ -107,7 +108,7 @@ export interface AuthState { setupRequired: boolean; authenticated: boolean; use
 // GET /api/credentials -> CredentialSummary[]; POST -> {name,url,format:'header'|'json',value} -> CredentialSummary
 // PUT /api/credentials/:id same; DELETE /api/credentials/:id (409 if referenced)
 // GET /api/feeds -> Feed[]; POST /api/feeds FeedInput -> {feed,feedUrl}
-// GET /api/feeds/:id/logs?status=&cursor=&limit= -> FetchLogPage (admin only, default 20, max 100)
+// GET /api/feeds/:id/logs?status=&cursor=&limit= -> FetchLogPage (owner only, default 20, max 100)
 // GET /api/feeds/:id -> {feed,items:FeedItem[],feedUrl}; PUT FeedInput -> {feed,feedUrl}
 // POST /api/feeds/:id/refresh {}; POST /api/feeds/:id/toggle {}; POST /api/feeds/:id/rotate-token {}
 // DELETE /api/feeds/:id; GET /feeds/:id/:token.xml -> RSS 2.0 (token grants read-only access)
@@ -124,8 +125,10 @@ export interface ImportEntry {
   state: 'queued' | 'running' | 'created' | 'existing' | 'review' | 'failed' | 'canceled';
   feedId?: string; error?: string; title?: string; detection?: DetectionResult;
 }
-export interface ImportJob { id: string; createdAt: string; entries: ImportEntry[] }
+export interface ImportJob { ownerId?: string; id: string; createdAt: string; entries: ImportEntry[] }
 
 export function translationEnabled(feed: Pick<FeedInput, 'sourceType' | 'translationMode'>): boolean {
   return feed.translationMode === 'chinese' || feed.translationMode === 'bilingual' || feed.sourceType === 'rss' && feed.translationMode !== 'original';
 }
+
+export interface UserSummary { id: string; username: string; role: "admin" | "user"; enabled: boolean; createdAt: string; updatedAt: string }

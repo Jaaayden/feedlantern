@@ -1,5 +1,6 @@
 import type { TranslationProgressData } from './TranslationProgress';
 import type {
+  UserSummary,
   AuthState,
   ApplicationSettings,
   ImportJob,
@@ -29,9 +30,11 @@ export class ApiError extends Error {
 }
 
 let csrfToken: string | undefined;
+let sessionGeneration = 0;
 let unauthorizedHandler: (() => void) | undefined;
 
 export function setCsrfToken(token?: string) {
+  if (csrfToken !== token) sessionGeneration++;
   csrfToken = token;
 }
 
@@ -45,6 +48,7 @@ export function onUnauthorized(handler: () => void) {
 type RequestOptions = Omit<RequestInit, 'body'> & { body?: unknown };
 
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const generation = sessionGeneration;
   const headers = new Headers(options.headers);
   headers.set('X-FeedLantern', '1');
   if (csrfToken) headers.set('X-CSRF-Token', csrfToken);
@@ -64,6 +68,8 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     payload = await response.text().catch(() => null);
   }
 
+  // A response from the previous login must neither expose its data nor log out the new account.
+  if (generation !== sessionGeneration) throw new ApiError('登录状态已变化，请重试', 0);
   if (!response.ok) {
     if (response.status === 401) unauthorizedHandler?.();
     const message =
@@ -87,6 +93,12 @@ export const api = {
     create: (entries: Array<{ url: string; credentialId: string | null }>, intervalMinutes: number, sourceType: 'website' | 'rss' = 'website', translationMode: 'chinese' | 'bilingual' = 'bilingual') => request<ImportJob>('/api/import-jobs', { method: 'POST', body: { entries, intervalMinutes, sourceType, translationMode } }),
     action: (id: string, action: 'retry' | 'cancel', entryId?: string) => request<ImportJob>(`/api/import-jobs/${id}/${action}`, { method: 'POST', body: { entryId } }),
     confirm: (id: string, entryId: string, input: FeedInput) => request<{ feed: Feed; feedUrl: string }>(`/api/import-jobs/${id}/confirm`, { method: 'POST', body: { entryId, input } }),
+  },
+  users: {
+    list: () => request<UserSummary[]>('/api/users'),
+    create: (username: string, password: string) => request<UserSummary>('/api/users', { method: 'POST', body: { username, password } }),
+    enabled: (id: string, enabled: boolean) => request<UserSummary>(`/api/users/${encodeURIComponent(id)}`, { method: 'PATCH', body: { enabled } }),
+    password: (id: string, password: string) => request<{ ok: boolean }>(`/api/users/${encodeURIComponent(id)}/password`, { method: 'POST', body: { password } }),
   },
   settings: {
     testBark: (body: ApplicationSettings['bark']) => request<{ ok: boolean }>('/api/settings/bark/test', { method: 'POST', body }),
