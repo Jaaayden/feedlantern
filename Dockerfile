@@ -11,4 +11,7 @@ RUN pnpm build && pnpm prune --prod && mkdir -p /app/data && chown node:node /ap
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=4321 DATA_DIR=/app/data
 USER node
 EXPOSE 4321
-CMD ["pnpm", "start"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD ["node", "-e", "fetch('http://127.0.0.1:4321/api/auth/status').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+# Run node directly (no pnpm/tsx wrapper processes) so SIGTERM reaches the app.
+CMD ["node", "--import", "tsx", "src/server/index.ts"]

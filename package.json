@@ -12,8 +12,8 @@
   "scripts": {
     "dev": "concurrently -k 'tsx watch --env-file-if-exists=.env scripts/dev-server.ts' 'vite --host 127.0.0.1'",
     "build": "tsc --noEmit && vite build",
-    "start": "tsx --env-file-if-exists=.env src/server/index.ts",
-    "admin:reset": "tsx --env-file-if-exists=.env src/server/reset-password.ts",
+    "start": "node --import tsx --env-file-if-exists=.env src/server/index.ts",
+    "admin:reset": "node --import tsx --env-file-if-exists=.env src/server/reset-password.ts",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/*.test.ts",
     "test:e2e": "playwright test",
