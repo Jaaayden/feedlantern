@@ -528,6 +528,11 @@ export class Store {
     if (id) this.db.prepare('DELETE FROM sessions WHERE id_hash = ?').run(hashToken(id));
   }
 
+  /** Expired sessions are otherwise only removed when their cookie is presented again. */
+  purgeExpiredSessions(now = Date.now()): number {
+    return Number(this.db.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(now).changes);
+  }
+
   destroyAllSessions(): void {
     this.db.prepare('DELETE FROM sessions').run();
   }
@@ -535,7 +540,7 @@ export class Store {
   createCredential(input: CredentialValue, metadata: { domains: string[]; count: number; expiresAt: string | null }, ownerId = 'admin'): CredentialSummary {
     const id = randomId('cred');
     const updatedAt = nowIso();
-    this.db.prepare('INSERT INTO credentials(id, name, url, format, encrypted_value, domains_json, cookie_count, updated_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+    this.db.prepare('INSERT INTO credentials(id, name, url, format, encrypted_value, domains_json, cookie_count, updated_at, expires_at, owner_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
       id,
       input.name,
       input.url,
@@ -545,8 +550,8 @@ export class Store {
       metadata.count,
       updatedAt,
       metadata.expiresAt,
+      ownerId,
     );
-    this.db.prepare('UPDATE credentials SET owner_id=? WHERE id=?').run(ownerId,id);
     return { id, name: input.name, url: input.url, format: input.format, domains: metadata.domains, count: metadata.count, updatedAt, expiresAt: metadata.expiresAt };
   }
 
@@ -625,11 +630,10 @@ export class Store {
     this.db.prepare(`INSERT INTO feeds(
       id, name, url, rules_json, rule_origins_json, credential_id, interval_minutes, wait_ms,
       wait_for_selector, enabled, created_at, last_fetched_at, last_success_at, next_fetch_at,
-      last_error, item_count, token_ciphertext, token_hash
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL, NULL, ?, NULL, 0, ?, ?)`)
-      .run(id, input.name, input.url, JSON.stringify(input.rules), input.ruleOrigins ? JSON.stringify(input.ruleOrigins) : null, input.credentialId, input.intervalMinutes, input.waitMs, input.waitForSelector ?? null, timestamp, nextFetchAt, encrypt(this.masterKey, token), hashToken(token));
-    this.db.prepare("UPDATE feeds SET channel_title = ?, source_type=?, translation_mode=? WHERE id = ?").run(input.name, input.sourceType ?? 'website', input.translationMode ?? (input.sourceType === 'rss' ? 'bilingual' : 'original'), id);
-    this.db.prepare('UPDATE feeds SET owner_id=? WHERE id=?').run(ownerId,id);
+      last_error, item_count, token_ciphertext, token_hash, channel_title, source_type, translation_mode, owner_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL, NULL, ?, NULL, 0, ?, ?, ?, ?, ?, ?)`)
+      .run(id, input.name, input.url, JSON.stringify(input.rules), input.ruleOrigins ? JSON.stringify(input.ruleOrigins) : null, input.credentialId, input.intervalMinutes, input.waitMs, input.waitForSelector ?? null, timestamp, nextFetchAt, encrypt(this.masterKey, token), hashToken(token),
+        input.name, input.sourceType ?? 'website', input.translationMode ?? (input.sourceType === 'rss' ? 'bilingual' : 'original'), ownerId);
     return { feed: this.getFeed(id)!, token };
   }
 
