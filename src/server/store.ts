@@ -40,6 +40,8 @@ export interface StoredFeedToken {
   tokenHash: string;
 }
 
+const SESSION_TOUCH_INTERVAL_MS = 60_000;
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -359,7 +361,17 @@ export class Store {
     return row ? { id: String(row.id), username: String(row.username), passwordHash: String(row.password_hash) } : null;
   }
 
-  getUser(id: string): UserSummary | undefined { return this.listUsers().find(user => user.id === id); }
+  getUser(id: string): UserSummary | undefined {
+    const row = this.db.prepare('SELECT * FROM users WHERE id=?').get(id);
+    return row ? Store.userFromRow(row) : undefined;
+  }
+
+  private static userFromRow(row: Record<string, unknown>): UserSummary {
+    return {
+      id: String(row.id), username: String(row.username), role: row.role as UserSummary['role'], enabled: !!row.enabled,
+      createdAt: String(row.created_at), updatedAt: String(row.updated_at),
+    };
+  }
 
   updateUser(actorId: string, id: string, patch: Partial<Pick<UserSummary, 'username' | 'enabled' | 'role'>>): UserSummary {
     return this.transaction(() => {
@@ -415,10 +427,7 @@ export class Store {
   }
 
   listUsers(): UserSummary[] {
-    return this.db.prepare('SELECT * FROM users ORDER BY created_at,id').all().map(row => ({
-      id: String(row.id), username: String(row.username), role: row.role as UserSummary['role'], enabled: !!row.enabled,
-      createdAt: String(row.created_at), updatedAt: String(row.updated_at),
-    }));
+    return this.db.prepare('SELECT * FROM users ORDER BY created_at,id').all().map(row => Store.userFromRow(row));
   }
 
   createUser(username: string, password: string): UserSummary {
@@ -498,7 +507,10 @@ export class Store {
       this.db.prepare('DELETE FROM sessions WHERE id_hash = ?').run(idHash);
       return null;
     }
-    this.db.prepare('UPDATE sessions SET last_seen_at = ? WHERE id_hash = ?').run(Date.now(), idHash);
+    // A single API request validates the session several times; only touch
+    // the row when the recorded activity is stale, to avoid a write per check.
+    const seenAt = Date.now();
+    if (seenAt - Number(row.last_seen_at) >= SESSION_TOUCH_INTERVAL_MS) this.db.prepare('UPDATE sessions SET last_seen_at = ? WHERE id_hash = ?').run(seenAt, idHash);
     // The raw CSRF token is deliberately not retained. The app checks a
     // supplied token against the stored digest using checkCsrf().
     return { id, csrfToken: '', username: String(row.username), expiresAt, userId: String(row.user_id), role: row.role as UserSummary['role'] };

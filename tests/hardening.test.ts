@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import { createApp, Store, type BrowserServiceLike } from '../src/server/app.js';
 
@@ -58,6 +59,31 @@ test('网页界面禁止被其他站点嵌入，RSS 输出不受影响', async (
     assert.equal(feed.headers['x-frame-options'], undefined);
   } finally {
     await app.close();
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test('会话校验在 60 秒内不重复写入 last_seen_at；getUser 按 ID 直接查询', () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'feedlantern-touch-'));
+  const store = new Store(dataDir);
+  const reader = new DatabaseSync(join(dataDir, 'app.db'));
+  try {
+    store.createAdmin('admin', 'password123');
+    const user = store.createUser('reader', 'password123');
+    assert.equal(store.getUser(user.id)?.username, 'reader');
+    assert.equal(store.getUser('missing'), undefined);
+    const session = store.createSession('admin', 60_000);
+    const lastSeen = () => Number((reader.prepare('SELECT last_seen_at FROM sessions').get() as { last_seen_at: number }).last_seen_at);
+    const initial = lastSeen();
+    for (let i = 0; i < 3; i++) assert.ok(store.findSession(session.id, 60_000));
+    assert.equal(lastSeen(), initial);
+    // An old activity timestamp is refreshed.
+    reader.prepare('UPDATE sessions SET last_seen_at = ?').run(initial - 120_000);
+    assert.ok(store.findSession(session.id, 60_000));
+    assert.ok(lastSeen() >= initial);
+  } finally {
+    reader.close();
+    store.close();
     rmSync(dataDir, { recursive: true, force: true });
   }
 });
