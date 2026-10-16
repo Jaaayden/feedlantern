@@ -44,4 +44,4 @@ docker compose up -d --wait feedlantern
 
 本地开发使用 Node.js 24 和 pnpm，见[开发文档](doc/development.md)。变更记录见 [CHANGELOG](CHANGELOG.md)。
 
-MIT 开源；不包含收费或多用户体系。服务主机需要持续运行。普通 DOM 列表以外的兼容范围见使用指南。
+MIT 开源；不包含收费功能。服务主机需要持续运行。普通 DOM 列表以外的兼容范围见使用指南。
