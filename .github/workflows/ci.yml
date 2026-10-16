@@ -40,7 +40,7 @@ jobs:
         run: pnpm test:e2e
       - name: Preserve browser test diagnostics
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: browser-test-diagnostics
           path: |
@@ -82,7 +82,7 @@ jobs:
       - name: Save verified image
         if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
         run: docker save feedlantern:test | gzip > image-${{ matrix.arch }}.tar.gz
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
         with:
           name: image-${{ matrix.arch }}
