@@ -182,6 +182,8 @@ export class Store {
     this.setupTokenPath = join(this.dataDir, 'setup-token');
     this.masterKey = this.loadMasterKey();
     this.db = new DatabaseSync(this.dbPath);
+    // Returning free pages to the OS needs auto_vacuum, which can only be chosen before the first table exists.
+    if (Number((this.db.prepare('SELECT COUNT(*) AS c FROM sqlite_master').get() as { c: number }).c) === 0) this.db.exec('PRAGMA auto_vacuum = INCREMENTAL');
     chmodSync(this.dbPath, 0o600);
     this.db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
     this.db.exec(`
@@ -538,6 +540,11 @@ export class Store {
 
   destroySession(id: string | undefined): void {
     if (id) this.db.prepare('DELETE FROM sessions WHERE id_hash = ?').run(hashToken(id));
+  }
+
+  /** Hand freed pages back to the OS in small steps (no-op unless the database uses incremental auto_vacuum). */
+  compact(pages = 5000): void {
+    if (Number((this.db.prepare('PRAGMA auto_vacuum').get() as { auto_vacuum: number }).auto_vacuum) === 2) this.db.exec(`PRAGMA incremental_vacuum(${Math.max(1, Math.floor(pages))})`);
   }
 
   /** Expired sessions are otherwise only removed when their cookie is presented again. */

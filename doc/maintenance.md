@@ -66,6 +66,29 @@ docker compose start
 
 `docker compose down` 保留命名卷；不要使用 `down -v` 或清理该卷。镜像版本可固定为具体版本，需更严格锁定时按 Release 镜像摘要使用 `image@sha256:…`。
 
+## 数据库体积
+
+数据库不会无限增长，各类数据都有上限：
+
+| 数据 | 上限 |
+| --- | --- |
+| 每个订阅的文章 | 200 条 |
+| 翻译进度事件 | 每个订阅最新 200 条（界面只显示最近 100 条） |
+| 翻译缓存 | 20000 条 |
+| 抓取日志 | 按「设置 → 日志保留天数」，默认 30 天 |
+| 登录会话 | 过期后每小时清理 |
+
+新建的数据库会启用增量回收，清理掉的空间每小时逐步还给磁盘。旧版本创建的数据库文件不会自动变小：清理后空间留在文件里重复使用，所以体积不会再涨，但也不会降。想让它立即缩小，在停机状态下运行一次压缩脚本（需要的磁盘空间不小于当前数据库大小，脚本会先检查，不够就中止且不改动数据）：
+
+```sh
+docker compose stop feedlantern
+docker compose run --rm --no-deps feedlantern node --import tsx scripts/compact-db.ts --dry-run   # 只查看，不修改
+docker compose run --rm --no-deps feedlantern node --import tsx scripts/compact-db.ts
+docker compose up -d --wait feedlantern
+```
+
+脚本会把翻译事件裁剪到上限、启用增量回收并整理文件，最后输出完整性检查结果。运行前建议先备份，运行期间服务不可用。
+
 ## 多用户升级注意事项
 
 升级会事务迁移用户及资源归属，保留原管理员密码和所有 RSS 地址，并要求原管理员重新登录。请先保存升级前的完整数据卷；回退程序时同时回退数据卷。管理员登录后从“用户管理”创建、改名、停用、重置密码、调整角色或永久删除用户，`pnpm admin:reset` 在多个管理员存在时先要求输入目标管理员用户名，仅修改选定账号的密码并撤销其会话。详见[备份与迁移](backup-and-migration.md)。
