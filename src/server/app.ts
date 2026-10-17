@@ -1020,7 +1020,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
   const cleanup = setInterval(() => {
     for (const [id, owner] of browserOwners) if (Date.now() - owner.touchedAt > 10 * 60_000) browserOwners.delete(id);
-    try { store.purgeExpiredSessions(); store.history.prune(); store.translations.prune(); } catch { console.error('抓取日志清理失败，将自动重试'); }
+    try { store.purgeExpiredSessions(); store.history.prune(); store.translations.prune(); store.compact(); } catch { console.error('抓取日志清理失败，将自动重试'); }
   }, 60 * 60_000);
   cleanup.unref();
   app.addHook('onReady', async () => { jobs.recover(); bark.start(); translations.start(); });

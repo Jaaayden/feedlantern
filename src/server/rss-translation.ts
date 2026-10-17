@@ -7,6 +7,8 @@ import serialize from 'dom-serializer';
 import { digest, safeHtml, type SourceItem, type SourceResult } from './rss-source.js';
 import { escapeXml, sanitizeDescription } from './rss.js';
 import { TRANSLATION_CACHE_LIMIT } from './backups.js';
+
+export const TRANSLATION_EVENTS_PER_FEED = 200;
 import type { ApplicationSettings, Feed, FeedItem } from '../shared/types.js';
 
 export type Translator = (text: string, signal: AbortSignal) => Promise<string>;
@@ -201,7 +203,12 @@ export class RssTranslations {
   cache(text: string, translated: string): void {
     this.db.prepare('INSERT INTO translation_cache(key,text,touched_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET text=excluded.text,touched_at=excluded.touched_at').run(digest(`google-browser:v2:zh-CN:${text}`), translated, Date.now());
   }
-  prune(): void { this.db.prepare('DELETE FROM translation_events WHERE at<?').run(Date.now() - 7 * 86400_000);  this.db.prepare('DELETE FROM translation_cache WHERE key NOT IN (SELECT key FROM translation_cache ORDER BY touched_at DESC LIMIT ?)').run(TRANSLATION_CACHE_LIMIT); }
+  /** The UI shows the latest 100 events per feed; this bounds the table however fast events arrive. */
+  prune(): void {
+    this.db.prepare('DELETE FROM translation_events WHERE at<?').run(Date.now() - 7 * 86400_000);
+    this.db.prepare('DELETE FROM translation_events WHERE id IN (SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY feed_id ORDER BY id DESC) AS n FROM translation_events) WHERE n > ?)').run(TRANSLATION_EVENTS_PER_FEED);
+    this.db.prepare('DELETE FROM translation_cache WHERE key NOT IN (SELECT key FROM translation_cache ORDER BY touched_at DESC LIMIT ?)').run(TRANSLATION_CACHE_LIMIT);
+  }
 }
 
 const blocks = new Set(['p', 'div', 'li', 'blockquote', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'td', 'th', 'figcaption']);
