@@ -1,7 +1,7 @@
 import type { UserSummary } from '../shared/types.js';
 import { translationEnabled } from '../shared/types.js';
 import { RssTranslations } from './rss-translation.js';
-import type { Tables } from './backups.js';
+import { TRANSLATION_CACHE_LIMIT, type Tables } from './backups.js';
 import { FetchHistory } from './fetch-history.js';
 import { AppError } from './auth.js';
 import { applicationSettingsSchema } from './settings.js';
@@ -689,7 +689,11 @@ export class Store {
   exportTables(): Tables {
     const tables: Record<string, unknown> = {};
     for (const table of ['users', 'user_notifications', 'credentials', 'feeds', 'feed_items', 'settings', 'rss_sources', 'translations', 'translation_cache']) {
-      tables[table] = this.db.prepare(`SELECT * FROM ${table}`).all().map(row => {
+      // The cache is pruned hourly, so it can briefly exceed the limit the backup format allows.
+      const rows = table === 'translation_cache'
+        ? this.db.prepare('SELECT * FROM translation_cache ORDER BY touched_at DESC LIMIT ?').all(TRANSLATION_CACHE_LIMIT)
+        : this.db.prepare(`SELECT * FROM ${table}`).all();
+      tables[table] = rows.map(row => {
         if (table === 'user_notifications') return { ...row, value: decrypt(this.masterKey, String(row.value)) };
         if (table === 'credentials') return { ...row, encrypted_value: decrypt(this.masterKey, String(row.encrypted_value)) };
         if (table === 'feeds') return { ...row, token_ciphertext: decrypt(this.masterKey, String(row.token_ciphertext)) };

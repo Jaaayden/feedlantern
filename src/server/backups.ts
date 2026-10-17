@@ -1,6 +1,8 @@
 import { randomBytes, scryptSync, createCipheriv, createDecipheriv } from 'node:crypto';
 import { z } from 'zod';
 import { applicationSettingsSchema, isApplicationSettingsJson } from './settings.js';
+/** The translation cache is disposable; both pruning and backups keep only this many newest entries. */
+export const TRANSLATION_CACHE_LIMIT = 20_000;
 const text = z.string().max(1_000_000);
 const short = z.string().min(1).max(4000);
 const nullable = text.nullable();
@@ -11,7 +13,7 @@ export const backupTables = {
   rss_sources: z.array(z.object({ feed_id: short, etag: nullable, modified: nullable, seen_json: text.refine(value => { try { const a=JSON.parse(value); return Array.isArray(a) && a.length<=100 && a.every(k=>typeof k==='string'); } catch { return false; } }).default('[]') }).strict()).max(10000).default([]),
   translations: z.array(z.object({ item_id: short, feed_id: short, revision: short, status: z.enum(['pending','running','success','failed']), attempts: z.number().int().min(0).max(3), next_at: z.number().int().nonnegative(), error: nullable,
     body_json: z.string().max(20_000_000).refine(value => { try { const b=JSON.parse(value); return (b.actorId == null || typeof b.actorId==='string' && b.actorId.length<=4000) && typeof b.html==='string' && ['title','translatedHtml','bilingualHtml'].every(k => b[k]===undefined || typeof b[k]==='string'); } catch { return false; } }) }).strict()).max(2_000_000).default([]),
-  translation_cache: z.array(z.object({ key: z.string().regex(/^[a-f0-9]{64}$/), text, touched_at: z.number().int().nonnegative() }).strict()).max(20000).default([]),
+  translation_cache: z.array(z.object({ key: z.string().regex(/^[a-f0-9]{64}$/), text, touched_at: z.number().int().nonnegative() }).strict()).max(TRANSLATION_CACHE_LIMIT).default([]),
   user_notifications: z.array(z.object({ user_id: short, value: text.refine(value => { try { return applicationSettingsSchema.shape.bark.safeParse(JSON.parse(value)).success; } catch { return false; } }) }).strict()).max(10000).default([]),
   users: z.array(z.object({ id: short, role: z.enum(['admin','user']), enabled: flag, generation: z.number().int().nonnegative(), username: z.string().regex(/^\S{1,100}$/), password_hash: z.string().regex(/^scrypt\$16384\$8\$1\$[A-Za-z0-9_-]{22}\$[A-Za-z0-9_-]{86}$/), created_at: date, updated_at: date }).strict()).min(1).max(10000).refine(rows => rows.some(u => u.role === 'admin' && u.enabled === 1) && new Set(rows.map(u => u.id)).size === rows.length && new Set(rows.map(u => u.username)).size === rows.length, '用户列表无效'),
   credentials: z.array(z.object({ owner_id: short, id: short, name: short, url, format: z.enum(['header', 'json']), encrypted_value: text, domains_json: text, cookie_count: z.number().int().nonnegative(), updated_at: date, expires_at: date.nullable() }).strict()).max(10000),
