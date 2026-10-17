@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="FeedLantern">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2a4a3d"/>
+      <stop offset="1" stop-color="#102a26"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="52%" r="50%">
+      <stop offset="0" stop-color="#d8e88f" stop-opacity=".34"/>
+      <stop offset="1" stop-color="#d8e88f" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="lamp" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e8f4a8"/>
+      <stop offset="1" stop-color="#cfe27f"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="116" fill="url(#bg)"/>
+  <g transform="translate(256 258) scale(1.16) translate(-256 -270)">
+  <circle cx="256" cy="272" r="210" fill="url(#glow)"/>
+    <!-- hanging ring -->
+    <path d="M214 126 C214 74 298 74 298 126" fill="none" stroke="#f7f8f4" stroke-width="20" stroke-linecap="round"/>
+    <!-- top cap -->
+    <path d="M174 132 H338 L318 174 H194 Z" fill="#f7f8f4" stroke="#f7f8f4" stroke-width="14" stroke-linejoin="round"/>
+    <!-- glowing body -->
+    <path d="M196 178 H316 C376 222 376 322 316 372 H196 C136 322 136 222 196 178 Z" fill="url(#lamp)" stroke="url(#lamp)" stroke-width="10" stroke-linejoin="round"/>
+    <!-- bottom cap -->
+    <path d="M200 380 H312 L300 410 H212 Z" fill="#f7f8f4" stroke="#f7f8f4" stroke-width="14" stroke-linejoin="round"/>
+    <!-- tassel -->
+    <path d="M256 418 V446" stroke="#f7f8f4" stroke-width="12" stroke-linecap="round"/>
+    <circle cx="256" cy="454" r="11" fill="#d8e88f"/>
+    <!-- RSS signal inside the lantern -->
+    <g fill="none" stroke="#1e392f" stroke-width="24" stroke-linecap="round">
+      <path d="M222 272 A44 44 0 0 1 266 316"/>
+      <path d="M222 224 A92 92 0 0 1 314 316"/>
+    </g>
+    <circle cx="222" cy="316" r="15" fill="#1e392f"/>
+  </g>
+</svg>

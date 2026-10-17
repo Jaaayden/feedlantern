@@ -27,7 +27,7 @@ const hostLabel = (url: string) => { try { return new URL(url).host; } catch { r
 function Busy({ label = '处理中' }: { label?: string }) { return <span className="inline"><LoaderCircle size={16} className="spin" />{label}</span>; }
 function ErrorNote({ error }: { error?: string }) { return error ? <div className="error-note" role="alert">{error}</div> : null; }
 function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: string }) { return <label className="field"><span>{label}</span>{children}{hint && <small>{hint}</small>}</label>; }
-function Brand({ compact = false }: { compact?: boolean }) { return <div className="brand"><span className="brand-icon"><Rss size={22} strokeWidth={2.2} /></span><span>FeedLantern{!compact && <small>订阅灯</small>}</span></div>; }
+function Brand({ compact = false }: { compact?: boolean }) { return <div className="brand"><img className="brand-logo" src="/favicon.svg" alt="" width={40} height={40} /><span>FeedLantern{!compact && <small>订阅灯</small>}</span></div>; }
 
 function Modal({ title, children, close, wide = false }: { title: string; children: ReactNode; close: () => void; wide?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);

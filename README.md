@@ -1,3 +1,5 @@
+<p align="center"><img src="public/favicon.svg" width="96" height="96" alt="FeedLantern 订阅灯"></p>
+
 # FeedLantern · 订阅灯
 
 可自托管的网页版「网页 → RSS」服务。输入网址，自动识别内容；需要时可视化调整，然后交给后台持续更新。
