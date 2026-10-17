@@ -50,7 +50,7 @@ import {
 } from './auth.js';
 import { getConfig, ensureDataDir, hasDist, isAllowedOrigin, type ConfigInput, type ServerConfig } from './config.js';
 import { renderRss, rssEtag } from './rss.js';
-import { asInteger, asNonEmptyString, asOptionalString, asRecord, cookieMetadata, frameError, friendlyError, parseCredentialInput, parseFeedInput, parseHttpUrl, parseRules } from './validation.js';
+import { asInteger, describeError, asNonEmptyString, asOptionalString, asRecord, cookieMetadata, frameError, friendlyError, parseCredentialInput, parseFeedInput, parseHttpUrl, parseRules } from './validation.js';
 import { Store, type CredentialValue } from './store.js';
 
 export interface BrowserServiceLike {
@@ -118,10 +118,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   } });
   // Fastify captures the error handler when a route is registered.
   // Install it before plugins/routes so errors share the frontend contract.
-  app.setErrorHandler((error, _request, reply) => {
+  app.setErrorHandler((error, request, reply) => {
     if (error instanceof AppError) return reply.code(error.statusCode).send({ error: error.message });
     const status = (error as { statusCode?: number }).statusCode;
     if (status === 400 || status === 413 || status === 415) return reply.code(status).send({ error: '请求格式无效或内容过大' });
+    console.error(`未处理的服务器错误 ${request.method} ${request.routeOptions.url ?? ''}：${describeError(error)}`);
     return reply.code(500).send({ error: '服务器内部错误' });
   });
   await app.register(cookie);
@@ -588,7 +589,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     backupGuard(request);
     const password = asNonEmptyString(asRecord(request.body).password, '备份密码', 1024);
     if (password.length < 12) throw new AppError(400, '备份密码至少 12 个字符');
-    return sealBackup(snapshotSchema.parse({ format: 'feedlantern-backup', version: 3, appVersion: config.version, createdAt: new Date().toISOString(), security: security(), tables: store.exportTables() }), password);
+    const snapshot = snapshotSchema.safeParse({ format: 'feedlantern-backup', version: 3, appVersion: config.version, createdAt: new Date().toISOString(), security: security(), tables: store.exportTables() });
+    if (!snapshot.success) {
+      const where = describeError(snapshot.error);
+      console.error(`备份导出校验失败：${where}`);
+      throw new AppError(500, `备份数据校验失败，无法导出：${where}`);
+    }
+    return sealBackup(snapshot.data, password);
   });
   for (const action of ['preview', 'restore'] as const) app.post(`/api/backups/${action}`, { bodyLimit: 100_000_000 }, async request => {
     backupGuard(request, true);

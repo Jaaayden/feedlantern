@@ -1,3 +1,4 @@
+import { ZodError } from 'zod';
 import type { Cookie } from 'playwright';
 import type { FeedInput, SelectionRules } from '../shared/types.js';
 import { AppError } from './auth.js';
@@ -133,4 +134,14 @@ export function cookieMetadata(cookies: readonly Cookie[], url: string): { domai
   const expirations = cookies.map((cookie) => cookie.expires).filter((value): value is number => typeof value === 'number' && Number.isFinite(value) && value > 0);
   const expiresAt = expirations.length ? new Date(Math.min(...expirations) * 1000).toISOString() : null;
   return { domains, count: cookies.length, expiresAt };
+}
+
+/** Summarize an error for logs and operator-facing messages without echoing any data values. */
+export function describeError(error: unknown): string {
+  if (error instanceof ZodError) {
+    const issues = error.issues.slice(0, 5).map(issue => `${issue.path.join('.') || '(root)'}（${issue.code}）`);
+    return issues.join('；') + (error.issues.length > 5 ? `；另有 ${error.issues.length - 5} 处` : '');
+  }
+  if (error instanceof Error) return `${error.name}: ${error.message}${error.stack ? ' | ' + error.stack.split('\n').slice(1, 4).map(line => line.trim()).join(' <- ') : ''}`;
+  return String(error);
 }
