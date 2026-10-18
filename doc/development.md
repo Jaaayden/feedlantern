@@ -11,7 +11,7 @@ cp .env.example .env
 pnpm dev
 ```
 
-开发页面 `http://127.0.0.1:5173`；生产模式 `pnpm build && pnpm start`，默认 `http://127.0.0.1:4321`。只在配置允许的来源访问管理接口。
+开发页面 `http://127.0.0.1:5173`；生产模式 `pnpm build && pnpm start`，默认 `http://127.0.0.1:4321`。`start` 和 `admin:reset` 直接用 `node --import tsx` 运行，容器里也是同样的命令，所以应用是容器内的主进程，停止时 SIGTERM 能直接送达。只在配置允许的来源访问管理接口。
 
 ```sh
 pnpm typecheck
@@ -40,7 +40,7 @@ Store 的无 owner 参数列表方法保留给整站后台调度和备份使用�
 |---|---|
 | `/api/auth/*` | 初始化、登录、退出、修改自己的密码；登录状态包含 userId、role |
 | `GET/POST /api/users` | 管理员列出用户／以 `{username,password}` 创建普通用户 |
-| `PATCH /api/users/:id` | 管理员以 `{enabled:boolean}` 停用／启用普通用户，不允许停用管理员 |
+| `PATCH /api/users/:id` | 管理员局部更新 `{username?, enabled?, role?}`；身份变化会撤销目标会话，必须保留至少一名启用的管理员，不能停用自己 |
 | `POST /api/users/:id/password` | 管理员以 `{password}` 重置普通用户密码，撤销目标账号会话 |
 | `/api/credentials` | 凭据元数据及导入更新 |
 | `/api/browser/*` | 打开页面、截图、自动发现、点选、预览 |
@@ -57,11 +57,11 @@ Store 的无 owner 参数列表方法保留给整站后台调度和备份使用�
 
 `POST /api/browser/:id/scroll` 接受 `{deltaY,x?,y?}`，坐标须同时提供并位于远端视口内；省略时使用视口中心。截图仍为 data URL，编码改用 JPEG 质量 80。显式关闭编辑会话会取消进行中的操作并释放容量。
 
-完整备份格式版本为 2（兼容导入 version 1），独立于数据库迁移版本；敏感值只在加密包内部携带可迁移明文，目标实例使用自己的主密钥重新加密。
+完整备份格式版本为 3（兼容导入 version 1、2），独立于数据库迁移版本；敏感值只在加密包内部携带可迁移明文，目标实例使用自己的主密钥重新加密。
 
 ## 发布
 
-普通提交运行 CI；`main` 通过检查、两个架构的原生容器验证后，将同一批已验证镜像发布为多架构 GHCR `sha-<完整提交 SHA>` 和 `latest`。PR 不发布镜像；重跑旧提交不会覆盖已前进的 `main` 对应的 `latest`。镜像记录 `org.opencontainers.image.revision` 便于核对源码。里程碑仍可更新 package.json、CHANGELOG 并创建语义化版本标签；标签流程发布版本化镜像及 Release 部署包，不覆盖跟随 `main` 的 `latest`。
+普通提交运行 CI；依赖更新由 Dependabot 以 PR 提交。`main` 通过检查、两个架构的原生容器验证后，将同一批已验证镜像发布为多架构 GHCR `sha-<完整提交 SHA>` 和 `latest`。PR 不发布镜像；重跑旧提交不会覆盖已前进的 `main` 对应的 `latest`。镜像记录 `org.opencontainers.image.revision` 便于核对源码。里程碑仍可更新 package.json、CHANGELOG 并创建语义化版本标签；标签流程发布版本化镜像及 Release 部署包，不覆盖跟随 `main` 的 `latest`。
 
 seccomp 配置来自 Playwright v1.63.0，保留上游配置；更新 Playwright 时同步检查浏览器安装和沙箱行为。容器设计参考 [Playwright Docker 文档](https://playwright.dev/docs/docker)。
 
@@ -101,3 +101,21 @@ RSS HTTP 获取绑定已检查的 IP，限制 5 次重定向、20 秒和 5 MB �
 SQLite 版本 8 移除单管理员索引并增加加密 `user_notifications`。账号变更在事务内保护最后一名启用管理员；会话仍绑定稳定用户 ID。导入任务持久记录 `actorId` 和 `ownerId`，翻译手动重试记录操作人，浏览器记录操作人及目标。执行前及写入前检查权限与取消信号，删除不能恢复已清除的任务。删除账号也清理可能含来源片段的共享翻译缓存，不删除其他用户已保存的译文。
 
 完整备份 version 3 包含个人通知并兼容 version 1、2；只在加密备份内保存可恢复密钥。轻量配置仅导出操作管理员自己的订阅和个人 Bark。开发测试注入模拟 Bark 发送器，禁止向真实设备地址发送测试消息。
+
+## 数据保留与体积
+
+数据库中的日志、事件和缓存都有上限，避免体积随运行时间增长：
+
+| 数据 | 清理规则 | 位置 |
+| --- | --- | --- |
+| 每个订阅的文章 | 最新 200 条 | `Store.upsertItems` |
+| 翻译进度事件 | 每个订阅最新 200 条，且不超过 7 天；界面只读最近 100 条 | `RssTranslations.prune` |
+| 翻译片段缓存 | 最近使用的 20000 条（`TRANSLATION_CACHE_LIMIT`，备份格式共用同一上限） | `RssTranslations.prune` |
+| 抓取日志 | 按「日志保留天数」，默认 30 天 | `FetchHistory.prune` |
+| 登录会话 | 过期后每小时清理 | `Store.purgeExpiredSessions` |
+
+清理每小时运行一次。新建的数据库使用 `auto_vacuum=INCREMENTAL`，清理后 `Store.compact()` 把空闲页逐步还给磁盘；更早创建的数据库用 `scripts/compact-db.ts` 一次性转换并压缩，用法见[升级维护](maintenance.md#数据库体积)。完整备份导出时翻译缓存也只取最近使用的 20000 条，因此缓存在两次清理之间短暂超限不会让导出失败。
+
+## 错误处理
+
+未预期的服务器错误对客户端统一返回 `{error:"服务器内部错误"}`，同时把类型、消息和简短堆栈写入服务日志（不含请求内容）。完整备份导出前会按备份格式校验数据，校验失败时响应里直接给出出错的表和字段，例如 `tables.settings.0`，不会包含数据值。

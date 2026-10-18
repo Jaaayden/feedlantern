@@ -4,13 +4,13 @@
 
 1. [部署步骤](deployment.md)：环境准备、快速安装、手动部署、首次初始化和验证。
 2. [Nginx 与 HTTPS](nginx.md)：域名、证书、完整反向代理示例。
-3. [配置参考](configuration.md)：环境变量、存储和网络边界。
+3. [配置参考](configuration.md)：环境变量、存储、网络边界和可信代理。
 
 ## 使用与维护
 
 - [使用指南](user-guide.md)：识别、编辑、批量操作、Cookie 和 RSS 名称。
 - [备份与迁移](backup-and-migration.md)：完整恢复和轻量配置合并。
-- [升级维护](maintenance.md)：运行状态、更新、回退。
+- [升级维护](maintenance.md)：运行状态、更新、回退、数据库体积与压缩。
 - [故障排查](troubleshooting.md)：按症状定位常见问题。
 
 ## 开发
