@@ -54,14 +54,13 @@ docker compose up -d --wait feedlantern
 ## 工作原理
 
 ```mermaid
-flowchart LR
-    A[网址] --> B[Chromium 渲染]
-    B --> C[识别重复列表]
-    C --> D[保存匹配规则]
-    D --> E[定时抓取并提取条目]
-    E --> F[(SQLite)]
-    F --> G["RSS 地址：/feeds/ID/密钥.xml"]
-    G --> H[RSS 阅读器]
+flowchart TB
+    A[网址] --> B[Chromium 渲染并识别重复列表]
+    B --> C[保存匹配规则]
+    C --> D[定时抓取并提取条目]
+    D --> E[(SQLite)]
+    E --> F["RSS 地址：/feeds/ID/密钥.xml"]
+    F --> G[RSS 阅读器]
 ```
 
 React + Vite 前端，Fastify API，SQLite 存储，Playwright 驱动 Chromium。预览、批量识别和后台刷新共用同一套提取逻辑，所以所见即所得。
