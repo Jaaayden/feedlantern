@@ -16,4 +16,4 @@ Automatic detection, manual previews, and scheduled refreshes must use the same 
 
 Never commit real cookies, credentials, private URLs, screenshots of authenticated pages, local databases, or generated browser profiles.
 
-The project uses semantic versions. Update `CHANGELOG.md` for user-visible changes; ordinary commits do not publish packages or releases. Container and binary distribution are deferred until local validation is complete.
+The project uses semantic versions. Update `CHANGELOG.md` (under "未发布" until a version is cut) for user-visible changes. Pull requests run the full CI (type check, build, unit and browser tests, amd64 and arm64 container checks) but publish nothing. Once a change lands on `main` and passes CI, the verified multi-architecture image is published as `latest`, so keep `main` releasable. Dependency updates arrive as Dependabot pull requests.
