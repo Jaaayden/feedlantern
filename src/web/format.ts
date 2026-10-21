@@ -92,3 +92,11 @@ export function summaryText(value: string): string {
   const text = new DOMParser().parseFromString(value, 'text/html').body.textContent ?? '';
   return text.replace(/\s+/g, ' ').trim();
 }
+
+/** Compare addresses loosely: ignore fragments, a trailing slash and host case. */
+export function sameAddress(a: string, b: string): boolean {
+  const normal = (value: string) => {
+    try { const url = new URL(value.trim()); url.hash = ''; return url.href.replace(/\/$/, ''); } catch { return value.trim().replace(/\/$/, ''); }
+  };
+  return !!a.trim() && normal(a) === normal(b);
+}

@@ -2,12 +2,13 @@ import { useState, type FormEvent } from 'react';
 import type { Feed, ExtractedItem } from '../shared/types';
 import { api } from './api';
 import { ArrowLeft } from 'lucide-react';
+import { sameAddress } from './format';
 
 export function RssContent({ html, title }: { html: string; title: string }) {
   return <iframe className="rss-content" title={title} sandbox="" referrerPolicy="no-referrer" srcDoc={`<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https: http:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><style>body{font:15px/1.7 system-ui;margin:8px;color:#263348;overflow-wrap:anywhere}img{max-width:100%;height:auto}pre{white-space:pre-wrap}table{max-width:100%;border-collapse:collapse}td,th{border:1px solid #ddd;padding:5px}a{color:#355ab3}</style></head><body>${html}</body></html>`} />;
 }
 
-export function RssEditor({ initial, saved, cancel }: { initial?: Feed; saved: (id: string) => void; cancel: () => void }) {
+export function RssEditor({ initial, existing = [], saved, cancel }: { initial?: Feed; existing?: Feed[]; saved: (id: string) => void; cancel: () => void }) {
   const [url, setUrl] = useState(initial?.url ?? '');
   const [name, setName] = useState(initial?.name ?? '');
   const [interval, setInterval] = useState(initial?.intervalMinutes ?? 30);
@@ -38,6 +39,7 @@ export function RssEditor({ initial, saved, cancel }: { initial?: Feed; saved: (
       <label className="field"><span>刷新间隔（分钟）</span><input type="number" min={5} max={1440} required value={interval} disabled={busy} onChange={e => setInterval(Number(e.target.value))} /></label>
       <p className="hint">首次处理最新 20 条。保存后后台翻译，完成的文章会自动加入订阅链接；切换输出模式不会重新翻译。</p>
       {initial && url !== initial.url && <p className="notice">修改来源地址会清除该订阅原有条目，从新来源重新开始。</p>}
+      {!initial && (() => { const duplicate = existing.find(feed => feed.sourceType === 'rss' && sameAddress(feed.url, url)); return duplicate ? <p className="notice">已有 RSS 翻译订阅「{duplicate.name}」使用这个地址，仍可保存为新的订阅。</p> : null; })()}
       {error && <div className="error-note" role="alert">{error}</div>}
       <button className="button primary" disabled={busy || (!initial && preview?.url !== url)}>{busy ? '处理中…' : '保存 RSS 翻译订阅'}</button>
     </form>

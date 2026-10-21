@@ -1340,3 +1340,4 @@ button.card-error:hover { text-decoration: underline; text-underline-offset: 3px
 @media (max-width: 760px) {
   .application-settings > .button.primary, .personal-bark > .button.primary { bottom: calc(86px + env(safe-area-inset-bottom)); }
 }
+.duplicate-note { margin-bottom: 14px; }
