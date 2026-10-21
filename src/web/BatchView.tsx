@@ -2,8 +2,9 @@ import { useEffect, useState } from 'react';
 import type { CredentialSummary, ImportEntry, ImportJob } from '../shared/types';
 import { api } from './api';
 import { Editor } from './App';
+import { ArrowLeft } from 'lucide-react';
 const labels = { queued: '排队中', running: '识别中', created: '已创建', existing: '已存在', review: '待确认', failed: '失败', canceled: '已取消' };
-export function BatchView({ notify, changed }: { notify: (s: string) => void; changed: () => void }) {
+export function BatchView({ notify, changed, back }: { notify: (s: string) => void; changed: () => void; back: () => void }) {
   const [sourceType, setSourceType] = useState<'website' | 'rss'>('website');
   const [mode, setMode] = useState<'chinese' | 'bilingual'>('bilingual');
   const [text, setText] = useState('');
@@ -23,7 +24,7 @@ export function BatchView({ notify, changed }: { notify: (s: string) => void; ch
   });
   if (editing) return <Editor draft={{ name: editing.entry.title ?? '', url: editing.entry.url, credentialId: editing.entry.credentialId, intervalMinutes: editing.entry.intervalMinutes, waitMs: 1000, rules: { item: '', title: '', link: '' } }} submitFeed={input => api.jobs.confirm(editing.job.id, editing.entry.id, input)} cancel={() => setEditing(null)} saved={() => { setEditing(null); void load(); changed(); notify('订阅已保存'); }} />;
   async function run(fn: () => Promise<unknown>) { setError(''); setBusy(true); try { await fn(); await load(); changed(); } catch (e) { setError(e instanceof Error ? e.message : '操作失败'); } finally { setBusy(false); } }
-  return <><div className="page-heading"><h1>批量添加网址</h1></div><p>{sourceType === 'rss' ? '每行粘贴一个 RSS / Atom 地址，自动创建翻译订阅；译文完成后发布。' : '明确的匹配结果会自动创建，其他结果由你确认。'}关闭页面后任务仍会继续。</p>
+  return <><button className="back-link" onClick={back}><ArrowLeft size={16} />返回订阅</button><div className="page-heading"><div><span className="section-kicker">ADD IN BULK</span><h1>批量添加网址</h1><p>{sourceType === 'rss' ? '每行粘贴一个 RSS / Atom 地址，自动创建翻译订阅；译文完成后发布。' : '明确的匹配结果会自动创建，其他结果由你确认。'}关闭页面后任务仍会继续。</p></div></div>
     <form className="panel settings-form" onSubmit={e => { e.preventDefault(); void run(async () => { await api.jobs.create(lines.filter(l => !l.error).map(l => ({ url: l.url, credentialId: sourceType === 'rss' ? null : bindings[l.url] || null })), interval, sourceType, mode); setText(''); }); }}>
       <label className="field"><span>批量订阅类型</span><select disabled={busy} value={sourceType} onChange={e => setSourceType(e.target.value as 'website' | 'rss')}><option value="website">网页识别</option><option value="rss">RSS 翻译</option></select></label>
       {sourceType === 'rss' && <label className="field"><span>翻译输出模式</span><select disabled={busy} value={mode} onChange={e => setMode(e.target.value as 'chinese' | 'bilingual')}><option value="bilingual">中英双语</option><option value="chinese">仅中文</option></select></label>}

@@ -42,7 +42,8 @@ test('RSS 翻译创建、原文预览、双语输出、模式切换和移动端'
 
 test('批量添加 RSS 翻译，跳过重复地址并输出中文订阅', async ({ page }) => {
   await loginAsAdmin(page.request); await page.goto('/');
-  await page.getByRole('button', { name: '批量添加', exact: true }).click();
+  await page.getByRole('button', { name: '更多新建方式' }).click();
+  await page.getByRole('menuitem', { name: '批量添加' }).click();
   await page.getByLabel('批量订阅类型').selectOption('rss');
   await page.getByLabel('翻译输出模式').selectOption('chinese');
   const url = `${fixtureBaseUrl}/feed.xml?batch=translation`;
