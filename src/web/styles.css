@@ -1326,3 +1326,8 @@ button.card-error:hover { text-decoration: underline; text-underline-offset: 3px
 .batch-entry-main > strong { font-size: 14px; overflow-wrap: anywhere; }
 .batch-entry-main > p { font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
 .batch-entry-main > p[role="alert"] { color: var(--danger); }
+.crash { gap: 14px; padding: 24px; text-align: center; }
+.crash h1 { margin-top: 10px; color: var(--ink); }
+.crash p { max-width: 420px; color: var(--muted); }
+.crash code { max-width: min(560px, 100%); padding: 8px 12px; border-radius: var(--r-md); background: var(--bg-sunken); color: var(--danger); }
+.crash .inline { justify-content: center; margin-top: 6px; }

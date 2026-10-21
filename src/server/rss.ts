@@ -93,6 +93,8 @@ export function renderRss(feed: Feed, items: FeedItem[], feedUrl: string): strin
     `<atom:link href="${escapeAttribute(feedUrl)}" rel="self" type="application/rss+xml"/>`,
     `<lastBuildDate>${escapeXml(buildDate)}</lastBuildDate>`,
     '<generator>FeedLantern</generator>',
+    // Translated feeds publish Chinese (or Chinese-first bilingual) text.
+    translationEnabled(feed) ? '<language>zh-cn</language>' : '',
     `<ttl>${Math.max(1, Math.round(feed.intervalMinutes))}</ttl>`,
     renderedItems,
     '</channel>',

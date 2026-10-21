@@ -139,6 +139,14 @@ export function Editor({ initial, draft, submitFeed, saved, cancel }: { initial?
     return () => { mountedRef.current = false; window.removeEventListener('pagehide', close); close(); };
   }, []);
 
+  useEffect(() => {
+    // Leaving with an opened page and unsaved rules would lose the work.
+    if (!frame) return;
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ''; };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [frame]);
+
   async function preview(nextRules: SelectionRules, id = sessionRef.current) {
     const seq = ++previewSeq.current;
     const signature = rulesSignature(nextRules);
