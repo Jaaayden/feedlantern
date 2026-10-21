@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { translationEnabled, type AuthState, type BulkFeedSettingsInput, type Feed } from '../shared/types';
 import { api } from './api';
+import { Copy, LayoutGrid, List, Settings2 } from 'lucide-react';
 
 export function FeedCollection({ auth, feeds, query, detail, settings, changed, notify }: {
   auth: AuthState; feeds: Feed[]; query: string; detail: (id: string) => void; settings: (id: string) => void;
@@ -49,7 +50,7 @@ export function FeedCollection({ auth, feeds, query, detail, settings, changed, 
   return <section aria-label="订阅集合">
     <div className="collection-toolbar"><div className="inline"><label>来源 <select aria-label="筛选订阅来源" value={sourceFilter} onChange={e => setSourceFilter(e.target.value)}><option value="all">全部来源</option><option value="website">网页抓取</option><option value="rss">RSS 来源</option></select></label><label>输出 <select aria-label="筛选订阅输出" value={outputFilter} onChange={e => setOutputFilter(e.target.value)}><option value="all">全部输出</option><option value="translated">翻译订阅</option><option value="original">原文订阅</option></select></label><label>状态 <select aria-label="筛选订阅状态" value={statusFilter} onChange={e => setStatusFilter(e.target.value)}><option value="all">全部状态</option><option value="attention">需要检查</option></select></label></div></div>
     <div className="collection-toolbar"><label className="inline"><input type="checkbox" checked={all} disabled={busy || !visible.length} onChange={e => setSelected(e.target.checked ? visible.map(f => f.id) : [])} />全选当前结果</label>
-      <div className="inline"><button className="button small" aria-pressed={view === 'list'} onClick={() => void changeView('list')}>列表</button><button className="button small" aria-pressed={view === 'cards'} onClick={() => void changeView('cards')}>卡片</button></div>
+      <div className="inline"><button className="button small" aria-pressed={view === 'list'} onClick={() => void changeView('list')}><List size={14} />列表</button><button className="button small" aria-pressed={view === 'cards'} onClick={() => void changeView('cards')}><LayoutGrid size={14} />卡片</button></div>
     </div>
     {selected.length > 0 && <div className="collection-toolbar"><span>已选择 {selected.length} 项</span><div className="detail-actions"><button className="button small" disabled={busy} onClick={() => { setMode(''); setInterval(''); setEditing(true); setError(''); }}>批量修改设置</button>{[['copy', '复制 RSS 地址'], ['pause', '暂停'], ['resume', '恢复'], ['refresh', '立即刷新'], ['delete', '删除']].map(([action, label]) => <button className="button small" key={action} disabled={busy} onClick={() => void operate(action)}>{label}</button>)}</div></div>}
     {editing && selected.length > 0 && <form className="panel settings-form" aria-label="批量修改订阅设置" onSubmit={saveSettings}>
@@ -68,7 +69,7 @@ export function FeedCollection({ auth, feeds, query, detail, settings, changed, 
       <div className="feed-identity"><button className="card-title" aria-label={`查看订阅 ${feed.name}`} onClick={() => detail(feed.id)}>{feed.name}</button><div className="inline feed-kind"><span className="badge">{feed.sourceType === 'rss' ? 'RSS 来源' : '网页抓取'}</span><span className={`badge ${translationEnabled(feed) ? 'good' : ''}`}>{translationEnabled(feed) ? feed.translationMode === 'chinese' ? '中文翻译' : '双语翻译' : '原文'}</span></div><p className="feed-host" title={feed.url}>{feed.url}</p>{feed.lastError && <p className="card-error" title={feed.lastError}>{feed.lastError}</p>}</div>
       <span className={`badge ${feed.lastError ? 'bad' : feed.enabled ? 'good' : ''}`}>{feed.lastError ? '需要检查' : feed.enabled ? '更新中' : '已暂停'}</span>
       <div className="feed-metrics"><span>{feed.itemCount} 条内容 · 每 {feed.intervalMinutes} 分钟</span><small>最近成功：{feed.lastSuccessAt ? new Date(feed.lastSuccessAt).toLocaleString('zh-CN') : '尚未更新'}</small></div>
-      <div className="detail-actions"><button className="button small" disabled={busy} aria-label={`复制 RSS 地址 ${feed.name}`} onClick={() => void operate('copy', [feed.id])}>复制 RSS</button><button className="button small" aria-label={`订阅设置 ${feed.name}`} onClick={() => settings(feed.id)}>订阅设置</button></div>
+      <div className="detail-actions"><button className="button small" disabled={busy} aria-label={`复制 RSS 地址 ${feed.name}`} onClick={() => void operate('copy', [feed.id])}><Copy size={14} />复制 RSS</button><button className="button small" aria-label={`订阅设置 ${feed.name}`} onClick={() => settings(feed.id)}><Settings2 size={14} />订阅设置</button></div>
     </article>)}</div>
   </section>;
 }
