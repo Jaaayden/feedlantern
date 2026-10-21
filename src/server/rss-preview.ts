@@ -93,7 +93,7 @@ h1{margin:12px 0 6px;font:700 28px/1.3 "Noto Serif SC","Songti SC",serif}
 .how{margin-top:20px;padding:22px 24px;border-radius:18px;background:var(--surface);border:1px solid var(--line)}
 .how p{margin:0 0 12px;color:var(--ink-2)}
 .copy{display:flex;gap:8px;padding:5px;border-radius:13px;border:1px solid var(--line);background:var(--bg)}
-.copy input{flex:1;min-width:0;border:0;background:transparent;color:var(--ink-2);font:12.5px ui-monospace,"SF Mono",Menlo,monospace;padding:0 8px}
+.copy input{flex:1;min-width:0;min-height:36px;border:0;background:transparent;color:var(--ink-2);font:12.5px ui-monospace,"SF Mono",Menlo,monospace;padding:0 8px}
 .copy button{border:0;border-radius:9px;padding:9px 16px;background:var(--brand);color:var(--brand-ink);font-family:inherit;font-size:14px;font-weight:600;cursor:pointer;white-space:nowrap}
 .small{margin:12px 0 0!important;font-size:13px;color:var(--muted)!important}.small a{color:var(--accent)}
 .warn{margin:14px 0 0!important;padding:10px 12px;border-radius:10px;background:var(--warn-soft);color:var(--warn)!important;font-size:13px}
@@ -102,7 +102,7 @@ ol{list-style:none;margin:0;padding:0;border:1px solid var(--line);border-radius
 li{padding:16px 20px;border-top:1px solid var(--line)}li:first-child{border-top:0}
 .item-head{display:flex;justify-content:space-between;gap:16px;align-items:baseline}
 .item-head a,.item-head span{font-weight:650;text-decoration:none}.item-head a:hover{color:var(--accent);text-decoration:underline}
-time{flex:none;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+li time{flex:none;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
 li p{margin:4px 0 0;color:var(--muted);font-size:14px}
 .empty{padding:28px;text-align:center;color:var(--muted)}
 footer{margin-top:28px;text-align:center;font-size:12px;color:var(--muted)}
@@ -114,7 +114,7 @@ footer{margin-top:28px;text-align:center;font-size:12px;color:var(--muted)}
 <header class="hero">
 <span class="kicker"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M4 11a9 9 0 0 1 9 9"/><path d="M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1.2" fill="currentColor"/></svg>RSS 订阅</span>
 <h1>${escape(feed.name)}</h1>
-<p class="meta">${escape(kind)}${source ? ` · 来自 <a href="${escape(source)}" rel="noreferrer noopener" target="_blank">${escape(host(source))}</a>` : ''} · 每 ${feed.intervalMinutes} 分钟检查更新${updated ? ` · 最近更新 ${escape(updated)}` : ''}</p>
+<p class="meta">${escape(kind)}${source ? ` · 来自 <a href="${escape(source)}" rel="noreferrer noopener" target="_blank">${escape(host(source))}</a>` : ''} · 每 ${feed.intervalMinutes} 分钟检查更新${updated ? ` · 最近更新 <time datetime="${escape(new Date(feed.lastSuccessAt!).toISOString())}">${escape(updated)}</time>` : ''}</p>
 </header>
 <section class="how">
 <p>这是一个 RSS 订阅地址，供阅读器使用。把下面的地址添加到你常用的阅读器（例如 NetNewsWire、Reeder、Inoreader、Feedly），新内容就会自动送达。</p>
