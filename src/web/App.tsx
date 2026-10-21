@@ -299,7 +299,7 @@ function FeedPanel({ id, tab, onTab, close, edit, changed, notify }: { id: strin
   }
   async function refresh() {
     setBusy('刷新'); setError('');
-    try { await api.feeds.refresh(id); await load(); setRevision(v => v + 1); changed(); }
+    try { await api.feeds.refresh(id); await load(); setRevision(v => v + 1); changed(); notify('刷新完成'); }
     catch (error) { setError(messageOf(error)); } finally { setBusy(''); }
   }
   const feed = detail?.feed;

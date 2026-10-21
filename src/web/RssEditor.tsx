@@ -31,7 +31,7 @@ export function RssEditor({ initial, saved, cancel }: { initial?: Feed; saved: (
   return <><button className="back-link" onClick={cancel}><ArrowLeft size={16} />返回订阅</button><div className="page-heading"><div><span className="section-kicker">TRANSLATE A FEED</span><h1>{initial ? '编辑 RSS 翻译' : '把英文订阅变成中文'}</h1><p>输入 RSS 或 Atom 地址，获取中文或双语订阅链接。</p></div></div>
     <div className="notice">Google 免费翻译 · 实验性。无需密钥；源内有全文就翻译全文，只有摘要就翻译摘要。请求受限时可稍后重试，订阅链接仅输出翻译完成的文章。</div>
     <form className="panel settings-form rss-editor-form" onSubmit={submit}>
-      <label className="field"><span>RSS / Atom 地址</span><input type="url" required value={url} disabled={busy} onChange={e => { setUrl(e.target.value); setPreview(undefined); }} placeholder="https://example.com/feed.xml" /></label>
+      <label className="field"><span>RSS / Atom 地址</span><input type="url" required value={url} disabled={busy} onChange={e => { setUrl(e.target.value); setPreview(undefined); }} onKeyDown={e => { if (e.key === 'Enter' && url && preview?.url !== url) { e.preventDefault(); void inspect(); } }} placeholder="https://example.com/feed.xml" /></label>
       <button type="button" className="button" disabled={busy || !url} onClick={() => void inspect()}>{busy ? '处理中…' : '预览订阅源'}</button>
       <label className="field"><span>订阅名称</span><input required maxLength={200} value={name} disabled={busy} onChange={e => setName(e.target.value)} /></label>
       <label className="field"><span>输出模式</span><select value={mode} disabled={busy} onChange={e => setMode(e.target.value as typeof mode)}><option value="original">原文（不翻译）</option><option value="bilingual">双语（中文在前）</option><option value="chinese">仅中文</option></select></label>
