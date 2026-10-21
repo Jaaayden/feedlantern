@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import type { Feed, ExtractedItem } from '../shared/types';
 import { api } from './api';
+import { ArrowLeft } from 'lucide-react';
 
 export function RssContent({ html, title }: { html: string; title: string }) {
   return <iframe className="rss-content" title={title} sandbox="" referrerPolicy="no-referrer" srcDoc={`<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https: http:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><style>body{font:15px/1.7 system-ui;margin:8px;color:#263348;overflow-wrap:anywhere}img{max-width:100%;height:auto}pre{white-space:pre-wrap}table{max-width:100%;border-collapse:collapse}td,th{border:1px solid #ddd;padding:5px}a{color:#355ab3}</style></head><body>${html}</body></html>`} />;
@@ -27,7 +28,7 @@ export function RssEditor({ initial, saved, cancel }: { initial?: Feed; saved: (
       saved(result.feed.id);
     } catch (e) { setError(e instanceof Error ? e.message : '保存失败'); } finally { setBusy(false); }
   }
-  return <><button className="back-link" onClick={cancel}>返回订阅</button><div className="page-heading"><div><h1>{initial ? '编辑 RSS 翻译' : '把英文订阅变成中文'}</h1><p>输入 RSS 或 Atom 地址，获取中文或双语订阅链接。</p></div></div>
+  return <><button className="back-link" onClick={cancel}><ArrowLeft size={16} />返回订阅</button><div className="page-heading"><div><span className="section-kicker">TRANSLATE A FEED</span><h1>{initial ? '编辑 RSS 翻译' : '把英文订阅变成中文'}</h1><p>输入 RSS 或 Atom 地址，获取中文或双语订阅链接。</p></div></div>
     <div className="notice">Google 免费翻译 · 实验性。无需密钥；源内有全文就翻译全文，只有摘要就翻译摘要。请求受限时可稍后重试，订阅链接仅输出翻译完成的文章。</div>
     <form className="panel settings-form rss-editor-form" onSubmit={submit}>
       <label className="field"><span>RSS / Atom 地址</span><input type="url" required value={url} disabled={busy} onChange={e => { setUrl(e.target.value); setPreview(undefined); }} placeholder="https://example.com/feed.xml" /></label>

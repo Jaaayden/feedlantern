@@ -7,9 +7,12 @@ test('管理员创建、停用、启用和重置用户；普通用户独立使�
   await page.getByRole('button', { name: '用户管理', exact: true }).click();
   await expect(page.getByRole('heading', { name: '用户管理', exact: true })).toBeVisible();
   const username = `reader-${Date.now()}`;
-  await page.getByLabel('用户名', { exact: true }).fill(username);
-  await page.getByLabel('初始密码', { exact: true }).fill('reader-password');
   await page.getByRole('button', { name: '创建用户', exact: true }).click();
+  const createDialog = page.getByRole('dialog', { name: '创建用户' });
+  await createDialog.getByLabel('用户名', { exact: true }).fill(username);
+  await createDialog.getByLabel('初始密码', { exact: true }).fill('reader-password');
+  await createDialog.getByRole('button', { name: '创建用户', exact: true }).click();
+  await expect(createDialog).toHaveCount(0);
   const row = page.locator('.user-row').filter({ hasText: username });
   await expect(row).toContainText('已启用');
   await page.screenshot({ path: testInfo.outputPath('user-management.png'), fullPage: true });

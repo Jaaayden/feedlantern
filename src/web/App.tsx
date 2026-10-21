@@ -10,8 +10,12 @@ import { BatchView } from './BatchView';
 import { FeedCollection } from './FeedCollection';
 import { FetchLogs } from './FetchLogs';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type React from 'react';
 import type { FormEvent, ReactNode } from 'react';
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Check, ChevronDown, CircleHelp, Cookie, ExternalLink, Globe2, KeyRound, LoaderCircle, LogOut, MousePointer2, Pencil, Plus, Radio, RefreshCw, Rss, Search, Settings2, ShieldCheck, Sparkles, Trash2, X } from 'lucide-react';
+import { Archive, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bell, Check, ChevronDown, CircleHelp, Cookie, Copy, ExternalLink, Globe2, Info, KeyRound, Languages, ListPlus, LoaderCircle, LogOut, Monitor, Moon, MousePointer2, Pencil, Plus, Radio, RefreshCw, Rss, Search, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Sun, Trash2 } from 'lucide-react';
+import { Modal } from './Modal';
+import { readTheme, saveTheme, themeLabels } from './theme';
+import type { Theme } from './theme';
 import { api, onUnauthorized, setCsrfToken, setWorkspaceUser } from './api';
 import type { CredentialPayload } from './api';
 import type { AuthState, CredentialSummary, DetectionCandidate, DetectionResult, ExtractedItem, Feed, FeedInput, FeedItem, FieldName, Rect, RuleOrigins, ScreenFrame, SelectionRules } from '../shared/types';
@@ -28,28 +32,6 @@ function Busy({ label = '处理中' }: { label?: string }) { return <span classN
 function ErrorNote({ error }: { error?: string }) { return error ? <div className="error-note" role="alert">{error}</div> : null; }
 function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: string }) { return <label className="field"><span>{label}</span>{children}{hint && <small>{hint}</small>}</label>; }
 function Brand({ compact = false }: { compact?: boolean }) { return <div className="brand"><img className="brand-logo" src="/favicon.svg" alt="" width={40} height={40} /><span>FeedLantern{!compact && <small>订阅灯</small>}</span></div>; }
-
-function Modal({ title, children, close, wide = false }: { title: string; children: ReactNode; close: () => void; wide?: boolean }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const closeRef = useRef(close);
-  closeRef.current = close;
-  useEffect(() => {
-    const previous = document.activeElement as HTMLElement | null;
-    const first = ref.current?.querySelector<HTMLElement>('button, input, textarea, select');
-    first?.focus();
-    const keydown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') closeRef.current();
-      if (event.key !== 'Tab') return;
-      const list = Array.from(ref.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), a[href]') ?? []);
-      const first = list[0], last = list.at(-1);
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
-      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
-    };
-    document.addEventListener('keydown', keydown);
-    return () => { document.removeEventListener('keydown', keydown); previous?.focus(); };
-  }, []);
-  return <div className="modal-backdrop"><div ref={ref} className={`modal ${wide ? 'modal-wide' : ''}`} role="dialog" aria-modal="true" aria-label={title}><div className="modal-header"><h2>{title}</h2><button className="icon-button" aria-label="关闭" onClick={close}><X size={20} /></button></div>{children}</div></div>;
-}
 
 function AuthScreen({ state, authenticated }: { state: AuthState; authenticated: (state: AuthState) => void }) {
   const [username, setUsername] = useState('admin');
@@ -101,11 +83,11 @@ function CredentialsView({ notify }: { notify: Notify }) {
   useEffect(() => { void load(); }, [load]);
   const close = useCallback(() => setEditing(undefined), []);
   async function remove(item: CredentialSummary) { if (!confirm(`删除凭据“${item.name}”？正在使用的凭据需要先从订阅中解除关联。`)) return; try { await api.credentials.remove(item.id); notify('凭据已删除'); await load(); } catch (error) { setError(messageOf(error)); } }
-  return <><div className="page-heading"><div><span className="section-kicker">YOUR CONNECTIONS</span><h1>Cookie 凭据</h1><p>让需要登录的网页，也能成为订阅。</p></div><button className="button primary" onClick={() => setEditing(null)}><Plus size={17} />添加凭据</button></div><ErrorNote error={error} /><div className="info-strip"><ShieldCheck size={20} /><span>凭据加密保存在服务主机中，只有你选择使用它的订阅才会携带对应 Cookie。</span></div>{loading ? <Busy label="正在加载凭据" /> : credentials.length ? <div className="credential-grid">{credentials.map(item => <article className="credential-card" key={item.id}><div className="card-top"><span className="soft-icon"><Cookie size={21} /></span><div className="inline"><button className="icon-button" title="更新凭据" aria-label={`更新凭据 ${item.name}`} onClick={() => setEditing(item)}><Pencil size={16} /></button><button className="icon-button danger" aria-label={`删除凭据 ${item.name}`} onClick={() => void remove(item)}><Trash2 size={16} /></button></div></div><h3>{item.name}</h3><p className="muted">{item.domains.join(' · ')}</p><div className="credential-meta"><span>{item.count} 个 Cookie</span><span>更新于 {dateLabel(item.updatedAt)}</span><span>{item.expiresAt ? `最早到期：${dateLabel(item.expiresAt)}` : '会话 Cookie / 未提供到期时间'}</span></div></article>)}</div> : <div className="empty-state"><span className="large-icon"><Cookie size={30} /></span><h2>连接需要登录的网站</h2><p>从浏览器复制 Cookie，或导入 OpenCookie 导出的 JSON。</p><button className="button" onClick={() => setEditing(null)}><Plus size={16} />添加第一组凭据</button></div>}{editing !== undefined && <Modal title={editing ? '更新 Cookie 凭据' : '添加 Cookie 凭据'} close={close}><CredentialForm editing={editing ?? undefined} cancel={close} done={() => { close(); notify('凭据已保存'); void load(); }} /></Modal>}</>;
+  return <section className="panel settings-form credentials-panel" aria-label="Cookie 凭据"><div className="panel-heading"><h2>Cookie 凭据</h2><button className="button small" onClick={() => setEditing(null)}><Plus size={15} />添加凭据</button></div><p className="muted">让需要登录的网页，也能成为订阅。</p><ErrorNote error={error} /><div className="info-strip"><ShieldCheck size={18} /><span>凭据加密保存在服务主机中，只有你选择使用它的订阅才会携带对应 Cookie。</span></div>{loading ? <Busy label="正在加载凭据" /> : credentials.length ? <div className="credential-grid">{credentials.map(item => <article className="credential-card" key={item.id}><div className="card-top"><span className="soft-icon"><Cookie size={21} /></span><div className="inline"><button className="icon-button" title="更新凭据" aria-label={`更新凭据 ${item.name}`} onClick={() => setEditing(item)}><Pencil size={16} /></button><button className="icon-button danger" aria-label={`删除凭据 ${item.name}`} onClick={() => void remove(item)}><Trash2 size={16} /></button></div></div><h3>{item.name}</h3><p className="muted">{item.domains.join(' · ')}</p><div className="credential-meta"><span>{item.count} 个 Cookie</span><span>更新于 {dateLabel(item.updatedAt)}</span><span>{item.expiresAt ? `最早到期：${dateLabel(item.expiresAt)}` : '会话 Cookie / 未提供到期时间'}</span></div></article>)}</div> : <div className="empty-state"><span className="large-icon"><Cookie size={30} /></span><h2>连接需要登录的网站</h2><p>从浏览器复制 Cookie，或导入 OpenCookie 导出的 JSON。</p><button className="button" onClick={() => setEditing(null)}><Plus size={16} />添加第一组凭据</button></div>}{editing !== undefined && <Modal title={editing ? '更新 Cookie 凭据' : '添加 Cookie 凭据'} close={close}><CredentialForm editing={editing ?? undefined} cancel={close} done={() => { close(); notify('凭据已保存'); void load(); }} /></Modal>}</section>;
 }
 
-function FeedEditor(props: { initial?: Feed; saved: (id: string) => void; cancel: () => void }) {
-  const [source, setSource] = useState<'website' | 'rss'>(props.initial?.sourceType ?? 'website');
+function FeedEditor({ source: initialSource, ...props }: { initial?: Feed; source?: 'website' | 'rss'; saved: (id: string) => void; cancel: () => void }) {
+  const [source, setSource] = useState<'website' | 'rss'>(props.initial?.sourceType ?? initialSource ?? 'website');
   return <>{!props.initial && <div className="detail-actions" aria-label="订阅来源类型"><button className="button" aria-pressed={source === 'website'} onClick={() => setSource('website')}>网页生成 RSS</button><button className="button" aria-pressed={source === 'rss'} onClick={() => setSource('rss')}>RSS 翻译</button></div>}{source === 'rss' ? <RssEditor {...props} /> : <Editor {...props} />}</>;
 }
 
@@ -271,20 +253,27 @@ export function Editor({ initial, draft, submitFeed, saved, cancel }: { initial?
 
 function FeedAddress({ feedUrl, notify, onError }: { feedUrl: string; notify: Notify; onError: (error: string) => void }) {
   return <Field label="RSS 订阅地址" hint="持有此地址即可读取订阅内容。需要撤销时可在订阅设置中轮换密钥。">
-    <div className="copy-row"><input readOnly value={feedUrl} onFocus={e => e.target.select()} /><button className="button primary" onClick={() => void navigator.clipboard.writeText(feedUrl).then(() => notify('RSS 地址已复制')).catch(() => onError('无法访问剪贴板，请选中地址后手动复制。'))}>复制 RSS 地址</button></div>
+    <div className="copy-row"><input readOnly value={feedUrl} onFocus={e => e.target.select()} /><button className="button primary" onClick={() => void navigator.clipboard.writeText(feedUrl).then(() => notify('RSS 地址已复制')).catch(() => onError('无法访问剪贴板，请选中地址后手动复制。'))}><Copy size={15} />复制 RSS 地址</button></div>
   </Field>;
 }
 
 function FeedStatus({ feed }: { feed: Feed }) {
-  return <><div className="detail-status"><span>每 {feed.intervalMinutes} 分钟刷新</span><span>最近成功：{dateLabel(feed.lastSuccessAt)}</span><span>{feed.enabled ? `下次检查：${dateLabel(feed.nextFetchAt)}` : '已暂停自动刷新'}</span></div><ErrorNote error={feed.lastError ?? undefined} />{feed.translation && <p role="status">翻译：{feed.translation.success} 条完成 · {feed.translation.pending} 条等待 · {feed.translation.failed} 条失败</p>}</>;
+  return <><div className="detail-status"><span>每 {feed.intervalMinutes} 分钟刷新</span><span>最近成功：{dateLabel(feed.lastSuccessAt)}</span><span>{feed.enabled ? `下次检查：${dateLabel(feed.nextFetchAt)}` : '已暂停自动刷新'}</span></div><ErrorNote error={feed.lastError ?? undefined} />{feed.translation && <p role="status" className="translation-summary">翻译：{feed.translation.success} 条完成 · {feed.translation.pending} 条等待 · {feed.translation.failed} 条失败</p>}</>;
 }
 
-function FeedDetail({ id, close, settings, changed, notify }: { id: string; close: () => void; settings: () => void; changed: () => void; notify: Notify }) {
-  const [tab, setTab] = useState<'items' | 'logs'>('items');
+type PanelTab = 'items' | 'logs' | 'settings';
+const panelTabs: Array<[PanelTab, string]> = [['items', '订阅内容'], ['logs', '抓取日志'], ['settings', '订阅设置']];
+type FeedDetailData = { feed: Feed; items: FeedItem[]; feedUrl: string };
+
+// One panel for everything about a feed: the address and status stay on top,
+// content, fetch logs and settings are tabs underneath.
+function FeedPanel({ id, initialTab, close, edit, changed, notify }: { id: string; initialTab: PanelTab; close: () => void; edit: (feed: Feed) => void; changed: () => void; notify: Notify }) {
+  const [tab, setTab] = useState<PanelTab>(initialTab);
   const [revision, setRevision] = useState(0);
-  const [detail, setDetail] = useState<{ feed: Feed; items: FeedItem[]; feedUrl: string } | null>(null);
+  const [detail, setDetail] = useState<FeedDetailData | null>(null);
   const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState('');
+  const dirty = useRef(false);
   const load = useCallback(async () => { setDetail(await api.feeds.detail(id)); }, [id]);
   useEffect(() => { void load().catch(error => setError(messageOf(error))); }, [load]);
   useEffect(() => {
@@ -292,102 +281,95 @@ function FeedDetail({ id, close, settings, changed, notify }: { id: string; clos
     const timer = window.setInterval(() => { void load().catch(e => setError(messageOf(e))); }, 3000);
     return () => window.clearInterval(timer);
   }, [detail?.feed.sourceType, detail?.feed.enabled, detail?.feed.lastFetchedAt, detail?.feed.lastSuccessAt, detail?.feed.lastError, detail?.feed.translation?.pending, load]);
-  async function refresh() {
-    setBusy(true); setError('');
-    try { await api.feeds.refresh(id); await load(); setRevision(v => v + 1); changed(); }
-    catch (error) { setError(messageOf(error)); } finally { setBusy(false); }
+  function guard(next: () => void) {
+    if (busy) return;
+    if (!dirty.current || confirm('有未保存的设置，确定放弃修改？')) { dirty.current = false; next(); }
   }
-  return <Modal title={detail?.feed.name ?? '订阅详情'} close={close} wide><div className="modal-body">
-    <ErrorNote error={error} />{!detail ? !error && <Busy label="正在加载订阅" /> : <>
-      <div className="detail-source"><Globe2 size={16} /><a href={detail.feed.url} target="_blank" rel="noreferrer">{detail.feed.url}</a></div>
-      <FeedAddress feedUrl={detail.feedUrl} notify={notify} onError={setError} />
-      <div className="detail-actions"><button className="button small" disabled={busy} onClick={() => void refresh()}><RefreshCw size={14} />{busy ? '正在刷新' : '立即刷新'}</button><button className="button small" disabled={busy} onClick={settings}><Settings2 size={14} />订阅设置</button></div>
-      <FeedStatus feed={detail.feed} />
-      {translationEnabled(detail.feed) && <TranslationProgress id={id} enabled={detail.feed.enabled} />}
-      {translationEnabled(detail.feed) && <button className="button small" disabled={busy || !detail.feed.enabled} onClick={() => { setBusy(true); void api.feeds.retryTranslation(id).then(load).catch(e => setError(messageOf(e))).finally(() => setBusy(false)); }}>重试未完成翻译</button>}
-      <div className="detail-actions" aria-label="详情内容">
-        <button className="button small" aria-pressed={tab === 'items'} onClick={() => setTab('items')}>订阅内容</button>
-        <button className="button small" aria-pressed={tab === 'logs'} onClick={() => setTab('logs')}>抓取日志</button>
+  async function refresh() {
+    setBusy('刷新'); setError('');
+    try { await api.feeds.refresh(id); await load(); setRevision(v => v + 1); changed(); }
+    catch (error) { setError(messageOf(error)); } finally { setBusy(''); }
+  }
+  const feed = detail?.feed;
+  return <Modal title={feed?.name ?? '订阅详情'} close={() => guard(close)} wide><div className="modal-body feed-panel">
+    <ErrorNote error={error} />{!detail || !feed ? !error && <Busy label="正在加载订阅" /> : <>
+      <div className="feed-panel-head">
+        <div className="feed-panel-source"><div className="detail-source"><Globe2 size={16} /><a href={feed.url} target="_blank" rel="noreferrer">{feed.url}</a></div><button className="button small" disabled={!!busy} onClick={() => void refresh()}><RefreshCw size={14} className={busy === '刷新' ? 'spin' : undefined} />{busy === '刷新' ? '正在刷新' : '立即刷新'}</button></div>
+        <FeedAddress feedUrl={detail.feedUrl} notify={notify} onError={setError} />
+        <FeedStatus feed={feed} />
       </div>
-      {tab === 'items' ? <ItemPreview items={detail.items} /> : <FetchLogs id={id} revision={revision} />}
+      <div className="detail-actions feed-tabs" aria-label="详情内容">{panelTabs.map(([key, label]) => <button key={key} className="button small" aria-pressed={tab === key} onClick={() => { if (tab !== key) guard(() => setTab(key)); }}>{label}</button>)}</div>
+      {tab === 'items' && <>
+        {translationEnabled(feed) && <TranslationProgress id={id} enabled={feed.enabled} />}
+        {translationEnabled(feed) && <button className="button small retry-translation" disabled={!!busy || !feed.enabled} onClick={() => { setBusy('重试翻译'); void api.feeds.retryTranslation(id).then(load).catch(e => setError(messageOf(e))).finally(() => setBusy('')); }}>重试未完成翻译</button>}
+        <ItemPreview items={detail.items} />
+      </>}
+      {tab === 'logs' && <FetchLogs id={id} revision={revision} />}
+      {tab === 'settings' && <FeedSettingsTab feed={feed} busy={busy} setBusy={setBusy} setError={setError} dirty={dirty} reload={load} saved={result => setDetail(previous => previous && { ...previous, ...result })} changed={changed} notify={notify} edit={() => guard(() => edit(feed))} removed={close} />}
     </>}
   </div></Modal>;
 }
 
-function FeedSettings({ id, close, edit, changed, notify }: { id: string; close: () => void; edit: (feed: Feed) => void; changed: () => void; notify: Notify }) {
-  const [detail, setDetail] = useState<{ feed: Feed; feedUrl: string } | null>(null);
-  const [title, setTitle] = useState('');
-  const [interval, setInterval] = useState('');
-  const [mode, setMode] = useState<'original' | 'chinese' | 'bilingual'>('bilingual');
-  const [error, setError] = useState('');
-  const [busy, setBusy] = useState('');
-  useEffect(() => {
-    let cancelled = false;
-    void api.feeds.detail(id).then(result => {
-      if (cancelled) return;
-      setDetail(result); setTitle(result.feed.name); setInterval(String(result.feed.intervalMinutes)); setMode(result.feed.translationMode ?? 'bilingual');
-    }).catch(error => { if (!cancelled) setError(messageOf(error)); });
-    return () => { cancelled = true; };
-  }, [id]);
-  const dirty = !!detail && (title !== detail.feed.name || interval !== String(detail.feed.intervalMinutes) || mode !== (detail.feed.translationMode ?? 'bilingual'));
-  function leave(next: () => void) {
-    if (busy) return;
-    if (!dirty || confirm('有未保存的设置，确定放弃修改？')) next();
-  }
+function FeedSettingsTab({ feed, busy, setBusy, setError, dirty, reload, saved, changed, notify, edit, removed }: {
+  feed: Feed; busy: string; setBusy: (value: string) => void; setError: (value: string) => void; dirty: React.MutableRefObject<boolean>;
+  reload: () => Promise<void>; saved: (result: { feed: Feed; feedUrl: string }) => void; changed: () => void; notify: Notify; edit: () => void; removed: () => void;
+}) {
+  const [title, setTitle] = useState(feed.name);
+  const [interval, setIntervalValue] = useState(String(feed.intervalMinutes));
+  const [mode, setMode] = useState<'original' | 'chinese' | 'bilingual'>(feed.translationMode ?? 'bilingual');
+  const isDirty = title !== feed.name || interval !== String(feed.intervalMinutes) || mode !== (feed.translationMode ?? 'bilingual');
+  dirty.current = isDirty;
   async function save(event: FormEvent) {
     event.preventDefault();
-    if (!detail || busy) return;
+    if (busy) return;
     if (!title.trim()) { setError('请输入订阅名称'); return; }
     const minutes = Number(interval);
     if (!interval || !Number.isInteger(minutes) || minutes < 5 || minutes > 1440) { setError('刷新间隔必须是 5 到 1440 之间的整数'); return; }
     setBusy('保存设置'); setError('');
     try {
-      const result = await api.feeds.settings(id, {
-        ...(mode !== detail.feed.translationMode ? { translationMode: mode } : {}),
-        ...(title !== detail.feed.name ? { channelTitle: title } : {}),
-        ...(interval !== String(detail.feed.intervalMinutes) ? { intervalMinutes: minutes } : {}),
+      const result = await api.feeds.settings(feed.id, {
+        ...(mode !== feed.translationMode ? { translationMode: mode } : {}),
+        ...(title !== feed.name ? { channelTitle: title } : {}),
+        ...(interval !== String(feed.intervalMinutes) ? { intervalMinutes: minutes } : {}),
       });
-      setDetail(result); setTitle(result.feed.name); setInterval(String(result.feed.intervalMinutes)); setMode(result.feed.translationMode ?? 'bilingual');
+      saved(result); setTitle(result.feed.name); setIntervalValue(String(result.feed.intervalMinutes)); setMode(result.feed.translationMode ?? 'bilingual');
       changed(); notify('订阅设置已保存');
     } catch (error) { setError(messageOf(error)); } finally { setBusy(''); }
   }
   async function action(label: string, fn: () => Promise<unknown>, success: string) {
     if (busy) return;
     setBusy(label); setError('');
-    try {
-      await fn();
-      setDetail(await api.feeds.detail(id));
-      changed(); notify(success);
-    } catch (error) { setError(messageOf(error)); } finally { setBusy(''); }
+    try { await fn(); await reload(); changed(); notify(success); }
+    catch (error) { setError(messageOf(error)); } finally { setBusy(''); }
   }
   async function remove() {
     if (busy || !confirm('删除此订阅及其历史条目？')) return;
     setBusy('删除订阅'); setError('');
-    try { await api.feeds.remove(id); changed(); notify('订阅已删除'); close(); }
+    try { await api.feeds.remove(feed.id); dirty.current = false; changed(); notify('订阅已删除'); removed(); }
     catch (error) { setError(messageOf(error)); } finally { setBusy(''); }
   }
-  return <Modal title="订阅设置" close={() => leave(close)}><div className="modal-body feed-settings">
-    <ErrorNote error={error} />{!detail ? !error && <Busy label="正在加载订阅设置" /> : <>
-      <p className="feed-settings-source">{detail.feed.url}</p>
-      <form onSubmit={save}>
-        <Field label="订阅名称" hint="同步更新订阅列表和 RSS 频道标题，订阅地址保持不变。"><input required maxLength={200} disabled={!!busy} value={title} onChange={e => setTitle(e.target.value)} /></Field>
-        <Field label="刷新间隔（分钟）" hint="支持 5–1440 分钟。修改后从保存时重新计时，不会立即抓取；已暂停的订阅继续保持暂停。"><input type="number" required min={5} max={1440} step={1} disabled={!!busy} value={interval} onChange={e => setInterval(e.target.value)} /></Field>
+  return <div className="feed-settings">
+    <form onSubmit={save} className="feed-settings-form">
+      <Field label="订阅名称" hint="同步更新订阅列表和 RSS 频道标题，订阅地址保持不变。"><input required maxLength={200} disabled={!!busy} value={title} onChange={e => setTitle(e.target.value)} /></Field>
+      <div className="form-row">
+        <Field label="刷新间隔（分钟）" hint="支持 5–1440 分钟。修改后从保存时重新计时，不会立即抓取；已暂停的订阅继续保持暂停。"><input type="number" required min={5} max={1440} step={1} disabled={!!busy} value={interval} onChange={e => setIntervalValue(e.target.value)} /></Field>
         <Field label="输出模式" hint="开启翻译后，仅发布翻译完成的标题和已抓取内容；不会额外抓取文章全文。"><select aria-label="输出模式" disabled={!!busy} value={mode} onChange={e => setMode(e.target.value as typeof mode)}><option value="original">原文（不翻译）</option><option value="bilingual">双语（中文在前）</option><option value="chinese">仅中文</option></select></Field>
-        <button className="button primary" disabled={!!busy || !dirty}>{busy === '保存设置' ? <Busy label="正在保存" /> : '保存设置'}</button>
-      </form>
-      <section className="feed-settings-section" aria-label="更新与匹配">
-        <h3>更新与匹配</h3><FeedStatus feed={detail.feed} />
-        <div className="detail-actions"><button className="button small" disabled={!!busy} onClick={() => void action('切换状态', () => api.feeds.toggle(id), detail.feed.enabled ? '订阅已暂停' : '订阅已恢复')}>{detail.feed.enabled ? '暂停订阅' : '恢复订阅'}</button><button className="button small" disabled={!!busy} onClick={() => leave(() => edit(detail.feed))}><Pencil size={14} />{detail.feed.sourceType === 'rss' ? '编辑 RSS 来源' : '编辑匹配规则'}</button></div>
-      </section>
-      <section className="feed-settings-section" aria-label="订阅地址与删除">
-        <h3>订阅地址与删除</h3><FeedAddress feedUrl={detail.feedUrl} notify={notify} onError={setError} />
-        <p className="hint">轮换密钥会立即使旧 RSS 地址失效；删除订阅会同时删除历史条目。</p>
-        <div className="detail-actions"><button className="button small" disabled={!!busy} onClick={() => { if (confirm('轮换后，旧 RSS 地址将立即失效。继续？')) void action('轮换密钥', () => api.feeds.rotate(id), '订阅地址已更新'); }}><KeyRound size={14} />轮换订阅密钥</button><button className="button small danger" disabled={!!busy} onClick={() => void remove()}><Trash2 size={14} />删除订阅</button></div>
-      </section>
-      {busy && busy !== '保存设置' && <Busy label={`正在${busy}`} />}
-    </>}
-  </div></Modal>;
+      </div>
+      <button className="button primary" disabled={!!busy || !isDirty}>{busy === '保存设置' ? <Busy label="正在保存" /> : '保存设置'}</button>
+    </form>
+    <section className="feed-settings-section" aria-label="更新与匹配">
+      <div><h3>更新与匹配</h3><p className="hint">暂停后不再自动刷新，随时可以恢复。</p></div>
+      <div className="detail-actions"><button className="button small" disabled={!!busy} onClick={() => void action('切换状态', () => api.feeds.toggle(feed.id), feed.enabled ? '订阅已暂停' : '订阅已恢复')}>{feed.enabled ? '暂停订阅' : '恢复订阅'}</button><button className="button small" disabled={!!busy} onClick={edit}><Pencil size={14} />{feed.sourceType === 'rss' ? '编辑 RSS 来源' : '编辑匹配规则'}</button></div>
+    </section>
+    <section className="feed-settings-section danger-zone" aria-label="订阅地址与删除">
+      <div><h3>订阅地址与删除</h3><p className="hint">轮换密钥会立即使旧 RSS 地址失效；删除订阅会同时删除历史条目。</p></div>
+      <div className="detail-actions"><button className="button small" disabled={!!busy} onClick={() => { if (confirm('轮换后，旧 RSS 地址将立即失效。继续？')) void action('轮换密钥', () => api.feeds.rotate(feed.id), '订阅地址已更新'); }}><KeyRound size={14} />轮换订阅密钥</button><button className="button small danger" disabled={!!busy} onClick={() => void remove()}><Trash2 size={14} />删除订阅</button></div>
+    </section>
+    {busy && !['保存设置', '刷新', '重试翻译'].includes(busy) && <Busy label={`正在${busy}`} />}
+  </div>;
 }
+
+type SettingsSection = { id: string; label: string; icon: typeof Bell };
 
 function SettingsView({ auth, logout, notify, target }: { auth: AuthState; logout: () => void; notify: Notify; target?: UserSummary | null }) {
   const [settingsRevision, setSettingsRevision] = useState(0);
@@ -396,28 +378,97 @@ function SettingsView({ auth, logout, notify, target }: { auth: AuthState; logou
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const admin = auth.role === 'admin' && !target;
+  const sections: SettingsSection[] = [
+    ...(admin ? [{ id: 'general', label: '应用设置', icon: SlidersHorizontal }] : []),
+    { id: 'notifications', label: '通知', icon: Bell },
+    { id: 'credentials', label: 'Cookie 凭据', icon: Cookie },
+    ...(!target ? [{ id: 'account', label: '账号与密码', icon: KeyRound }] : []),
+    ...(admin ? [{ id: 'backup', label: '备份与迁移', icon: Archive }] : []),
+    { id: 'about', label: '关于', icon: Info },
+  ];
+  const sectionKey = sections.map(section => section.id).join();
+  const [active, setActive] = useState(sections[0].id);
+  useEffect(() => {
+    // Highlight the group currently near the top of the viewport.
+    const nodes = sectionKey.split(',').map(id => document.getElementById(`settings-${id}`)).filter((node): node is HTMLElement => !!node);
+    if (typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver(entries => {
+      const visible = entries.filter(entry => entry.isIntersecting).sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
+      if (visible) setActive(visible.target.id.replace('settings-', ''));
+    }, { rootMargin: '-90px 0px -55% 0px' });
+    nodes.forEach(node => observer.observe(node));
+    return () => observer.disconnect();
+  }, [sectionKey]);
+  function jump(id: string) { setActive(id); document.getElementById(`settings-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
   async function submit(event: FormEvent) { event.preventDefault(); if (newPassword !== confirmPassword) { setError('两次输入的新密码不一致'); return; } setBusy(true); setError(''); try { await api.auth.password({ currentPassword, newPassword }); setCurrentPassword(''); setNewPassword(''); setConfirmPassword(''); notify('密码已修改，请重新登录'); logout(); } catch (error) { setError(messageOf(error)); } finally { setBusy(false); } }
-  return <><div className="page-heading"><div><span className="section-kicker">MAKE IT YOURS</span><h1>设置</h1><p>{auth.role === 'admin' ? '管理通知、抓取、网络与个人账号。' : '管理你的个人通知与登录密码。'}</p></div></div>{auth.role === 'admin' && !target && <><ApplicationSettingsPanel revision={settingsRevision} /><BackupPanel onRestored={logout} onImported={() => setSettingsRevision(v => v + 1)} /></>}<BarkPanel key={settingsRevision} username={target?.username ?? auth.username!} enabled={target?.enabled !== false} /><div className="settings-grid">{!target && <form className="panel settings-form" onSubmit={submit}><div className="panel-heading"><h2>修改密码</h2><KeyRound size={19} /></div><p className="muted">当前用户：{auth.username}。修改后会退出此账号的所有现有会话。</p><Field label="当前密码"><input required type="password" value={currentPassword} onChange={e => setCurrentPassword(e.target.value)} autoComplete="current-password" /></Field><Field label="新密码"><input required type="password" minLength={8} maxLength={1024} value={newPassword} onChange={e => setNewPassword(e.target.value)} autoComplete="new-password" /></Field><Field label="确认新密码"><input required type="password" minLength={8} value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} autoComplete="new-password" /></Field><ErrorNote error={error} /><button className="button primary" disabled={busy}>{busy ? <Busy /> : '更新密码'}</button></form>}<section className="panel about-panel"><Brand /><p>自动找到网页上的新内容，汇入你的 RSS 阅读器。</p><div className="about-row"><span>版本</span><code>{auth.version}</code></div><div className="about-row"><span>许可证</span><span>MIT</span></div><a className="text-link" href="https://github.com/Jaaayden/feedlantern" target="_blank" rel="noreferrer">查看开源项目<ExternalLink size={14} /></a><div className="notice">服务主机需要保持运行，定时更新才会继续。支持网页列表订阅与 RSS 翻译；RSS 全文以源内提供的内容为准，不自动补抓全文或翻页。</div></section></div></>;
+  return <>
+    <div className="page-heading"><div><span className="section-kicker">MAKE IT YOURS</span><h1>设置</h1><p>{auth.role === 'admin' ? '管理通知、抓取、网络与个人账号。' : '管理你的个人通知与登录密码。'}</p></div></div>
+    <div className="settings-layout">
+      <nav className="settings-nav" aria-label="设置分组">{sections.map(section => <button key={section.id} className={active === section.id ? 'selected' : ''} aria-current={active === section.id ? 'true' : undefined} onClick={() => jump(section.id)}><section.icon size={16} />{section.label}</button>)}</nav>
+      <div className="settings-sections">
+        {admin && <div id="settings-general" className="settings-section"><ApplicationSettingsPanel revision={settingsRevision} /></div>}
+        <div id="settings-notifications" className="settings-section"><BarkPanel key={settingsRevision} username={target?.username ?? auth.username!} enabled={target?.enabled !== false} /></div>
+        <div id="settings-credentials" className="settings-section"><CredentialsView notify={notify} /></div>
+        {!target && <div id="settings-account" className="settings-section"><form className="panel settings-form" onSubmit={submit}><div className="panel-heading"><h2>修改密码</h2><KeyRound size={19} /></div><p className="muted">当前用户：{auth.username}。修改后会退出此账号的所有现有会话。</p><Field label="当前密码"><input required type="password" value={currentPassword} onChange={e => setCurrentPassword(e.target.value)} autoComplete="current-password" /></Field><div className="form-row"><Field label="新密码"><input required type="password" minLength={8} maxLength={1024} value={newPassword} onChange={e => setNewPassword(e.target.value)} autoComplete="new-password" /></Field><Field label="确认新密码"><input required type="password" minLength={8} value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} autoComplete="new-password" /></Field></div><ErrorNote error={error} /><button className="button primary" disabled={busy}>{busy ? <Busy /> : '更新密码'}</button></form></div>}
+        {admin && <div id="settings-backup" className="settings-section"><BackupPanel onRestored={logout} onImported={() => setSettingsRevision(v => v + 1)} /></div>}
+        <div id="settings-about" className="settings-section"><section className="panel about-panel"><Brand /><p>自动找到网页上的新内容，汇入你的 RSS 阅读器。</p><div className="about-row"><span>版本</span><code>{auth.version}</code></div><div className="about-row"><span>许可证</span><span>MIT</span></div><a className="text-link" href="https://github.com/Jaaayden/feedlantern" target="_blank" rel="noreferrer">查看开源项目<ExternalLink size={14} /></a><div className="notice">服务主机需要保持运行，定时更新才会继续。支持网页列表订阅与 RSS 翻译；RSS 全文以源内提供的内容为准，不自动补抓全文或翻页。</div></section></div>
+      </div>
+    </div>
+  </>;
+}
+
+function ThemeToggle() {
+  const [theme, setTheme] = useState<Theme>(readTheme);
+  const next: Theme = theme === 'system' ? 'light' : theme === 'light' ? 'dark' : 'system';
+  const Icon = theme === 'light' ? Sun : theme === 'dark' ? Moon : Monitor;
+  return <button className="icon-button theme-toggle" title={`界面主题：${themeLabels[theme]}`} aria-label={`界面主题：${themeLabels[theme]}，点击切换为${themeLabels[next]}`} onClick={() => { saveTheme(next); setTheme(next); }}><Icon size={17} /></button>;
+}
+
+type NewSource = 'website' | 'rss';
+
+function NewFeedMenu({ create, batch }: { create: (source: NewSource) => void; batch: () => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const pointer = (event: MouseEvent) => { if (!ref.current?.contains(event.target as Node)) setOpen(false); };
+    const key = (event: KeyboardEvent) => { if (event.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', pointer);
+    document.addEventListener('keydown', key);
+    ref.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+    return () => { document.removeEventListener('mousedown', pointer); document.removeEventListener('keydown', key); };
+  }, [open]);
+  const choose = (fn: () => void) => { setOpen(false); fn(); };
+  return <div className="split-button" ref={ref}>
+    <button className="button primary" onClick={() => create('website')}><Plus size={17} />新建订阅</button>
+    <button className="button primary split-toggle" aria-label="更多新建方式" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(!open)}><ChevronDown size={16} /></button>
+    {open && <div className="menu" role="menu" aria-label="新建方式">
+      <button role="menuitem" onClick={() => choose(() => create('website'))}><span className="menu-icon"><Globe2 size={17} /></span><span><strong>网页生成 RSS</strong><small>打开网页，自动识别内容列表</small></span></button>
+      <button role="menuitem" onClick={() => choose(() => create('rss'))}><span className="menu-icon"><Languages size={17} /></span><span><strong>RSS 翻译</strong><small>把英文订阅变成中文或双语</small></span></button>
+      <button role="menuitem" onClick={() => choose(batch)}><span className="menu-icon"><ListPlus size={17} /></span><span><strong>批量添加</strong><small>一次粘贴多个网址</small></span></button>
+    </div>}
+  </div>;
 }
 
 export default function App() {
   const [auth, setAuth] = useState<AuthState | null>(null);
   const [bootError, setBootError] = useState('');
-  const [page, setPage] = useState<'feeds' | 'credentials' | 'settings' | 'batch' | 'users'>('feeds');
+  const [page, setPage] = useState<'feeds' | 'settings' | 'batch' | 'users'>('feeds');
   const [target, setTarget] = useState<UserSummary | null>(null);
   const [feeds, setFeeds] = useState<Feed[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
   const [editor, setEditor] = useState<Feed | null | undefined>(undefined);
-  const [detailId, setDetailId] = useState<string | null>(null);
-  const [settingsId, setSettingsId] = useState<string | null>(null);
+  const [editorSource, setEditorSource] = useState<NewSource>('website');
+  const [panel, setPanel] = useState<{ id: string; tab: PanelTab } | null>(null);
   const [editorReturnId, setEditorReturnId] = useState<string | null>(null);
   const [toast, setToast] = useState('');
   const notify = useCallback((message: string) => setToast(message), []);
   const authGeneration = useRef(0);
   const acceptAuth = useCallback((state: AuthState) => { authGeneration.current++; setFeeds([]); setWorkspaceUser(undefined); setTarget(null); setCsrfToken(state.csrfToken); setAuth(state); setPage('feeds'); setQuery(''); setError(''); }, []);
-  const forgetAuth = useCallback(() => { authGeneration.current++; setWorkspaceUser(undefined); setTarget(null); setCsrfToken(undefined); setAuth(previous => previous ? { ...previous, authenticated: false, csrfToken: undefined } : null); setFeeds([]); setEditor(undefined); setDetailId(null); setSettingsId(null); setEditorReturnId(null); }, []);
+  const forgetAuth = useCallback(() => { authGeneration.current++; setWorkspaceUser(undefined); setTarget(null); setCsrfToken(undefined); setAuth(previous => previous ? { ...previous, authenticated: false, csrfToken: undefined } : null); setFeeds([]); setEditor(undefined); setPanel(null); setEditorReturnId(null); }, []);
   useEffect(() => { void api.auth.status().then(acceptAuth).catch(error => setBootError(messageOf(error))); return onUnauthorized(forgetAuth); }, [acceptAuth, forgetAuth]);
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''), 4000); return () => clearTimeout(timer); }, [toast]);
   const loadFeeds = useCallback(async () => {
@@ -428,16 +479,23 @@ export default function App() {
   }, []);
   useEffect(() => { if (!auth?.authenticated) return; void loadFeeds(); const timer = setInterval(() => void loadFeeds(), 30000); return () => clearInterval(timer); }, [auth?.authenticated, target?.id, loadFeeds]);
   const changeWorkspace = useCallback((user: UserSummary | null) => {
-    authGeneration.current++; setWorkspaceUser(user?.id); setTarget(user); setFeeds([]); setPage('feeds'); setQuery(''); setError(''); setEditor(undefined); setDetailId(null); setSettingsId(null); setEditorReturnId(null);
+    authGeneration.current++; setWorkspaceUser(user?.id); setTarget(user); setFeeds([]); setPage('feeds'); setQuery(''); setError(''); setEditor(undefined); setPanel(null); setEditorReturnId(null);
   }, []);
-  const closeDetail = useCallback(() => setDetailId(null), []);
+  const closePanel = useCallback(() => setPanel(null), []);
   async function logout() { try { await api.auth.logout(); forgetAuth(); } catch (error) { notify(messageOf(error)); } }
   if (!auth) return <div className="boot"><Brand />{bootError ? <><ErrorNote error={bootError} /><button className="button" onClick={() => location.reload()}>重新连接</button></> : <Busy label="正在连接服务" />}</div>;
   if (!auth.authenticated) return <><AuthScreen state={auth} authenticated={acceptAuth} />{toast && <div className="toast" role="status"><Check size={16} />{toast}</div>}</>;
   const filtered = feeds.filter(feed => `${feed.name} ${feed.url}`.toLowerCase().includes(query.toLowerCase()));
-  function navigate(next: typeof page) { setPage(next); setEditor(undefined); setDetailId(null); setSettingsId(null); setEditorReturnId(null); }
-  return <div className="app-layout"><aside className="sidebar"><Brand /><div className="workspace-label">个人工作台</div><nav aria-label="主导航"><button className={page === 'feeds' || page === 'batch' ? 'selected' : ''} onClick={() => navigate('feeds')}><Rss size={19} />订阅管理<span>{feeds.length}</span></button><button className={page === 'credentials' ? 'selected' : ''} onClick={() => navigate('credentials')}><Cookie size={19} />Cookie 凭据</button><button className={page === 'settings' ? 'selected' : ''} onClick={() => navigate('settings')}><Settings2 size={19} />设置</button>{auth.role === 'admin' && <button className={page === 'users' ? 'selected' : ''} onClick={() => navigate('users')}><ShieldCheck size={19} />用户管理</button>}</nav><div className="sidebar-bottom"><div className="local-label"><span /> 自托管 · 独立运行</div><div className="account"><span className="avatar">{auth.username?.slice(0, 1).toUpperCase()}</span><div><strong>{auth.username}</strong><small>{auth.role === 'admin' ? '管理员' : '普通用户'}</small></div><button className="icon-button" aria-label="退出登录" onClick={() => void logout()}><LogOut size={17} /></button></div><span className="version">{auth.version}</span></div></aside><div className="main-shell"><header className="topbar"><span><span className="muted">工作台</span><span className="slash">/</span>{page === 'feeds' ? editor !== undefined ? editor ? editor.sourceType === 'rss' ? '编辑 RSS 翻译' : '编辑匹配规则' : '新建订阅' : '订阅管理' : page === 'batch' ? '批量添加' : page === 'credentials' ? 'Cookie 凭据' : page === 'users' ? '用户管理' : '设置'}</span><span className="topbar-status"><ShieldCheck size={14} /> 已安全登录 <button className="icon-button mobile-logout" aria-label="退出登录" onClick={() => void logout()}><LogOut size={15} /></button></span></header><main className="main-content" key={target?.id ?? auth.userId}>
+  const attention = feeds.filter(feed => !!feed.lastError).length;
+  function navigate(next: typeof page) { setPage(next); setEditor(undefined); setPanel(null); setEditorReturnId(null); }
+  function create(source: NewSource) { setEditorSource(source); setEditor(null); }
+  const crumb = page === 'feeds' ? editor !== undefined ? editor ? editor.sourceType === 'rss' ? '编辑 RSS 翻译' : '编辑匹配规则' : '新建订阅' : '订阅管理' : page === 'batch' ? '批量添加' : page === 'users' ? '用户管理' : '设置';
+  return <div className="app-layout"><aside className="sidebar"><Brand /><div className="workspace-label">个人工作台</div><nav aria-label="主导航"><button className={page === 'feeds' || page === 'batch' ? 'selected' : ''} onClick={() => navigate('feeds')}><Rss size={19} />订阅管理<span>{feeds.length}</span></button><button className={page === 'settings' ? 'selected' : ''} onClick={() => navigate('settings')}><Settings2 size={19} />设置</button>{auth.role === 'admin' && <button className={page === 'users' ? 'selected' : ''} onClick={() => navigate('users')}><ShieldCheck size={19} />用户管理</button>}</nav><div className="sidebar-bottom"><div className="local-label"><span /> 自托管 · 独立运行</div><div className="account"><span className="avatar">{auth.username?.slice(0, 1).toUpperCase()}</span><div><strong>{auth.username}</strong><small>{auth.role === 'admin' ? '管理员' : '普通用户'}</small></div><button className="icon-button" aria-label="退出登录" onClick={() => void logout()}><LogOut size={17} /></button></div><span className="version">{auth.version}</span></div></aside><div className="main-shell"><header className="topbar"><span><span className="muted">工作台</span><span className="slash">/</span>{crumb}</span><span className="topbar-actions"><ThemeToggle /><span className="topbar-status"><ShieldCheck size={14} /> 已安全登录 <button className="icon-button mobile-logout" aria-label="退出登录" onClick={() => void logout()}><LogOut size={15} /></button></span></span></header><main className="main-content" key={target?.id ?? auth.userId}>
     {target && <div className="workspace-banner" role="status"><div><strong>正在管理：{target.username}</strong><p>{target.enabled ? '修改将作用于此用户的订阅、凭据和个人设置。' : '此用户已停用，可以查看和修改静态配置；执行任务前请先启用。'}</p></div><button className="button small" onClick={() => changeWorkspace(null)}>返回我的工作台</button></div>}
-    {page === 'users' && auth.role === 'admin' ? <UsersPanel currentUserId={auth.userId!} manage={changeWorkspace} identityChanged={() => void api.auth.status().then(acceptAuth)} /> : page === 'batch' ? <BatchView notify={notify} changed={() => void loadFeeds()} /> : page === 'credentials' ? <CredentialsView notify={notify} /> : page === 'settings' ? <SettingsView target={target} auth={auth} logout={forgetAuth} notify={notify} /> : editor !== undefined ? <FeedEditor key={editor?.id ?? 'new'} initial={editor ?? undefined} cancel={() => { setEditor(undefined); setSettingsId(editorReturnId); setEditorReturnId(null); }} saved={id => { setEditor(undefined); if (editorReturnId) setSettingsId(id); else setDetailId(id); setEditorReturnId(null); notify('订阅已保存'); void loadFeeds(); }} /> : <><div className="page-heading"><div><span className="section-kicker">LESS CHECKING. MORE READING.</span><h1>你的订阅，持续点亮。</h1><p>把关注的网页汇集在这里，新内容会自动抵达。</p></div><div className="inline"><button className="button" onClick={() => navigate('batch')}>批量添加</button><button className="button primary" onClick={() => setEditor(null)}><Plus size={17} />新建订阅</button></div></div><div className="stats-row"><div><span>全部订阅</span><strong>{feeds.length}<small>个来源</small></strong></div><div><span>正在关注</span><strong>{feeds.filter(feed => feed.enabled).length}<small>自动更新</small></strong></div><div><span>已收集内容</span><strong>{feeds.reduce((sum, feed) => sum + feed.itemCount, 0)}<small>条记录</small></strong></div></div><div className="list-toolbar"><h2>订阅列表 <span>{feeds.length}</span></h2><div className="input-icon search-input"><Search size={16} /><input aria-label="搜索订阅" placeholder="搜索名称或网址" value={query} onChange={e => setQuery(e.target.value)} /></div></div><ErrorNote error={error} />{loading && !feeds.length ? <Busy label="正在加载订阅" /> : filtered.length ? <FeedCollection auth={target ? { ...auth, userId: target.id, role: 'user' } : auth} feeds={filtered} query={query} detail={setDetailId} settings={setSettingsId} changed={() => void loadFeeds()} notify={notify} /> : <div className="empty-state"><span className="large-icon"><Rss size={32} /></span><h2>{query ? '没有找到匹配的订阅' : '从一个值得关注的网址开始'}</h2><p>{query ? '尝试其他名称或网址。' : '输入网页地址，自动识别内容，预览后即可生成 RSS。'}</p>{!query && <button className="button" onClick={() => setEditor(null)}><Plus size={16} />创建第一条订阅</button>}</div>}<div className="dashboard-note"><Sparkles size={17} /><span>自动识别先行，手动调整随时可用。</span><span className="muted">你的内容，你来选择。</span></div></>}
-  </main><footer className="page-footer"><span>FeedLantern · 订阅灯</span><a href="https://github.com/Jaaayden/feedlantern" target="_blank" rel="noreferrer">GitHub · Jaaayden/feedlantern · {auth.version}</a></footer></div>{detailId && <FeedDetail key={detailId} id={detailId} close={closeDetail} settings={() => { setSettingsId(detailId); setDetailId(null); }} changed={() => void loadFeeds()} notify={notify} />}{settingsId && <FeedSettings key={settingsId} id={settingsId} close={() => setSettingsId(null)} edit={feed => { setSettingsId(null); setEditorReturnId(feed.id); setEditor(feed); }} changed={() => void loadFeeds()} notify={notify} />}{toast && <div className="toast" role="status"><Check size={16} />{toast}</div>}</div>;
+    {page === 'users' && auth.role === 'admin' ? <UsersPanel currentUserId={auth.userId!} manage={changeWorkspace} identityChanged={() => void api.auth.status().then(acceptAuth)} /> : page === 'batch' ? <BatchView notify={notify} changed={() => void loadFeeds()} back={() => navigate('feeds')} /> : page === 'settings' ? <SettingsView target={target} auth={auth} logout={forgetAuth} notify={notify} /> : editor !== undefined ? <FeedEditor key={editor?.id ?? `new-${editorSource}`} initial={editor ?? undefined} source={editorSource} cancel={() => { setEditor(undefined); if (editorReturnId) setPanel({ id: editorReturnId, tab: 'settings' }); setEditorReturnId(null); }} saved={id => { setEditor(undefined); setPanel({ id, tab: editorReturnId ? 'settings' : 'items' }); setEditorReturnId(null); notify('订阅已保存'); void loadFeeds(); }} /> : <>
+      <div className="page-heading"><div><span className="section-kicker">LESS CHECKING. MORE READING.</span><h1>你的订阅，持续点亮。</h1><p>把关注的网页汇集在这里，新内容会自动抵达。</p></div><NewFeedMenu create={create} batch={() => navigate('batch')} /></div>
+      <div className="stats-row"><div><span>全部订阅</span><strong>{feeds.length}<small>个来源</small></strong></div><div><span>正在关注</span><strong>{feeds.filter(feed => feed.enabled).length}<small>自动更新</small></strong></div><div><span>已收集内容</span><strong>{feeds.reduce((sum, feed) => sum + feed.itemCount, 0)}<small>条记录</small></strong></div><div className={attention ? 'attention' : ''}><span>需要检查</span><strong>{attention}<small>{attention ? '个来源出错' : '一切正常'}</small></strong></div></div>
+      <div className="list-toolbar"><h2>订阅列表 <span>{feeds.length}</span></h2><div className="input-icon search-input"><Search size={16} /><input aria-label="搜索订阅" placeholder="搜索名称或网址" value={query} onChange={e => setQuery(e.target.value)} /></div></div>
+      <ErrorNote error={error} />{loading && !feeds.length ? <Busy label="正在加载订阅" /> : filtered.length ? <FeedCollection auth={target ? { ...auth, userId: target.id, role: 'user' } : auth} feeds={filtered} query={query} detail={id => setPanel({ id, tab: 'items' })} settings={id => setPanel({ id, tab: 'settings' })} changed={() => void loadFeeds()} notify={notify} /> : <div className="empty-state"><span className="large-icon"><Rss size={32} /></span><h2>{query ? '没有找到匹配的订阅' : '从一个值得关注的网址开始'}</h2><p>{query ? '尝试其他名称或网址。' : '输入网页地址，自动识别内容，预览后即可生成 RSS。'}</p>{!query && <button className="button" onClick={() => create('website')}><Plus size={16} />创建第一条订阅</button>}</div>}<div className="dashboard-note"><Sparkles size={17} /><span>自动识别先行，手动调整随时可用。</span><span className="muted">你的内容，你来选择。</span></div></>}
+  </main><footer className="page-footer"><span>FeedLantern · 订阅灯</span><a href="https://github.com/Jaaayden/feedlantern" target="_blank" rel="noreferrer">GitHub · Jaaayden/feedlantern · {auth.version}</a></footer></div>{panel && <FeedPanel key={`${panel.id}-${panel.tab}`} id={panel.id} initialTab={panel.tab} close={closePanel} edit={feed => { setPanel(null); setEditorReturnId(feed.id); setEditor(feed); }} changed={() => void loadFeeds()} notify={notify} />}{toast && <div className="toast" role="status"><Check size={16} />{toast}</div>}</div>;
 }

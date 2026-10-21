@@ -21,7 +21,9 @@ test('列表偏好、统一订阅名称、批量创建及加密备份入口', as
   await expect((await page.request.get(rss)).text()).resolves.toContain('阅读器专用名称 &amp; v2');
   await dialog.getByRole('button', { name: '关闭' }).click();
   await expect(page.getByRole('button', { name: '查看订阅 阅读器专用名称 & v2', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: '批量添加', exact: true }).click();
+  await page.getByRole('button', { name: '更多新建方式' }).click();
+  await page.getByRole('menuitem', { name: '批量添加' }).click();
+  await expect(page.getByRole('heading', { name: '批量添加网址' })).toBeVisible();
   await page.getByLabel('每行一个网址（最多 100 个）').fill(`${FIXTURE_URLS.static}?batch=v2\n${FIXTURE_URLS.ambiguous}?batch=v2`);
   await page.getByRole('button', { name: '开始批量识别' }).click();
   await expect(page.getByText(/已创建/).first()).toBeVisible({ timeout: 30000 });
@@ -137,7 +139,7 @@ test('设置保存失败保留输入，规则编辑取消和保存返回设置',
   await page.getByRole('button', { name: '打开并自动识别' }).click();
   await expect(page.getByText('Fixture article one').first()).toBeVisible({ timeout: 45000 });
   await page.getByRole('button', { name: '保存订阅', exact: true }).click();
-  await expect(dialog).toHaveAttribute('aria-label', '订阅设置');
+  await expect(dialog.getByRole('button', { name: '订阅设置', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await expect(interval).toHaveValue('60');
 });
 
