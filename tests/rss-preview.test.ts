@@ -12,7 +12,7 @@ import type { Feed, FeedInput } from '../src/shared/types.js';
 const feed: Feed = {
   id: 'feed_preview', name: 'A <b>& B', url: 'https://example.test/list', rules: { item: '.item', title: '.title', link: 'a' }, credentialId: null,
   intervalMinutes: 45, waitMs: 0, enabled: true, createdAt: '2026-01-01T00:00:00.000Z', lastFetchedAt: null,
-  lastSuccessAt: '2026-01-02T00:00:00.000Z', nextFetchAt: null, lastError: null, itemCount: 1,
+  lastSuccessAt: '2026-01-02T00:00:00.000Z', nextFetchAt: '2026-01-03T00:00:00.000Z', lastError: null, itemCount: 1,
 };
 const browserNavigation = { 'sec-fetch-dest': 'document', 'sec-fetch-mode': 'navigate', accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' };
 

@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react';
 import type { CredentialSummary, ImportEntry, ImportJob } from '../shared/types';
 import { api } from './api';
 import { Editor } from './App';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, FileUp } from 'lucide-react';
+import { parseOpmlUrls } from './format';
 const labels = { queued: '排队中', running: '识别中', created: '已创建', existing: '已存在', review: '待确认', failed: '失败', canceled: '已取消' };
 export function BatchView({ notify, changed, back }: { notify: (s: string) => void; changed: () => void; back: () => void }) {
   const [sourceType, setSourceType] = useState<'website' | 'rss'>('website');
@@ -29,6 +30,7 @@ export function BatchView({ notify, changed, back }: { notify: (s: string) => vo
       <label className="field"><span>批量订阅类型</span><select disabled={busy} value={sourceType} onChange={e => setSourceType(e.target.value as 'website' | 'rss')}><option value="website">网页识别</option><option value="rss">RSS 翻译</option></select></label>
       {sourceType === 'rss' && <label className="field"><span>翻译输出模式</span><select disabled={busy} value={mode} onChange={e => setMode(e.target.value as 'chinese' | 'bilingual')}><option value="bilingual">中英双语</option><option value="chinese">仅中文</option></select></label>}
       <label className="field"><span>每行一个网址（最多 100 个）</span><textarea rows={6} required value={text} onChange={e => setText(e.target.value)} /></label>
+      {sourceType === 'rss' && <label className="button small opml-import"><FileUp size={14} />从 OPML 导入<input type="file" accept=".opml,.xml,text/x-opml,application/xml,text/xml" className="visually-hidden" disabled={busy} onChange={async e => { const file = e.target.files?.[0]; e.target.value = ''; if (!file) return; try { if (file.size > 2_000_000) throw Error('OPML 文件不能超过 2 MB'); const urls = parseOpmlUrls(await file.text()); if (!urls.length) throw Error('文件中没有找到 RSS 地址'); setText(previous => [previous.trim(), ...urls].filter(Boolean).join('\n')); notify(`已从 OPML 读取 ${urls.length} 个地址`); } catch (error) { setError(error instanceof Error ? error.message : '无法读取 OPML 文件'); } }} /></label>}
       <label className="field"><span>刷新间隔（分钟）</span><input type="number" min={5} max={1440} value={interval} onChange={e => setRefreshInterval(Number(e.target.value))} /></label>
       {lines.map((line, i) => <div className="collection-toolbar" key={i} data-issue={!line.url ? 'invalid' : line.error ? 'duplicate' : undefined}><span>{line.raw} {line.error}</span>{sourceType === 'website' && !line.error && <select aria-label={`Cookie ${line.url}`} value={bindings[line.url] ?? ''} onChange={e => setBindings({ ...bindings, [line.url]: e.target.value })}><option value="">无需 Cookie</option>{credentials.filter(c => c.domains.some(d => { const host = new URL(line.url).hostname; return d.startsWith('.') ? host === d.slice(1) || host.endsWith(d) : host === d; })).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select>}</div>)}
       <button className="button primary" disabled={busy || !lines.length || lines.length > 100 || lines.some(l => !l.url)}>{sourceType === 'rss' ? '开始批量添加翻译' : '开始批量识别'}</button>
