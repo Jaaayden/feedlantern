@@ -14,7 +14,7 @@ import type React from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { Archive, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bell, Check, ChevronDown, CircleHelp, Cookie, Copy, ExternalLink, Globe2, Info, KeyRound, Languages, ListPlus, LoaderCircle, LogOut, Monitor, Moon, MousePointer2, Pencil, Plus, Radio, RefreshCw, Rss, Search, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Sun, Trash2 } from 'lucide-react';
 import { Modal } from './Modal';
-import { absoluteTime, relativeTime } from './format';
+import { absoluteTime, copyText, relativeTime } from './format';
 import type { StatusFilter } from './FeedCollection';
 import { readTheme, saveTheme, themeLabels } from './theme';
 import type { Theme } from './theme';
@@ -257,7 +257,7 @@ export function Editor({ initial, draft, submitFeed, saved, cancel }: { initial?
 
 function FeedAddress({ feedUrl, notify, onError }: { feedUrl: string; notify: Notify; onError: (error: string) => void }) {
   return <Field label="RSS 订阅地址" hint="持有此地址即可读取订阅内容。需要撤销时可在订阅设置中轮换密钥。">
-    <div className="copy-row"><input readOnly value={feedUrl} onFocus={e => e.target.select()} /><a className="icon-button" href={feedUrl} target="_blank" rel="noreferrer" title="在新标签页打开订阅页" aria-label="在新标签页打开订阅页"><ExternalLink size={16} /></a><button className="button primary" onClick={() => void navigator.clipboard.writeText(feedUrl).then(() => notify('RSS 地址已复制')).catch(() => onError('无法访问剪贴板，请选中地址后手动复制。'))}><Copy size={15} />复制 RSS 地址</button></div>
+    <div className="copy-row"><input readOnly value={feedUrl} onFocus={e => e.target.select()} /><a className="icon-button" href={feedUrl} target="_blank" rel="noreferrer" title="在新标签页打开订阅页" aria-label="在新标签页打开订阅页"><ExternalLink size={16} /></a><button className="button primary" onClick={() => void copyText(feedUrl).then(() => notify('RSS 地址已复制')).catch(() => onError('无法访问剪贴板，请选中地址后手动复制。'))}><Copy size={15} />复制 RSS 地址</button></div>
   </Field>;
 }
 
@@ -271,8 +271,7 @@ type FeedDetailData = { feed: Feed; items: FeedItem[]; feedUrl: string };
 
 // One panel for everything about a feed: the address and status stay on top,
 // content, fetch logs and settings are tabs underneath.
-function FeedPanel({ id, initialTab, close, edit, changed, notify }: { id: string; initialTab: PanelTab; close: () => void; edit: (feed: Feed) => void; changed: () => void; notify: Notify }) {
-  const [tab, setTab] = useState<PanelTab>(initialTab);
+function FeedPanel({ id, tab, onTab, close, edit, changed, notify }: { id: string; tab: PanelTab; onTab: (tab: PanelTab) => void; close: () => void; edit: (feed: Feed) => void; changed: () => void; notify: Notify }) {
   const [revision, setRevision] = useState(0);
   const [detail, setDetail] = useState<FeedDetailData | null>(null);
   const [error, setError] = useState('');
@@ -302,7 +301,7 @@ function FeedPanel({ id, initialTab, close, edit, changed, notify }: { id: strin
         <FeedAddress feedUrl={detail.feedUrl} notify={notify} onError={setError} />
         <FeedStatus feed={feed} />
       </div>
-      <div className="detail-actions feed-tabs" aria-label="详情内容">{panelTabs.map(([key, label]) => <button key={key} className="button small" aria-pressed={tab === key} onClick={() => { if (tab !== key) guard(() => setTab(key)); }}>{label}</button>)}</div>
+      <div className="detail-actions feed-tabs" aria-label="详情内容">{panelTabs.map(([key, label]) => <button key={key} className="button small" aria-pressed={tab === key} onClick={() => { if (tab !== key) guard(() => onTab(key)); }}>{label}</button>)}</div>
       {tab === 'items' && <>
         {translationEnabled(feed) && <TranslationProgress id={id} enabled={feed.enabled} />}
         {translationEnabled(feed) && <button className="button small retry-translation" disabled={!!busy || !feed.enabled} onClick={() => { setBusy('重试翻译'); void api.feeds.retryTranslation(id).then(load).catch(e => setError(messageOf(e))).finally(() => setBusy('')); }}>重试未完成翻译</button>}
@@ -493,11 +492,14 @@ export default function App() {
   const searchRef = useRef<HTMLInputElement>(null);
   const notify = useCallback((message: string) => setToast(message), []);
   const authGeneration = useRef(0);
+  // Bumped whenever the session is (re)accepted so the feed list always reloads,
+  // even when the user stays signed in (e.g. after changing their own identity).
+  const [session, setSession] = useState(0);
   const applyRoute = useCallback((route: Route) => {
     setPage(route.page); setPanel(route.panel); setEditorReturnId(null);
     if (route.create) { setEditorSource(route.create); setEditor(null); } else setEditor(undefined);
   }, []);
-  const acceptAuth = useCallback((state: AuthState) => { authGeneration.current++; setFeeds([]); setWorkspaceUser(undefined); setTarget(null); setCsrfToken(state.csrfToken); setAuth(state); applyRoute(state.authenticated ? parseRoute(location.hash) : parseRoute('')); setQuery(''); setStatus('all'); setError(''); }, [applyRoute]);
+  const acceptAuth = useCallback((state: AuthState) => { authGeneration.current++; setFeeds([]); setWorkspaceUser(undefined); setTarget(null); setCsrfToken(state.csrfToken); setAuth(state); setSession(value => value + 1); applyRoute(state.authenticated ? parseRoute(location.hash) : parseRoute('')); setQuery(''); setStatus('all'); setError(''); }, [applyRoute]);
   const forgetAuth = useCallback(() => { authGeneration.current++; setWorkspaceUser(undefined); setTarget(null); setCsrfToken(undefined); setAuth(previous => previous ? { ...previous, authenticated: false, csrfToken: undefined } : null); setFeeds([]); setEditor(undefined); setPanel(null); setEditorReturnId(null); }, []);
   useEffect(() => { void api.auth.status().then(acceptAuth).catch(error => setBootError(messageOf(error))); return onUnauthorized(forgetAuth); }, [acceptAuth, forgetAuth]);
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''), 4000); return () => clearTimeout(timer); }, [toast]);
@@ -507,7 +509,15 @@ export default function App() {
     catch (error) { if (generation === authGeneration.current) setError(messageOf(error)); }
     finally { if (generation === authGeneration.current) setLoading(false); }
   }, []);
-  useEffect(() => { if (!auth?.authenticated) return; void loadFeeds(); const timer = setInterval(() => void loadFeeds(), 30000); return () => clearInterval(timer); }, [auth?.authenticated, target?.id, loadFeeds]);
+  useEffect(() => {
+    if (!auth?.authenticated) return;
+    void loadFeeds();
+    // Poll only while the tab is visible; refresh as soon as it comes back.
+    const timer = setInterval(() => { if (!document.hidden) void loadFeeds(); }, 30000);
+    const visible = () => { if (!document.hidden) void loadFeeds(); };
+    document.addEventListener('visibilitychange', visible);
+    return () => { clearInterval(timer); document.removeEventListener('visibilitychange', visible); };
+  }, [auth?.authenticated, session, target?.id, loadFeeds]);
   const changeWorkspace = useCallback((user: UserSummary | null) => {
     authGeneration.current++; setWorkspaceUser(user?.id); setTarget(user); setFeeds([]); setPage('feeds'); setQuery(''); setStatus('all'); setError(''); setEditor(undefined); setPanel(null); setEditorReturnId(null);
   }, []);
@@ -519,8 +529,10 @@ export default function App() {
   useEffect(() => {
     if (!authenticated || editingExisting) return;
     if (location.hash !== currentHash && !(currentHash === '#/' && !location.hash)) {
-      const closingPanel = lastHash.current.startsWith('#/feed/') && !currentHash.startsWith('#/feed/');
-      if (closingPanel) history.replaceState(null, '', currentHash); else history.pushState(null, '', currentHash);
+      const panelOf = (hash: string) => hash.startsWith('#/feed/') ? hash.split('/').slice(0, 3).join('/') : '';
+      // Closing the panel or switching its tabs replaces the entry so Back is not cluttered.
+      const replace = !!panelOf(lastHash.current) && (!panelOf(currentHash) || panelOf(currentHash) === panelOf(lastHash.current));
+      if (replace) history.replaceState(null, '', currentHash); else history.pushState(null, '', currentHash);
     }
     lastHash.current = currentHash;
   }, [authenticated, editingExisting, currentHash]);
@@ -559,5 +571,5 @@ export default function App() {
       <div className="stats-row"><div><span>全部订阅</span><strong>{feeds.length}<small>个来源</small></strong></div><div><span>正在关注</span><strong>{feeds.filter(feed => feed.enabled).length}<small>自动更新</small></strong></div><div><span>已收集内容</span><strong>{feeds.reduce((sum, feed) => sum + feed.itemCount, 0)}<small>条记录</small></strong></div>{attention ? <button className={`attention ${status === 'attention' ? 'active' : ''}`} title="只看需要检查的订阅" onClick={() => setStatus(status === 'attention' ? 'all' : 'attention')}><span>需要检查</span><strong>{attention}<small>个来源出错</small></strong></button> : <div><span>需要检查</span><strong>0<small>一切正常</small></strong></div>}</div>
       <div className="list-toolbar"><h2>订阅列表 <span>{feeds.length}</span></h2><div className="input-icon search-input"><Search size={16} /><input ref={searchRef} aria-label="搜索订阅" placeholder="搜索名称或网址" value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === 'Escape' && query) { e.preventDefault(); setQuery(''); } }} /><kbd className="search-key" aria-hidden="true">/</kbd></div></div>
       <ErrorNote error={error} />{loading && !feeds.length ? <Busy label="正在加载订阅" /> : filtered.length ? <FeedCollection auth={target ? { ...auth, userId: target.id, role: 'user' } : auth} feeds={filtered} query={query} status={status} onStatus={setStatus} detail={id => setPanel({ id, tab: 'items' })} settings={id => setPanel({ id, tab: 'settings' })} logs={id => setPanel({ id, tab: 'logs' })} changed={() => void loadFeeds()} notify={notify} /> : <div className="empty-state"><span className="large-icon"><Rss size={32} /></span><h2>{query ? '没有找到匹配的订阅' : '从一个值得关注的网址开始'}</h2><p>{query ? '尝试其他名称或网址。' : '输入网页地址，自动识别内容，预览后即可生成 RSS。'}</p>{query ? <button className="button" onClick={() => setQuery('')}>清除搜索</button> : <button className="button" onClick={() => create('website')}><Plus size={16} />创建第一条订阅</button>}</div>}<div className="dashboard-note"><Sparkles size={17} /><span>自动识别先行，手动调整随时可用。</span><span className="muted">按 / 搜索订阅。</span></div></>}
-  </main><footer className="page-footer"><span>FeedLantern · 订阅灯</span><a href="https://github.com/Jaaayden/feedlantern" target="_blank" rel="noreferrer">GitHub · Jaaayden/feedlantern · {auth.version}</a></footer></div>{panel && <FeedPanel key={`${panel.id}-${panel.tab}`} id={panel.id} initialTab={panel.tab} close={closePanel} edit={feed => { setPanel(null); setEditorReturnId(feed.id); setEditor(feed); }} changed={() => void loadFeeds()} notify={notify} />}{toast && <div className="toast" role="status"><Check size={16} />{toast}</div>}</div>;
+  </main><footer className="page-footer"><span>FeedLantern · 订阅灯</span><a href="https://github.com/Jaaayden/feedlantern" target="_blank" rel="noreferrer">GitHub · Jaaayden/feedlantern · {auth.version}</a></footer></div>{panel && <FeedPanel key={panel.id} id={panel.id} tab={panel.tab} onTab={tab => setPanel(previous => previous && { ...previous, tab })} close={closePanel} edit={feed => { setPanel(null); setEditorReturnId(feed.id); setEditor(feed); }} changed={() => void loadFeeds()} notify={notify} />}{toast && <div className="toast" role="status"><Check size={16} />{toast}</div>}</div>;
 }

@@ -1295,3 +1295,34 @@ button.card-error:hover { text-decoration: underline; text-underline-offset: 3px
   .search-key { display: none; }
   section[aria-label="订阅集合"] > .collection-toolbar:first-child > .inline { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+.feed-row[data-state="paused"] .feed-avatar, .feed-card[data-state="paused"] .feed-avatar { filter: grayscale(1); opacity: .55; }
+.feed-row[data-state="paused"] .card-title, .feed-card[data-state="paused"] .card-title { color: var(--muted); }
+
+/* Batch jobs */
+.batch-job > .collection-toolbar { align-items: flex-start; }
+.batch-job-title { display: grid; gap: 8px; }
+.batch-counts { gap: 6px; }
+.batch-count, .batch-entry { --state: var(--muted); }
+.batch-count {
+  display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 9px;
+  border-radius: 999px; border: 1px solid var(--line); background: var(--bg-sunken);
+  font-size: 11.5px; font-weight: 600; color: var(--ink-2); font-variant-numeric: tabular-nums;
+}
+.batch-count::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--state); }
+[data-state="created"], [data-state="existing"] { --state: var(--success); }
+[data-state="review"] { --state: var(--warning); }
+[data-state="failed"] { --state: var(--danger); }
+[data-state="running"], [data-state="queued"] { --state: var(--glow-strong); }
+.batch-entry { grid-template-columns: minmax(0, 1fr) auto; align-items: start; column-gap: 16px; padding-left: 18px; position: relative; justify-items: stretch; }
+.batch-entry::before { content: ""; position: absolute; left: 0; top: 21px; width: 8px; height: 8px; border-radius: 50%; background: var(--state); }
+.batch-entry[data-state="running"]::before, .batch-entry[data-state="queued"]::before { animation: glowPulse 1.6s ease-in-out infinite; color: var(--glow-strong); }
+.batch-entry-main { display: grid; gap: 4px; min-width: 0; }
+.batch-entry-actions { justify-content: flex-end; gap: 6px; }
+.batch-candidate { font-size: 12px !important; }
+@media (max-width: 760px) {
+  .batch-entry { grid-template-columns: 1fr; row-gap: 10px; }
+  .batch-entry-actions { justify-content: flex-start; }
+}
+.batch-entry-main > strong { font-size: 14px; overflow-wrap: anywhere; }
+.batch-entry-main > p { font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+.batch-entry-main > p[role="alert"] { color: var(--danger); }

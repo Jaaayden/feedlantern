@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { translationEnabled, type AuthState, type BulkFeedSettingsInput, type Feed } from '../shared/types';
 import { api } from './api';
 import { Copy, FileDown, LayoutGrid, List, Settings2, X } from 'lucide-react';
-import { absoluteTime, avatarHue, buildOpml, downloadText, initial, relativeTime } from './format';
+import { absoluteTime, avatarHue, buildOpml, copyText, downloadText, initial, relativeTime } from './format';
 
 export type StatusFilter = 'all' | 'attention';
 type SortKey = 'default' | 'name' | 'updated' | 'attention';
@@ -53,7 +53,7 @@ export function FeedCollection({ auth, feeds, query, status, onStatus, detail, s
     setBusy(true); setError('');
     try {
       const { results } = await api.feeds.bulk(ids, action, patch);
-      if (action === 'copy') await navigator.clipboard.writeText(results.filter(r => r.ok).map(r => r.feedUrl).join('\n'));
+      if (action === 'copy') await copyText(results.filter(r => r.ok).map(r => r.feedUrl).join('\n'));
       const failures = results.filter(r => !r.ok);
       setSelected(failures.map(r => r.id));
       if (!failures.length) setEditing(false);
@@ -103,7 +103,7 @@ export function FeedCollection({ auth, feeds, query, status, onStatus, detail, s
     {error && <div className="error-note" role="alert">{error}</div>}
     {visible.length === 0 && <div className="filter-empty"><p className="muted">当前筛选条件下没有订阅。</p>{filtered && <button className="button small" onClick={clearFilters}>清除筛选</button>}</div>}
     {visible.length > 0 && <div className={`collection-head ${view === 'cards' ? 'is-cards' : ''}`}><label className="feed-select"><input type="checkbox" aria-label="全选当前结果" checked={all} disabled={busy} onChange={e => setSelected(e.target.checked ? visible.map(f => f.id) : [])} /></label><span className="collection-count">{visible.length} 个订阅</span><button className="button small collection-export" disabled={busy} title="导出当前结果，可导入任意 RSS 阅读器" onClick={() => void exportOpml(visible.map(feed => feed.id))}><FileDown size={14} />导出 OPML</button></div>}
-    <div className={view === 'cards' ? 'feed-grid' : 'feed-list'}>{visible.map(feed => <article className={view === 'cards' ? 'feed-card' : 'feed-row'} key={feed.id}>
+    <div className={view === 'cards' ? 'feed-grid' : 'feed-list'}>{visible.map(feed => <article className={view === 'cards' ? 'feed-card' : 'feed-row'} key={feed.id} data-state={feed.lastError ? 'error' : feed.enabled ? 'active' : 'paused'}>
       <label className="feed-select"><input type="checkbox" aria-label={`选择订阅 ${feed.name}`} disabled={busy} checked={selected.includes(feed.id)} onChange={e => setSelected(previous => e.target.checked ? [...previous, feed.id] : previous.filter(id => id !== feed.id))} /></label>
       <div className="feed-identity"><span className="feed-avatar" aria-hidden="true" style={{ '--hue': avatarHue(feed.name) } as React.CSSProperties}>{initial(feed.name)}</span><div className="feed-text"><button className="card-title" aria-label={`查看订阅 ${feed.name}`} onClick={() => detail(feed.id)}>{feed.name}</button><div className="inline feed-kind"><span className="badge">{feed.sourceType === 'rss' ? 'RSS 来源' : '网页抓取'}</span><span className={`badge ${translationEnabled(feed) ? 'good' : ''}`}>{translationEnabled(feed) ? feed.translationMode === 'chinese' ? '中文翻译' : '双语翻译' : '原文'}</span></div><p className="feed-host" title={feed.url}>{feed.url}</p>{feed.lastError && <button className="card-error" title={`${feed.lastError}（点击查看抓取日志）`} onClick={() => logs(feed.id)}>{feed.lastError}</button>}</div></div>
       <span className={`badge ${feed.lastError ? 'bad' : feed.enabled ? 'good' : ''}`}>{feed.lastError ? '需要检查' : feed.enabled ? '更新中' : '已暂停'}</span>

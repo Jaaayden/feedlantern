@@ -64,3 +64,24 @@ export function initial(name: string): string {
   const first = [...trimmed][0];
   return /[a-z]/i.test(first) ? first.toUpperCase() : first;
 }
+
+/**
+ * Copy text even on plain-http deployments (http://server-ip:4321), where
+ * browsers do not expose navigator.clipboard outside secure contexts.
+ */
+export async function copyText(text: string): Promise<void> {
+  if (navigator.clipboard && window.isSecureContext) {
+    try { await navigator.clipboard.writeText(text); return; } catch { /* fall back below */ }
+  }
+  const previous = document.activeElement as HTMLElement | null;
+  const area = document.createElement('textarea');
+  area.value = text;
+  area.setAttribute('readonly', '');
+  Object.assign(area.style, { position: 'fixed', top: '0', left: '0', width: '1px', height: '1px', opacity: '0' });
+  document.body.appendChild(area);
+  area.select();
+  area.setSelectionRange(0, text.length);
+  let copied = false;
+  try { copied = document.execCommand('copy'); } finally { area.remove(); previous?.focus(); }
+  if (!copied) throw new Error('无法访问剪贴板');
+}
