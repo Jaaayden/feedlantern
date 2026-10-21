@@ -50,7 +50,7 @@ import {
 } from './auth.js';
 import { getConfig, ensureDataDir, hasDist, isAllowedOrigin, type ConfigInput, type ServerConfig } from './config.js';
 import { renderRss, rssEtag } from './rss.js';
-import { renderRssPreview, wantsHtmlPreview } from './rss-preview.js';
+import { etagMatches, renderRssPreview, wantsHtmlPreview } from './rss-preview.js';
 import { asInteger, describeError, asNonEmptyString, asOptionalString, asRecord, cookieMetadata, frameError, friendlyError, parseCredentialInput, parseFeedInput, parseHttpUrl, parseRules } from './validation.js';
 import { Store, type CredentialValue } from './store.js';
 
@@ -1012,7 +1012,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     reply.header('X-Content-Type-Options', 'nosniff');
     reply.header('Vary', 'Accept, Sec-Fetch-Dest, Sec-Fetch-Mode');
     reply.header('ETag', etag);
-    if (request.headers['if-none-match'] === etag) return reply.code(304).send();
+    if (etagMatches(request.headers['if-none-match'], etag)) return reply.code(304).send();
     if (preview) {
       const page = renderRssPreview(feed, items, publicUrl);
       reply.header('Content-Security-Policy', page.csp);

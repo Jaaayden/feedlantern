@@ -1341,3 +1341,6 @@ button.card-error:hover { text-decoration: underline; text-underline-offset: 3px
   .application-settings > .button.primary, .personal-bark > .button.primary { bottom: calc(86px + env(safe-area-inset-bottom)); }
 }
 .duplicate-note { margin-bottom: 14px; }
+.cookie-help { margin: -6px 0 0; padding: 10px 14px; border-radius: var(--r-md); background: var(--surface-2); border: 1px solid var(--line); }
+.cookie-help > summary { margin-left: -8px; }
+.cookie-help ol { margin: 10px 0 8px; padding-left: 20px; display: grid; gap: 6px; font-size: 13px; color: var(--ink-2); }

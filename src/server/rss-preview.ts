@@ -21,6 +21,15 @@ export function wantsHtmlPreview(headers: Record<string, HeaderValue>, query: Re
     && /\btext\/html\b/i.test(first(headers.accept));
 }
 
+/** RFC 9110 If-None-Match: a list of (possibly weak) tags or "*". */
+export function etagMatches(header: HeaderValue, etag: string): boolean {
+  const value = first(header).trim();
+  if (!value) return false;
+  if (value === '*') return true;
+  const strip = (tag: string) => tag.trim().replace(/^W\//, '');
+  return value.split(',').some(tag => strip(tag) === strip(etag));
+}
+
 const escape = (value: string) => escapeXml(value);
 
 function plainText(item: FeedItem, feed: Feed): string {

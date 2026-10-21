@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { XMLParser } from 'fast-xml-parser';
 import { createApp, Store, type BrowserServiceLike } from '../src/server/app.js';
-import { renderRssPreview, wantsHtmlPreview } from '../src/server/rss-preview.js';
+import { etagMatches, renderRssPreview, wantsHtmlPreview } from '../src/server/rss-preview.js';
 import { renderRss } from '../src/server/rss.js';
 import type { Feed, FeedInput } from '../src/shared/types.js';
 
@@ -88,4 +88,13 @@ test('同一订阅地址：浏览器导航返回预览页，阅读器返回 RSS�
     assert.ok(raw.body.startsWith('<?xml'));
     assert.equal((await app.inject({ url: `/feeds/${created.id}/wrong.xml`, headers: browserNavigation })).statusCode, 404);
   } finally { await app.close(); store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('If-None-Match 支持弱校验、多个标签和 *', () => {
+  assert.equal(etagMatches('"abc"', '"abc"'), true);
+  assert.equal(etagMatches('W/"abc"', '"abc"'), true);
+  assert.equal(etagMatches('"x", W/"abc"', '"abc"'), true);
+  assert.equal(etagMatches('*', '"abc"'), true);
+  assert.equal(etagMatches('"abd"', '"abc"'), false);
+  assert.equal(etagMatches(undefined, '"abc"'), false);
 });
