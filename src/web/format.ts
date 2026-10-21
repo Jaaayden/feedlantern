@@ -85,3 +85,10 @@ export async function copyText(text: string): Promise<void> {
   try { copied = document.execCommand('copy'); } finally { area.remove(); previous?.focus(); }
   if (!copied) throw new Error('无法访问剪贴板');
 }
+
+/** Readable text for summaries that may contain HTML (RSS descriptions). DOMParser never runs scripts. */
+export function summaryText(value: string): string {
+  if (!/[<&]/.test(value)) return value;
+  const text = new DOMParser().parseFromString(value, 'text/html').body.textContent ?? '';
+  return text.replace(/\s+/g, ' ').trim();
+}

@@ -14,7 +14,7 @@ import type React from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { Archive, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bell, Check, ChevronDown, CircleHelp, Cookie, Copy, ExternalLink, Globe2, Info, KeyRound, Languages, ListPlus, LoaderCircle, LogOut, Monitor, Moon, MousePointer2, Pencil, Plus, Radio, RefreshCw, Rss, Search, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Sun, Trash2 } from 'lucide-react';
 import { Modal } from './Modal';
-import { absoluteTime, copyText, relativeTime } from './format';
+import { absoluteTime, copyText, relativeTime, summaryText } from './format';
 import type { StatusFilter } from './FeedCollection';
 import { readTheme, saveTheme, themeLabels } from './theme';
 import type { Theme } from './theme';
@@ -36,7 +36,7 @@ function Field({ label, children, hint }: { label: string; children: ReactNode; 
 function Brand({ compact = false }: { compact?: boolean }) { return <div className="brand"><img className="brand-logo" src="/favicon.svg" alt="" width={40} height={40} /><span>FeedLantern{!compact && <small>订阅灯</small>}</span></div>; }
 
 function AuthScreen({ state, authenticated }: { state: AuthState; authenticated: (state: AuthState) => void }) {
-  const [username, setUsername] = useState('admin');
+  const [username, setUsername] = useState(() => { if (state.setupRequired) return 'admin'; try { return localStorage.getItem('feedlantern:last-username') ?? ''; } catch { return ''; } });
   const [password, setPassword] = useState('');
   const [setupToken, setSetupToken] = useState('');
   const [busy, setBusy] = useState(false);
@@ -45,6 +45,7 @@ function AuthScreen({ state, authenticated }: { state: AuthState; authenticated:
     event.preventDefault(); setBusy(true); setError('');
     try {
       const result = state.setupRequired ? await api.auth.setup({ username, password, setupToken }) : await api.auth.login({ username, password });
+      try { localStorage.setItem('feedlantern:last-username', username); } catch { /* convenience only */ }
       setPassword(''); setSetupToken(''); authenticated(result);
     } catch (error) { setError(messageOf(error)); } finally { setBusy(false); }
   }
@@ -60,7 +61,7 @@ function ItemPreview({ items, empty = '还没有可预览的条目' }: { items: 
   const [expanded, setExpanded] = useState(false);
   if (!items.length) return <div className="empty-preview"><Search size={24} /><p>{empty}</p></div>;
   const shown = expanded ? items : items.slice(0, 20);
-  return <><div className="item-list">{shown.map((item, index) => <article className="preview-item" key={`${item.link}-${index}`}><div className="preview-number">{String(index + 1).padStart(2, '0')}</div><div className="preview-text"><a href={item.link} target="_blank" rel="noreferrer">{item.title || '（未匹配到标题）'}<ExternalLink size={13} /></a>{item.description && <p>{item.description}</p>}{item.contentHtml !== undefined && <RssContent title={`订阅正文 ${index + 1}`} html={item.contentHtml} />}{item.translationError && <p className="card-error">{item.translationError}</p>}<div className="item-meta"><span>{hostLabel(item.link)}</span>{item.publishedAt && <time>{dateLabel(item.publishedAt)}{item.publishedAtSource === 'relative' ? '（估算）' : ''}</time>}</div></div>{item.image && <img src={item.image} alt="" loading="lazy" referrerPolicy="no-referrer" onError={e => { e.currentTarget.style.display = 'none'; }} />}</article>)}</div>{items.length > 20 && !expanded && <button className="button small show-all" onClick={() => setExpanded(true)}>显示全部 {items.length} 条</button>}</>;
+  return <><div className="item-list">{shown.map((item, index) => <article className="preview-item" key={`${item.link}-${index}`}><div className="preview-number">{String(index + 1).padStart(2, '0')}</div><div className="preview-text"><a href={item.link} target="_blank" rel="noreferrer">{item.title || '（未匹配到标题）'}<ExternalLink size={13} /></a>{item.description && <p>{summaryText(item.description)}</p>}{item.contentHtml !== undefined && <RssContent title={`订阅正文 ${index + 1}`} html={item.contentHtml} />}{item.translationError && <p className="card-error">{item.translationError}</p>}<div className="item-meta"><span>{hostLabel(item.link)}</span>{item.publishedAt && <time>{dateLabel(item.publishedAt)}{item.publishedAtSource === 'relative' ? '（估算）' : ''}</time>}</div></div>{item.image && <img src={item.image} alt="" loading="lazy" referrerPolicy="no-referrer" onError={e => { e.currentTarget.style.display = 'none'; }} />}</article>)}</div>{items.length > 20 && !expanded && <button className="button small show-all" onClick={() => setExpanded(true)}>显示全部 {items.length} 条</button>}</>;
 }
 
 function CredentialForm({ editing, done, cancel }: { editing?: CredentialSummary; done: () => void; cancel: () => void }) {
@@ -501,7 +502,7 @@ export default function App() {
   }, []);
   const acceptAuth = useCallback((state: AuthState) => { authGeneration.current++; setFeeds([]); setWorkspaceUser(undefined); setTarget(null); setCsrfToken(state.csrfToken); setAuth(state); setSession(value => value + 1); applyRoute(state.authenticated ? parseRoute(location.hash) : parseRoute('')); setQuery(''); setStatus('all'); setError(''); }, [applyRoute]);
   const forgetAuth = useCallback(() => { authGeneration.current++; setWorkspaceUser(undefined); setTarget(null); setCsrfToken(undefined); setAuth(previous => previous ? { ...previous, authenticated: false, csrfToken: undefined } : null); setFeeds([]); setEditor(undefined); setPanel(null); setEditorReturnId(null); }, []);
-  useEffect(() => { void api.auth.status().then(acceptAuth).catch(error => setBootError(messageOf(error))); return onUnauthorized(forgetAuth); }, [acceptAuth, forgetAuth]);
+  useEffect(() => { void api.auth.status().then(acceptAuth).catch(error => setBootError(messageOf(error))); return onUnauthorized(() => { forgetAuth(); setToast('登录已失效，请重新登录'); }); }, [acceptAuth, forgetAuth]);
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''), 4000); return () => clearTimeout(timer); }, [toast]);
   const loadFeeds = useCallback(async () => {
     const generation = authGeneration.current; setLoading(true);
