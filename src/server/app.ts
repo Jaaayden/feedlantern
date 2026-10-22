@@ -437,7 +437,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   };
   const credentialsGuard = (request: FastifyRequest) => { const actor = resourceGuard(request, 'credentials'); workspace(request, request.method === 'POST'); return actor; };
 
-  app.get('/api/users', async request => { adminGuard(request); return store.listUsers(); });
+  app.get('/api/users', async request => { adminGuard(request); return store.listUsersWithStats(); });
   app.post('/api/users', async request => {
     adminGuard(request);
     const { username, password } = asRecord(request.body);

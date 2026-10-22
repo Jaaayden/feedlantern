@@ -14,6 +14,7 @@ import type React from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { Archive, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bell, Check, ChevronDown, CircleHelp, Cookie, Copy, ExternalLink, Globe2, Info, KeyRound, Languages, ListPlus, LoaderCircle, LogOut, Monitor, Moon, MousePointer2, Pencil, Plus, Radio, RefreshCw, Rss, Search, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Sun, Trash2 } from 'lucide-react';
 import { Modal } from './Modal';
+import { WorkspaceSwitcher } from './WorkspaceSwitcher';
 import { absoluteTime, copyText, relativeTime, sameAddress, summaryText } from './format';
 import type { StatusFilter } from './FeedCollection';
 import { readTheme, saveTheme, themeLabels } from './theme';
@@ -473,13 +474,16 @@ function NewFeedMenu({ create, batch }: { create: (source: NewSource) => void; b
 }
 
 type Page = 'feeds' | 'settings' | 'batch' | 'users';
-type Route = { page: Page; panel: { id: string; tab: PanelTab } | null; create: NewSource | null };
+type Route = { page: Page; panel: { id: string; tab: PanelTab } | null; create: NewSource | null; workspace: string | null };
 
 // Hash routes keep the current screen across reloads and make back/forward work:
 // #/ · #/settings · #/users · #/batch · #/new · #/new/rss · #/feed/<id>[/logs|/settings]
+// An admin working in another account's workspace gets a #/u/<userId> prefix.
 function parseRoute(hash: string): Route {
-  const parts = hash.replace(/^#\/?/, '').split('/').filter(Boolean).map(decodeURIComponent);
-  const empty: Route = { page: 'feeds', panel: null, create: null };
+  let parts = hash.replace(/^#\/?/, '').split('/').filter(Boolean).map(decodeURIComponent);
+  let workspace: string | null = null;
+  if (parts[0] === 'u' && parts[1]) { workspace = parts[1]; parts = parts.slice(2); }
+  const empty: Route = { page: 'feeds', panel: null, create: null, workspace };
   if (parts[0] === 'settings' || parts[0] === 'users' || parts[0] === 'batch') return { ...empty, page: parts[0] };
   if (parts[0] === 'new') return { ...empty, create: parts[1] === 'rss' ? 'rss' : 'website' };
   if (parts[0] === 'feed' && parts[1]) return { ...empty, panel: { id: parts[1], tab: parts[2] === 'logs' || parts[2] === 'settings' ? parts[2] : 'items' } };
@@ -487,9 +491,10 @@ function parseRoute(hash: string): Route {
 }
 
 function routeHash(route: Route): string {
-  if (route.panel) return `#/feed/${encodeURIComponent(route.panel.id)}${route.panel.tab === 'items' ? '' : `/${route.panel.tab}`}`;
-  if (route.create) return route.create === 'rss' ? '#/new/rss' : '#/new';
-  return route.page === 'feeds' ? '#/' : `#/${route.page}`;
+  const prefix = route.workspace ? `#/u/${encodeURIComponent(route.workspace)}` : '#';
+  if (route.panel) return `${prefix}/feed/${encodeURIComponent(route.panel.id)}${route.panel.tab === 'items' ? '' : `/${route.panel.tab}`}`;
+  if (route.create) return `${prefix}${route.create === 'rss' ? '/new/rss' : '/new'}`;
+  return route.page === 'feeds' ? `${prefix}/` : `${prefix}/${route.page}`;
 }
 
 export default function App() {
@@ -513,12 +518,39 @@ export default function App() {
   // Bumped whenever the session is (re)accepted so the feed list always reloads,
   // even when the user stays signed in (e.g. after changing their own identity).
   const [session, setSession] = useState(0);
-  const applyRoute = useCallback((route: Route) => {
+  const [users, setUsers] = useState<UserSummary[]>([]);
+  const usersRef = useRef<UserSummary[]>([]);
+  usersRef.current = users;
+  const targetRef = useRef<string | null>(null);
+  // True while a route's workspace is being resolved; the address bar must not be rewritten meanwhile.
+  const resolvingRoute = useRef(false);
+  const showRoute = useCallback((route: Route) => {
     setPage(route.page); setPanel(route.panel); setEditorReturnId(null);
     if (route.create) { setEditorSource(route.create); setEditor(null); } else setEditor(undefined);
   }, []);
-  const acceptAuth = useCallback((state: AuthState) => { authGeneration.current++; setFeeds([]); setWorkspaceUser(undefined); setTarget(null); setCsrfToken(state.csrfToken); setAuth(state); setSession(value => value + 1); applyRoute(state.authenticated ? parseRoute(location.hash) : parseRoute('')); setQuery(''); setStatus('all'); setError(''); }, [applyRoute]);
-  const forgetAuth = useCallback(() => { authGeneration.current++; setWorkspaceUser(undefined); setTarget(null); setCsrfToken(undefined); setAuth(previous => previous ? { ...previous, authenticated: false, csrfToken: undefined } : null); setFeeds([]); setEditor(undefined); setPanel(null); setEditorReturnId(null); }, []);
+  // Switch the workspace (null = my own) and show the given screen inside it.
+  const changeWorkspace = useCallback((user: UserSummary | null, route?: Route) => {
+    authGeneration.current++; targetRef.current = user?.id ?? null;
+    setWorkspaceUser(user?.id); setTarget(user); setFeeds([]); setQuery(''); setStatus('all'); setError('');
+    showRoute(route ?? { page: 'feeds', panel: null, create: null, workspace: user?.id ?? null });
+  }, [showRoute]);
+  const loadUsers = useCallback(async () => {
+    try { const list = await api.users.list(); setUsers(list); return list; } catch { return usersRef.current; }
+  }, []);
+  const refreshUsers = useCallback(() => { void loadUsers(); }, [loadUsers]);
+  const applyRoute = useCallback(async (route: Route, admin: boolean) => {
+    const wanted = admin ? route.workspace : null;
+    if ((wanted ?? null) === targetRef.current) { showRoute(route); return; }
+    if (!wanted) { changeWorkspace(null, { ...route, workspace: null }); return; }
+    resolvingRoute.current = true;
+    let list = usersRef.current;
+    try { if (!list.some(user => user.id === wanted)) list = await loadUsers(); } finally { resolvingRoute.current = false; }
+    const user = list.find(item => item.id === wanted);
+    // An unknown or deleted account falls back to my own workspace.
+    changeWorkspace(user ?? null, user ? route : { page: route.page, panel: null, create: route.create, workspace: null });
+  }, [changeWorkspace, loadUsers, showRoute]);
+  const acceptAuth = useCallback((state: AuthState) => { authGeneration.current++; targetRef.current = null; setFeeds([]); setWorkspaceUser(undefined); setTarget(null); setCsrfToken(state.csrfToken); setAuth(state); setSession(value => value + 1); void applyRoute(state.authenticated ? parseRoute(location.hash) : parseRoute(''), state.role === 'admin'); setQuery(''); setStatus('all'); setError(''); }, [applyRoute]);
+  const forgetAuth = useCallback(() => { authGeneration.current++; targetRef.current = null; setUsers([]); setWorkspaceUser(undefined); setTarget(null); setCsrfToken(undefined); setAuth(previous => previous ? { ...previous, authenticated: false, csrfToken: undefined } : null); setFeeds([]); setEditor(undefined); setPanel(null); setEditorReturnId(null); }, []);
   useEffect(() => { void api.auth.status().then(acceptAuth).catch(error => setBootError(messageOf(error))); return onUnauthorized(() => { forgetAuth(); setToast('登录已失效，请重新登录'); }); }, [acceptAuth, forgetAuth]);
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''), 4000); return () => clearTimeout(timer); }, [toast]);
   const loadFeeds = useCallback(async () => {
@@ -536,18 +568,16 @@ export default function App() {
     document.addEventListener('visibilitychange', visible);
     return () => { clearInterval(timer); document.removeEventListener('visibilitychange', visible); };
   }, [auth?.authenticated, session, target?.id, loadFeeds]);
-  const changeWorkspace = useCallback((user: UserSummary | null) => {
-    authGeneration.current++; setWorkspaceUser(user?.id); setTarget(user); setFeeds([]); setPage('feeds'); setQuery(''); setStatus('all'); setError(''); setEditor(undefined); setPanel(null); setEditorReturnId(null);
-  }, []);
+  useEffect(() => { if (auth?.authenticated && auth.role === 'admin') void loadUsers(); }, [auth?.authenticated, auth?.role, session, loadUsers]);
   // Keep the address bar in step with the screen; back/forward replays it.
   const authenticated = !!auth?.authenticated;
   const editingExisting = editor !== undefined && editor !== null;
-  const currentHash = routeHash({ page, panel, create: editor === null ? editorSource : null });
+  const currentHash = routeHash({ page, panel, create: editor === null ? editorSource : null, workspace: target?.id ?? null });
   const lastHash = useRef(currentHash);
   useEffect(() => {
-    if (!authenticated || editingExisting) return;
+    if (!authenticated || editingExisting || resolvingRoute.current) return;
     if (location.hash !== currentHash && !(currentHash === '#/' && !location.hash)) {
-      const panelOf = (hash: string) => hash.startsWith('#/feed/') ? hash.split('/').slice(0, 3).join('/') : '';
+      const panelOf = (hash: string) => { const match = /^(#(?:\/u\/[^/]+)?\/feed\/[^/]+)/.exec(hash); return match ? match[1] : ''; };
       // Closing the panel or switching its tabs replaces the entry so Back is not cluttered.
       const replace = !!panelOf(lastHash.current) && (!panelOf(currentHash) || panelOf(currentHash) === panelOf(lastHash.current));
       if (replace) history.replaceState(null, '', currentHash); else history.pushState(null, '', currentHash);
@@ -556,10 +586,10 @@ export default function App() {
   }, [authenticated, editingExisting, currentHash]);
   useEffect(() => {
     if (!authenticated) return;
-    const pop = () => applyRoute(parseRoute(location.hash));
+    const pop = () => void applyRoute(parseRoute(location.hash), auth?.role === 'admin');
     window.addEventListener('popstate', pop);
     return () => window.removeEventListener('popstate', pop);
-  }, [authenticated, applyRoute]);
+  }, [authenticated, auth?.role, applyRoute]);
   const crumb = page === 'feeds' ? editor !== undefined ? editor ? editor.sourceType === 'rss' ? '编辑 RSS 翻译' : '编辑匹配规则' : '新建订阅' : '订阅管理' : page === 'batch' ? '批量添加' : page === 'users' ? '用户管理' : '设置';
   useEffect(() => { document.title = authenticated ? `${crumb} · FeedLantern` : 'FeedLantern · 订阅灯'; }, [authenticated, crumb]);
   // "/" jumps to the feed search from anywhere on the dashboard.
@@ -582,9 +612,9 @@ export default function App() {
   const attention = feeds.filter(feed => !!feed.lastError).length;
   function navigate(next: Page) { setPage(next); setEditor(undefined); setPanel(null); setEditorReturnId(null); }
   function create(source: NewSource) { setEditorSource(source); setEditor(null); }
-  return <div className="app-layout"><aside className="sidebar"><Brand /><div className="workspace-label">个人工作台</div><nav aria-label="主导航"><button className={page === 'feeds' || page === 'batch' ? 'selected' : ''} onClick={() => navigate('feeds')}><Rss size={19} />订阅管理<span>{feeds.length}</span></button><button className={page === 'settings' ? 'selected' : ''} onClick={() => navigate('settings')}><Settings2 size={19} />设置</button>{auth.role === 'admin' && <button className={page === 'users' ? 'selected' : ''} onClick={() => navigate('users')}><ShieldCheck size={19} />用户管理</button>}</nav><div className="sidebar-bottom"><div className="local-label"><span /> 自托管 · 独立运行</div><div className="account"><span className="avatar">{auth.username?.slice(0, 1).toUpperCase()}</span><div><strong>{auth.username}</strong><small>{auth.role === 'admin' ? '管理员' : '普通用户'}</small></div><button className="icon-button" aria-label="退出登录" onClick={() => void logout()}><LogOut size={17} /></button></div><span className="version">{auth.version}</span></div></aside><div className="main-shell"><header className="topbar"><span><span className="muted">工作台</span><span className="slash">/</span>{crumb}</span><span className="topbar-actions"><ThemeToggle /><span className="topbar-status"><ShieldCheck size={14} /> 已安全登录 <button className="icon-button mobile-logout" aria-label="退出登录" onClick={() => void logout()}><LogOut size={15} /></button></span></span></header><main className="main-content" key={target?.id ?? auth.userId}>
+  return <div className={`app-layout ${target ? 'managing' : ''}`}><aside className="sidebar"><Brand />{auth.role === 'admin' ? <WorkspaceSwitcher me={{ id: auth.userId!, username: auth.username! }} users={users} target={target} open={user => changeWorkspace(user)} manageUsers={() => navigate('users')} refresh={refreshUsers} /> : <div className="workspace-label">个人工作台</div>}<nav aria-label="主导航"><button className={page === 'feeds' || page === 'batch' ? 'selected' : ''} onClick={() => navigate('feeds')}><Rss size={19} />订阅管理<span>{feeds.length}</span></button><button className={page === 'settings' ? 'selected' : ''} onClick={() => navigate('settings')}><Settings2 size={19} />设置</button>{auth.role === 'admin' && <button className={page === 'users' ? 'selected' : ''} onClick={() => navigate('users')}><ShieldCheck size={19} />用户管理</button>}</nav><div className="sidebar-bottom"><div className="local-label"><span /> 自托管 · 独立运行</div><div className="account"><span className="avatar">{auth.username?.slice(0, 1).toUpperCase()}</span><div><strong>{auth.username}</strong><small>{auth.role === 'admin' ? '管理员' : '普通用户'}</small></div><button className="icon-button" aria-label="退出登录" onClick={() => void logout()}><LogOut size={17} /></button></div><span className="version">{auth.version}</span></div></aside><div className="main-shell"><header className="topbar"><span><span className="muted">工作台</span><span className="slash">/</span>{crumb}</span><span className="topbar-actions">{target && <span className="managing-chip" title="当前操作作用于此用户的订阅、凭据和个人设置">正在管理 {target.username}</span>}<ThemeToggle /><span className="topbar-status"><ShieldCheck size={14} /> 已安全登录 <button className="icon-button mobile-logout" aria-label="退出登录" onClick={() => void logout()}><LogOut size={15} /></button></span></span></header><main className="main-content" key={target?.id ?? auth.userId}>
     {target && <div className="workspace-banner" role="status"><div><strong>正在管理：{target.username}</strong><p>{target.enabled ? '修改将作用于此用户的订阅、凭据和个人设置。' : '此用户已停用，可以查看和修改静态配置；执行任务前请先启用。'}</p></div><button className="button small" onClick={() => changeWorkspace(null)}>返回我的工作台</button></div>}
-    {page === 'users' && auth.role === 'admin' ? <UsersPanel currentUserId={auth.userId!} manage={changeWorkspace} identityChanged={() => void api.auth.status().then(acceptAuth)} /> : page === 'batch' ? <BatchView notify={notify} changed={() => void loadFeeds()} back={() => navigate('feeds')} /> : page === 'settings' ? <SettingsView target={target} auth={auth} logout={forgetAuth} notify={notify} /> : editor !== undefined ? <FeedEditor key={editor?.id ?? `new-${editorSource}`} initial={editor ?? undefined} source={editorSource} existing={feeds} cancel={() => { setEditor(undefined); if (editorReturnId) setPanel({ id: editorReturnId, tab: 'settings' }); setEditorReturnId(null); }} saved={id => { setEditor(undefined); setPanel({ id, tab: editorReturnId ? 'settings' : 'items' }); setEditorReturnId(null); notify('订阅已保存'); void loadFeeds(); }} /> : <>
+    {page === 'users' && auth.role === 'admin' ? <UsersPanel currentUserId={auth.userId!} manage={user => changeWorkspace(user)} changed={refreshUsers} identityChanged={() => void api.auth.status().then(acceptAuth)} /> : page === 'batch' ? <BatchView notify={notify} changed={() => void loadFeeds()} back={() => navigate('feeds')} /> : page === 'settings' ? <SettingsView target={target} auth={auth} logout={forgetAuth} notify={notify} /> : editor !== undefined ? <FeedEditor key={editor?.id ?? `new-${editorSource}`} initial={editor ?? undefined} source={editorSource} existing={feeds} cancel={() => { setEditor(undefined); if (editorReturnId) setPanel({ id: editorReturnId, tab: 'settings' }); setEditorReturnId(null); }} saved={id => { setEditor(undefined); setPanel({ id, tab: editorReturnId ? 'settings' : 'items' }); setEditorReturnId(null); notify('订阅已保存'); void loadFeeds(); }} /> : <>
       <div className="page-heading"><div><span className="section-kicker">LESS CHECKING. MORE READING.</span><h1>你的订阅，持续点亮。</h1><p>把关注的网页汇集在这里，新内容会自动抵达。</p></div><NewFeedMenu create={create} batch={() => navigate('batch')} /></div>
       {feeds.length > 0 && <div className="stats-row"><div><span>全部订阅</span><strong>{feeds.length}<small>个来源</small></strong></div><div><span>正在关注</span><strong>{feeds.filter(feed => feed.enabled).length}<small>自动更新</small></strong></div><div><span>已收集内容</span><strong>{feeds.reduce((sum, feed) => sum + feed.itemCount, 0)}<small>条记录</small></strong></div>{attention ? <button className={`attention ${status === 'attention' ? 'active' : ''}`} title="只看需要检查的订阅" onClick={() => setStatus(status === 'attention' ? 'all' : 'attention')}><span>需要检查</span><strong>{attention}<small>个来源出错</small></strong></button> : <div><span>需要检查</span><strong>0<small>一切正常</small></strong></div>}</div>}
       <div className="list-toolbar"><h2>订阅列表 <span>{feeds.length}</span></h2><div className="input-icon search-input"><Search size={16} /><input ref={searchRef} aria-label="搜索订阅" placeholder="搜索名称或网址" value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === 'Escape' && query) { e.preventDefault(); setQuery(''); } }} /><kbd className="search-key" aria-hidden="true">/</kbd></div></div>

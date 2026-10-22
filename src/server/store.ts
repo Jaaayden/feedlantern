@@ -432,6 +432,23 @@ export class Store {
     return this.db.prepare('SELECT * FROM users ORDER BY created_at,id').all().map(row => Store.userFromRow(row));
   }
 
+  /** Per-user overview for the admin user list: feed health, credentials and latest session activity. */
+  listUsersWithStats(): UserSummary[] {
+    const feeds = new Map<string, { total: number; failing: number; paused: number }>();
+    for (const row of this.db.prepare('SELECT owner_id, COUNT(*) AS total, SUM(CASE WHEN last_error IS NOT NULL THEN 1 ELSE 0 END) AS failing, SUM(CASE WHEN enabled = 0 THEN 1 ELSE 0 END) AS paused FROM feeds GROUP BY owner_id').all() as Array<Record<string, unknown>>) {
+      feeds.set(String(row.owner_id), { total: Number(row.total), failing: Number(row.failing ?? 0), paused: Number(row.paused ?? 0) });
+    }
+    const credentials = new Map<string, number>();
+    for (const row of this.db.prepare('SELECT owner_id, COUNT(*) AS total FROM credentials GROUP BY owner_id').all() as Array<Record<string, unknown>>) credentials.set(String(row.owner_id), Number(row.total));
+    const seen = new Map<string, number>();
+    for (const row of this.db.prepare('SELECT user_id, MAX(last_seen_at) AS seen FROM sessions WHERE user_id IS NOT NULL GROUP BY user_id').all() as Array<Record<string, unknown>>) seen.set(String(row.user_id), Number(row.seen));
+    return this.listUsers().map(user => {
+      const feed = feeds.get(user.id);
+      const lastSeen = seen.get(user.id);
+      return { ...user, stats: { feeds: feed?.total ?? 0, failingFeeds: feed?.failing ?? 0, pausedFeeds: feed?.paused ?? 0, credentials: credentials.get(user.id) ?? 0, lastSeenAt: lastSeen ? new Date(lastSeen).toISOString() : null } };
+    });
+  }
+
   createUser(username: string, password: string): UserSummary {
     const id = randomId('user'), timestamp = nowIso();
     this.db.prepare("INSERT INTO users(id,username,password_hash,role,created_at,updated_at) VALUES (?,?,?,'user',?,?)").run(id, username, hashPassword(password), timestamp, timestamp);
