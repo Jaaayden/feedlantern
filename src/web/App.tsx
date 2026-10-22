@@ -6,6 +6,7 @@ import { TranslationProgress } from './TranslationProgress';
 import { RssEditor, RssContent } from './RssEditor';
 import { ApplicationSettingsPanel } from './ApplicationSettingsPanel';
 import { BackupPanel } from './BackupPanel';
+import { ApiTokensPanel } from './ApiTokensPanel';
 import { BatchView } from './BatchView';
 import { FeedCollection } from './FeedCollection';
 import { FetchLogs } from './FetchLogs';
@@ -14,7 +15,7 @@ import { levelsBetween, liftNode } from '../shared/element-map';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type React from 'react';
 import type { FormEvent, ReactNode } from 'react';
-import { Archive, ChevronRight, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bell, Check, ChevronDown, CircleHelp, Cookie, Copy, ExternalLink, Globe2, Info, KeyRound, Languages, ListPlus, LoaderCircle, LogOut, Monitor, Moon, MousePointer2, Pencil, Plus, Radio, RefreshCw, Rss, Search, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Sun, Trash2 } from 'lucide-react';
+import { Archive, ChevronRight, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bell, Check, ChevronDown, CircleHelp, Cookie, Copy, ExternalLink, Globe2, Info, KeyRound, KeySquare, Languages, ListPlus, LoaderCircle, LogOut, Monitor, Moon, MousePointer2, Pencil, Plus, Radio, RefreshCw, Rss, Search, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Sun, Trash2 } from 'lucide-react';
 import { Modal } from './Modal';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
 import { absoluteTime, copyText, relativeTime, sameAddress, summaryText } from './format';
@@ -464,7 +465,7 @@ function SettingsView({ auth, logout, notify, target }: { auth: AuthState; logou
     ...(admin ? [{ id: 'general', label: '应用设置', icon: SlidersHorizontal }] : []),
     { id: 'notifications', label: '通知', icon: Bell },
     { id: 'credentials', label: 'Cookie 凭据', icon: Cookie },
-    ...(!target ? [{ id: 'account', label: '账号与密码', icon: KeyRound }] : []),
+    ...(!target ? [{ id: 'account', label: '账号与密码', icon: KeyRound }, { id: 'tokens', label: '访问令牌', icon: KeySquare }] : []),
     ...(admin ? [{ id: 'backup', label: '备份与迁移', icon: Archive }] : []),
     { id: 'about', label: '关于', icon: Info },
   ];
@@ -491,7 +492,8 @@ function SettingsView({ auth, logout, notify, target }: { auth: AuthState; logou
         {admin && <div id="settings-general" className="settings-section"><ApplicationSettingsPanel revision={settingsRevision} /></div>}
         <div id="settings-notifications" className="settings-section"><BarkPanel key={settingsRevision} username={target?.username ?? auth.username!} enabled={target?.enabled !== false} /></div>
         <div id="settings-credentials" className="settings-section"><CredentialsView notify={notify} /></div>
-        {!target && <div id="settings-account" className="settings-section"><form className="panel settings-form" onSubmit={submit}><div className="panel-heading"><h2>修改密码</h2><KeyRound size={19} /></div><p className="muted">当前用户：{auth.username}。修改后会退出此账号的所有现有会话。</p><Field label="当前密码"><input required type="password" value={currentPassword} onChange={e => setCurrentPassword(e.target.value)} autoComplete="current-password" /></Field><div className="form-row"><Field label="新密码"><input required type="password" minLength={8} maxLength={1024} value={newPassword} onChange={e => setNewPassword(e.target.value)} autoComplete="new-password" /></Field><Field label="确认新密码"><input required type="password" minLength={8} value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} autoComplete="new-password" /></Field></div><ErrorNote error={error} /><button className="button primary" disabled={busy}>{busy ? <Busy /> : '更新密码'}</button></form></div>}
+        {!target && <div id="settings-account" className="settings-section"><form className="panel settings-form" onSubmit={submit}><div className="panel-heading"><h2>修改密码</h2><KeyRound size={19} /></div><p className="muted">当前用户：{auth.username}。修改后会退出此账号的所有现有会话，并吊销全部访问令牌。</p><Field label="当前密码"><input required type="password" value={currentPassword} onChange={e => setCurrentPassword(e.target.value)} autoComplete="current-password" /></Field><div className="form-row"><Field label="新密码"><input required type="password" minLength={8} maxLength={1024} value={newPassword} onChange={e => setNewPassword(e.target.value)} autoComplete="new-password" /></Field><Field label="确认新密码"><input required type="password" minLength={8} value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} autoComplete="new-password" /></Field></div><ErrorNote error={error} /><button className="button primary" disabled={busy}>{busy ? <Busy /> : '更新密码'}</button></form></div>}
+        {!target && <div id="settings-tokens" className="settings-section"><ApiTokensPanel notify={notify} /></div>}
         {admin && <div id="settings-backup" className="settings-section"><BackupPanel onRestored={logout} onImported={() => setSettingsRevision(v => v + 1)} /></div>}
         <div id="settings-about" className="settings-section"><section className="panel about-panel"><Brand /><p>自动找到网页上的新内容，汇入你的 RSS 阅读器。</p><div className="about-row"><span>版本</span><code>{auth.version}</code></div><div className="about-row"><span>许可证</span><span>MIT</span></div><a className="text-link" href="https://github.com/Jaaayden/feedlantern" target="_blank" rel="noreferrer">查看开源项目<ExternalLink size={14} /></a><div className="notice">服务主机需要保持运行，定时更新才会继续。支持网页列表订阅与 RSS 翻译；RSS 全文以源内提供的内容为准，不自动补抓全文或翻页。</div></section></div>
       </div>

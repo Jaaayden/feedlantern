@@ -3,6 +3,7 @@ import { translationEnabled } from '../shared/types.js';
 import { RssTranslations } from './rss-translation.js';
 import { TRANSLATION_CACHE_LIMIT, type Tables } from './backups.js';
 import { FetchHistory } from './fetch-history.js';
+import { ApiTokens } from './api-tokens.js';
 import { AppError } from './auth.js';
 import { applicationSettingsSchema } from './settings.js';
 import { defaultApplicationSettings, type ApplicationSettings } from '../shared/types.js';
@@ -165,6 +166,7 @@ function rowToItem(row: Record<string, unknown>): FeedItem {
 export class Store {
   readonly history: FetchHistory;
   readonly translations: RssTranslations;
+  readonly tokens: ApiTokens;
   readonly dataDir: string;
   readonly dbPath: string;
   readonly masterKeyPath: string;
@@ -290,6 +292,14 @@ export class Store {
       DROP INDEX IF EXISTS users_single_admin;
       CREATE TABLE user_notifications (user_id TEXT PRIMARY KEY, value TEXT NOT NULL);
       PRAGMA user_version=8; COMMIT;`);
+    // Personal access tokens: only a SHA-256 digest of the secret is stored.
+    if (version < 11) this.db.exec(`BEGIN;
+      CREATE TABLE IF NOT EXISTS api_tokens (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, prefix TEXT NOT NULL, scope TEXT NOT NULL CHECK(scope IN ('read','write')),
+        created_at TEXT NOT NULL, expires_at TEXT, last_used_at TEXT);
+      CREATE INDEX IF NOT EXISTS api_tokens_user ON api_tokens(user_id);
+      PRAGMA user_version=11; COMMIT;`);
+    this.tokens = new ApiTokens(this.db);
     this.translations = new RssTranslations(this.db, id => this.userSignal(id));
     this.history = new FetchHistory(this.db, () => this.getSettings(), id => this.getBarkForFeed(id));
     this.migrateBark();
@@ -396,6 +406,7 @@ export class Store {
 
   private revokeUser(id: string): void {
     this.db.prepare('DELETE FROM sessions WHERE user_id=?').run(id);
+    this.tokens.revokeUser(id);
     this.userControllers.get(id)?.abort(); this.userControllers.delete(id);
     for (const feed of this.listFeeds(id)) this.translations.invalidate(feed.id);
     this.translations.cancelActor(id);
@@ -478,6 +489,7 @@ export class Store {
         this.userControllers.get(id)?.abort();
         this.userControllers.delete(id);
         this.db.prepare('DELETE FROM sessions WHERE user_id=?').run(id);
+        this.tokens.revokeUser(id);
         for (const feed of this.listFeeds(id)) this.translations.invalidate(feed.id);
       } else {
         this.db.prepare('UPDATE feeds SET next_fetch_at=? WHERE owner_id=? AND enabled=1').run(nowIso(), id);
@@ -733,7 +745,8 @@ export class Store {
     for (const controller of this.userControllers.values()) controller.abort();
     this.userControllers.clear();
     this.transaction(() => {
-      for (const table of ['sessions', 'import_jobs', 'translations', 'rss_sources', 'translation_cache', 'feed_items', 'feeds', 'credentials', 'user_notifications', 'users', 'settings']) this.db.exec(`DELETE FROM ${table}`);
+      // Like sessions, access tokens are not part of a backup; a restore revokes them all.
+      for (const table of ['sessions', 'api_tokens', 'import_jobs', 'translations', 'rss_sources', 'translation_cache', 'feed_items', 'feeds', 'credentials', 'user_notifications', 'users', 'settings']) this.db.exec(`DELETE FROM ${table}`);
       for (const table of ['users', 'user_notifications', 'credentials', 'feeds', 'feed_items', 'settings', 'rss_sources', 'translations', 'translation_cache'] as const) {
         for (const value of tables[table] ?? []) {
           const row: Record<string, string | number | null> = { ...value };

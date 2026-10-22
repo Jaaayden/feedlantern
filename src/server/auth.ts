@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import type { AuthState } from '../shared/types.js';
+import type { ApiTokenScope, AuthState } from '../shared/types.js';
 import type { ServerConfig } from './config.js';
 import { Store, verifyPassword } from './store.js';
 
@@ -64,12 +64,34 @@ export class LoginRateLimiter {
 export interface AuthContext {
   userId: string;
   role: "admin" | "user";
+  /** Empty for token requests, which have no browser session. */
   sessionId: string;
   username: string;
   expiresAt: number;
+  /** Present when the request was authenticated with a personal access token. */
+  token?: { id: string; scope: ApiTokenScope };
+}
+
+/**
+ * The token from an `Authorization: Bearer` header: undefined when the request
+ * has no bearer credentials (other schemes, such as a proxy's Basic auth, are
+ * ignored), and an empty string when the header is a malformed bearer value.
+ */
+export function bearerToken(request: FastifyRequest): string | undefined {
+  const header = request.headers.authorization;
+  if (typeof header !== 'string') return undefined;
+  const match = /^bearer(?:\s+(.*))?$/i.exec(header.trim());
+  if (!match) return undefined;
+  return match[1]?.trim() ?? '';
 }
 
 export function sessionFromRequest(request: FastifyRequest, store: Store, config: ServerConfig): AuthContext | null {
+  // A bearer request is authenticated by its token alone; cookies are ignored.
+  const bearer = bearerToken(request);
+  if (bearer !== undefined) {
+    const owner = store.tokens.find(bearer);
+    return owner ? { userId: owner.userId, role: owner.role, sessionId: '', username: owner.username, expiresAt: owner.expiresAt ? Date.parse(owner.expiresAt) : Number.MAX_SAFE_INTEGER, token: { id: owner.tokenId, scope: owner.scope } } : null;
+  }
   const raw = request.cookies?.[config.cookieName] ?? request.cookies?.[SESSION_COOKIE];
   const session = store.findSession(raw, config.sessionTtlMs);
   return session ? { userId: session.userId, role: session.role, sessionId: raw!, username: session.username, expiresAt: session.expiresAt } : null;
@@ -82,6 +104,12 @@ export function requireAuth(request: FastifyRequest, store: Store, config: Serve
 }
 
 export function requireCsrf(request: FastifyRequest, store: Store, context: AuthContext): void {
+  // A cross-site page cannot attach a bearer token, so token requests need no CSRF token,
+  // but a write still needs a write token.
+  if (context.token) {
+    if (context.token.scope !== 'write') throw new AppError(403, '只读令牌不能执行写操作');
+    return;
+  }
   const csrf = request.headers['x-csrf-token'];
   const token = Array.isArray(csrf) ? csrf[0] : csrf;
   if (!store.checkCsrf(context.sessionId, token)) throw new AppError(403, '请求验证已失效，请刷新页面后重试');
@@ -110,7 +138,7 @@ export function authState(store: Store, config: ServerConfig, context: AuthConte
   return {
     setupRequired: !store.hasAdmin(),
     authenticated: Boolean(context),
-    ...(context ? { userId: context.userId, role: context.role, username: context.username, csrfToken } : {}),
+    ...(context ? { userId: context.userId, role: context.role, username: context.username, csrfToken, ...(context.token ? { tokenScope: context.token.scope } : {}) } : {}),
     version: config.version,
   };
 }

@@ -28,13 +28,15 @@ React/Vite 前端；Fastify API；SQLite Store；Playwright BrowserService；共
 
 SQLite `PRAGMA user_version` 记录迁移：版本 1 增加频道名称与设置表，版本 2 增加持久化任务，版本 3 将频道名称与管理名称统一（保留已设置的频道名称）。已有 v0.1.0 数据在首次启动时迁移，旧名称填入频道名称。更改迁移前必须考虑已有数据库和备份格式兼容。
 
+迁移版本 11 增加 `api_tokens` 表（令牌 ID、所属用户、名称、SHA-256 哈希、显示前缀、权限、创建／过期／最近使用时间），删除用户时级联删除。
+
 多用户迁移版本为 7：统一 `users` 表替代 `admin`，会话引用用户 ID，订阅、凭据和批量任务记录 `owner_id`。原数据迁移到稳定 ID `admin`，旧会话清空。HTTP 层所有资源入口检查归属，批量操作逐项校验；队列执行时重新检查。用户停用递增 `generation`、撤销会话及发出取消信号，后台结果只有代次仍一致时可落库；翻译同时使用任务 revision。
 
 Store 的无 owner 参数列表方法保留给整站后台调度和备份使用，HTTP 工作台必须传入认证的用户 ID。客户端提交的 ownerId 不决定归属。普通用户不读取全局设置，列表偏好存储在浏览器中。
 
 ## API 摘要
 
-所有管理接口要求登录；账号管理、全局设置及备份仅管理员可用，跨用户资源与不存在资源均返回 404。写操作需要 `X-FeedLantern: 1` 和 `X-CSRF-Token`，并校验 Host/Origin。错误返回 `{error:string}`，响应不缓存。
+所有管理接口要求登录（网页会话 Cookie 或个人访问令牌，见下节）；账号管理、全局设置及备份仅管理员可用，跨用户资源与不存在资源均返回 404。网页会话的写操作需要 `X-FeedLantern: 1` 和 `X-CSRF-Token`，并校验 Host/Origin。错误返回 `{error:string}`，响应不缓存。完整的接口说明见 `GET /api/openapi.json`（OpenAPI 3.1）。
 
 | 接口 | 用途 |
 |---|---|
@@ -53,6 +55,8 @@ Store 的无 owner 参数列表方法保留给整站后台调度和备份使用�
 | `/api/backups/export` | 加密导出，POST 管理员密码与备份密码 |
 | `/api/backups/preview`、`restore` | 预览/覆盖恢复；初始化场景使用 setupToken |
 | `GET/POST /api/backups/config` | 轻量配置导出/预览与确认导入 |
+| `GET/POST /api/tokens`、`DELETE /api/tokens/:id` | 列出、创建（`{name, scope:'read'\|'write', expiresInDays?}`，返回只出现一次的 `secret`）、吊销自己的访问令牌；仅限网页会话 |
+| `GET /api/openapi.json` | 公开的 OpenAPI 3.1 文档 |
 | `/feeds/:id/:token.xml` | 无管理员登录的密钥授权 RSS 2.0 |
 
 `ScreenFrame` 是从页面顶部截取的第一段截图（JPEG 质量 75，data URL，每段最高 8000 像素）。`height` 为已截取的高度，`documentHeight` 为可截取的总高度（最高 48000 像素；网页更长时 `truncated: true`），`viewportHeight` 为远端视口高度。`POST /api/browser/:id/segment {top}` 截取下一段，`top` 必须等于已截取的高度，否则拒绝，避免重复或跳段；返回 `{top, height, image, documentHeight, map}`。`map` 是元素地图：`boxes` 每 5 个数一组（x、y、宽、高、最近的上层元素序号，根为 -1），坐标相对整页顶部，另含 `labels`、`links`（仅 http/https）和 `innerScroll`。地图是累计的：后续分段只追加新元素，已有序号不变。编辑器据此在本地完成悬停高亮、↑/↓ 调整范围和滚动。
@@ -62,6 +66,53 @@ Store 的无 owner 参数列表方法保留给整站后台调度和备份使用�
 `POST /api/browser/:id/scroll` 接受 `{deltaY,x?,y?}`，坐标须同时提供并位于远端视口内；省略时使用视口中心。编辑器只在 `map.innerScroll` 为真时用它滚动页面内部的滚动区域。显式关闭编辑会话会取消进行中的操作并释放容量。
 
 完整备份格式版本为 3（兼容导入 version 1、2），独立于数据库迁移版本；敏感值只在加密包内部携带可迁移明文，目标实例使用自己的主密钥重新加密。
+
+## 用令牌调用 API
+
+脚本和 AI Agent 使用个人访问令牌，不需要模拟网页登录。在“设置 → 访问令牌”创建，令牌形如 `fl_` 加 43 个字符，只在创建时显示一次；数据库只保存 SHA-256 哈希和用于识别的前 11 个字符。
+
+```sh
+export FEEDLANTERN=https://feeds.example.com
+export FEEDLANTERN_TOKEN=fl_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+# 确认令牌和所属账号（返回 userId、role、tokenScope）
+curl -s -H "Authorization: Bearer $FEEDLANTERN_TOKEN" "$FEEDLANTERN/api/auth/status"
+
+# 列出订阅（read 或 write 令牌）
+curl -s -H "Authorization: Bearer $FEEDLANTERN_TOKEN" "$FEEDLANTERN/api/feeds"
+
+# 立即抓取一个订阅（需要 write 令牌）
+curl -s -X POST -H "Authorization: Bearer $FEEDLANTERN_TOKEN" "$FEEDLANTERN/api/feeds/FEED_ID/refresh"
+
+# 修改刷新间隔（需要 write 令牌）
+curl -s -X PATCH -H "Authorization: Bearer $FEEDLANTERN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"intervalMinutes":120}' "$FEEDLANTERN/api/feeds/FEED_ID"
+
+# 下载接口文档（公开，无需令牌）
+curl -s "$FEEDLANTERN/api/openapi.json" -o feedlantern-openapi.json
+```
+
+规则：
+
+- 令牌请求按令牌所属账号鉴权，权限与工作台隔离和该账号的网页会话完全相同：普通用户只能访问自己的数据；管理员令牌默认作用于管理员自己的工作台，和网页一样，只有带 `X-FeedLantern-User: 用户ID` 才在其他账号的工作台中操作。
+- `read` 令牌只能调用 GET；任何写操作返回 403。`write` 令牌可调用所有开放给令牌的接口。
+- 带 `Authorization: Bearer` 的请求只看令牌，忽略 Cookie；不需要 `X-FeedLantern`、`X-CSRF-Token`，也不校验 Host/Origin（这些检查只用来保护浏览器自动携带的 Cookie，跨站页面无法替用户附上令牌）。其他认证方案（例如反向代理的 `Authorization: Basic`）不受影响，仍按 Cookie 会话处理。网页会话的防护保持不变。
+- 令牌无效、过期或已吊销返回 401（带 `WWW-Authenticate: Bearer`）；同一来源地址 15 分钟内失败 20 次后，该地址的令牌请求一律返回 429，直到窗口结束。与登录限速一样，部署在反向代理后要设置 `TRUSTED_PROXIES`。
+- 账号停用、删除、修改密码（包括管理员重置）、改名或角色变化时，与登录会话一样立即吊销该账号的全部令牌；重新启用账号不会恢复旧令牌。完整恢复备份会吊销全部令牌。
+- 每个账号最多 50 个令牌；有效期 1–3650 天或永不过期。过期令牌保留在列表中 30 天后自动清除。
+
+令牌不能调用的接口（只能在网页登录会话中操作，返回 403）：
+
+- 登录相关：`POST /api/auth/setup`、`/api/auth/login`、`/api/auth/logout`、`/api/auth/password`
+- 备份：`POST /api/backups/export`、`/api/backups/preview`、`/api/backups/restore`，`GET/POST /api/backups/config`
+- 账号管理中的危险操作：`POST /api/users`、`PATCH /api/users/:id`、`POST /api/users/:id/password`、`DELETE /api/users/:id`
+- 令牌本身：`GET/POST /api/tokens`、`DELETE /api/tokens/:id`
+
+清单定义在 `src/server/api-tokens.ts` 的 `SESSION_ONLY_ROUTES`，OpenAPI 文档中这些接口的 `x-feedlantern-token` 为 `forbidden`。
+
+`GET /api/openapi.json` 公开提供：文档只描述接口形状，与开源代码中的信息相同，不含任何用户数据；公开后脚本、Agent 和代码生成工具无需先拿到令牌就能读取。`servers` 使用当前请求的公开地址。每个操作带 `x-feedlantern-access`（public / session / read / write）和 `x-feedlantern-token`（read / write / forbidden）。
+
+新增或删除 `/api/*` 路由时同步修改 `src/server/openapi.ts`；`tests/openapi.test.ts` 会比对服务器路由表和文档，缺少或多出接口都会失败。
 
 ## 发布
 
@@ -117,6 +168,7 @@ SQLite 版本 8 移除单管理员索引并增加加密 `user_notifications`。�
 | 翻译片段缓存 | 最近使用的 20000 条（`TRANSLATION_CACHE_LIMIT`，备份格式共用同一上限） | `RssTranslations.prune` |
 | 抓取日志 | 按「日志保留天数」，默认 30 天 | `FetchHistory.prune` |
 | 登录会话 | 过期后每小时清理 | `Store.purgeExpiredSessions` |
+| 访问令牌 | 过期 30 天后每小时清理；每个账号最多 50 个 | `ApiTokens.purgeExpired` |
 
 清理每小时运行一次。新建的数据库使用 `auto_vacuum=INCREMENTAL`，清理后 `Store.compact()` 把空闲页逐步还给磁盘；更早创建的数据库用 `scripts/compact-db.ts` 一次性转换并压缩，用法见[升级维护](maintenance.md#数据库体积)。完整备份导出时翻译缓存也只取最近使用的 20000 条，因此缓存在两次清理之间短暂超限不会让导出失败。
 

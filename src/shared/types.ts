@@ -120,7 +120,10 @@ export interface DetectionCandidate {
   warnings: string[];
 }
 export interface DetectionResult { candidates: DetectionCandidate[]; recommendedId: string | null; warnings: string[] }
-export interface AuthState { userId?: string; role?: "admin" | "user"; setupRequired: boolean; authenticated: boolean; username?: string; csrfToken?: string; version: string }
+export interface AuthState { userId?: string; role?: "admin" | "user"; setupRequired: boolean; authenticated: boolean; username?: string; csrfToken?: string; version: string; /** Set when the request was authenticated with a personal access token. */ tokenScope?: ApiTokenScope }
+export type ApiTokenScope = 'read' | 'write';
+/** A personal access token as listed to its owner; the secret itself is only returned on creation. */
+export interface ApiTokenSummary { id: string; name: string; scope: ApiTokenScope; prefix: string; createdAt: string; expiresAt: string | null; lastUsedAt: string | null }
 
 // JSON API: errors always { error: string }; all mutations require X-FeedLantern: 1.
 // GET /api/auth/status -> AuthState; POST /api/auth/setup {setupToken,username,password}
