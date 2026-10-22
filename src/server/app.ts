@@ -29,6 +29,8 @@ import type {
   FetchStatus,
   FeedInput,
   FeedSettingsInput,
+  PaginationReport,
+  PaginationRules,
   PickRequest,
   PickResult,
   ScreenFrame,
@@ -52,7 +54,8 @@ import {
 import { getConfig, ensureDataDir, hasDist, isAllowedOrigin, type ConfigInput, type ServerConfig } from './config.js';
 import { renderRss, rssEtag } from './rss.js';
 import { etagMatches, renderRssPreview, wantsHtmlPreview } from './rss-preview.js';
-import { asInteger, describeError, asNonEmptyString, asOptionalString, asRecord, cookieMetadata, frameError, friendlyError, logHiddenError, parseCredentialInput, parseFeedInput, parseHttpUrl, parsePartialRules, parseRules } from './validation.js';
+import { asInteger, describeError, asNonEmptyString, asOptionalString, asRecord, cookieMetadata, frameError, friendlyError, logHiddenError, parseCredentialInput, parseFeedInput, parseHttpUrl, parsePagination, parsePartialRules, parseRules } from './validation.js';
+import { reportSummary } from './pagination.js';
 import { Store, type CredentialValue } from './store.js';
 
 export interface BrowserServiceLike {
@@ -65,7 +68,8 @@ export interface BrowserServiceLike {
   segment?(id: string, top: number): Promise<SegmentResult> | SegmentResult;
   pick(id: string, request: PickRequest): Promise<PickResult> | PickResult;
   extract(id: string, rules: SelectionRules): Promise<ExtractedItem[]> | ExtractedItem[];
-  scrape(options: { url: string; signal?: AbortSignal; cookies?: Cookie[]; waitMs: number; waitForSelector?: string; rules: SelectionRules }): Promise<ExtractedItem[]> | ExtractedItem[];
+  scrape(options: { url: string; signal?: AbortSignal; cookies?: Cookie[]; waitMs: number; waitForSelector?: string; rules: SelectionRules; pagination?: PaginationRules | null; isKnown?: (link: string) => boolean; onReport?: (report: PaginationReport) => void }): Promise<ExtractedItem[]> | ExtractedItem[];
+  paginate?(id: string, rules: SelectionRules, pagination: PaginationRules): Promise<{ items: ExtractedItem[]; report: PaginationReport }>;
   detect?(id: string): Promise<DetectionResult> | DetectionResult;
   close(id: string): Promise<void> | void;
   closeEditors?(): Promise<void>;
@@ -226,7 +230,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
     try {
       const rss = feed.sourceType === 'rss' ? await getRss(feed.url, { ...store.translations.sourceState(feed.id), signal: AbortSignal.any([store.userSignal(feed.ownerId), ...(actorSignal ? [actorSignal] : [])]) }) : undefined;
-      const items = rss ? [] : await browser.scrape({ url: feed.url, signal: AbortSignal.any([store.userSignal(feed.ownerId), ...(actorSignal ? [actorSignal] : [])]), cookies: credentialsForFeed(feed), waitMs: feed.waitMs, waitForSelector: feed.waitForSelector, rules: feed.rules });
+      let pages: PaginationReport | undefined;
+      const multiPage = !rss && !!feed.pagination && feed.pagination.maxPages > 1;
+      const items = rss ? [] : await browser.scrape({
+        url: feed.url, signal: AbortSignal.any([store.userSignal(feed.ownerId), ...(actorSignal ? [actorSignal] : [])]), cookies: credentialsForFeed(feed), waitMs: feed.waitMs, waitForSelector: feed.waitForSelector, rules: feed.rules,
+        ...(multiPage ? { pagination: feed.pagination, isKnown: store.knownLinks(feed), onReport: (report: PaginationReport) => { pages = report; } } : {}),
+      });
       if (!rss && !items.length) throw new Error('没有抽取到有效条目：可能是页面结构或规则变化，请检查匹配规则、Cookie 或页面渲染');
       if (!stillActive()) { store.history.interrupt(runId); return null; }
       const result = store.transaction(() => {
@@ -241,7 +250,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
           if (!counts.itemCount) throw new Error('没有抽取到有效条目：可能是页面结构或规则变化');
         }
         const updated = store.markFetchSuccess(feed.id, nextFetchAt);
-        store.history.succeed(runId, feed.id, performance.now() - started, counts);
+        store.history.succeed(runId, feed.id, performance.now() - started, counts, pages ? { pages: pages.pages.filter(page => !page.error).length, note: reportSummary(pages) } : undefined);
         return updated;
       });
       bark.wake();
@@ -609,7 +618,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     let snapshot;
     try {
       snapshot = openBackup(body.archive, asNonEmptyString(body.password, '备份密码', 1024));
-      for (const row of snapshot.tables.feeds) parseFeedInput({ sourceType: row.source_type, translationMode: row.translation_mode, name: row.name, url: row.url, rules: JSON.parse(row.rules_json), ruleOrigins: row.rule_origins_json ? JSON.parse(row.rule_origins_json) : undefined, intervalMinutes: row.interval_minutes, waitMs: row.wait_ms, waitForSelector: row.wait_for_selector });
+      for (const row of snapshot.tables.feeds) parseFeedInput({ pagination: row.pagination_json ? JSON.parse(row.pagination_json) : null, sourceType: row.source_type, translationMode: row.translation_mode, name: row.name, url: row.url, rules: JSON.parse(row.rules_json), ruleOrigins: row.rule_origins_json ? JSON.parse(row.rule_origins_json) : undefined, intervalMinutes: row.interval_minutes, waitMs: row.wait_ms, waitForSelector: row.wait_for_selector });
       for (const row of snapshot.tables.credentials) {
         const metadata = cookieMetadata(parseCookies(JSON.parse(row.encrypted_value), row.format, row.url), row.url);
         row.domains_json = JSON.stringify(metadata.domains); row.cookie_count = metadata.count; row.expires_at = metadata.expiresAt;
@@ -642,7 +651,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
   app.get('/api/backups/config', async request => {
     adminGuard(request);
-    return { format: 'feedlantern-config', version: 2, settings: { ...store.getSettings(), bark: store.getBark(authenticated(request).userId) }, feeds: store.listFeeds(authenticated(request).userId).map(f => ({ sourceType: f.sourceType, translationMode: f.translationMode, name: f.name, channelTitle: f.channelTitle, url: f.url, rules: f.rules, ruleOrigins: f.ruleOrigins, intervalMinutes: f.intervalMinutes, waitMs: f.waitMs, waitForSelector: f.waitForSelector, enabled: f.enabled, requiresCredential: !!f.credentialId })) };
+    return { format: 'feedlantern-config', version: 2, settings: { ...store.getSettings(), bark: store.getBark(authenticated(request).userId) }, feeds: store.listFeeds(authenticated(request).userId).map(f => ({ sourceType: f.sourceType, translationMode: f.translationMode, name: f.name, channelTitle: f.channelTitle, url: f.url, rules: f.rules, ruleOrigins: f.ruleOrigins, ...(f.pagination ? { pagination: f.pagination } : {}), intervalMinutes: f.intervalMinutes, waitMs: f.waitMs, waitForSelector: f.waitForSelector, enabled: f.enabled, requiresCredential: !!f.credentialId })) };
   });
   app.post('/api/backups/config', { bodyLimit: 10_000_000 }, async request => {
     adminGuard(request);
@@ -975,7 +984,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     browserGuard(request);
     const body = asRecord(request.body);
     const target = body.target;
-    if (!['item', 'title', 'link', 'description', 'image', 'date'].includes(String(target))) throw new AppError(400, 'pick target 无效');
+    if (!['item', 'title', 'link', 'description', 'image', 'date', 'next'].includes(String(target))) throw new AppError(400, 'pick target 无效');
     const pickRequest: PickRequest = {
       target: target as PickRequest['target'],
       ...(body.node !== undefined ? { node: asInteger(body.node, 'node', 0, 1_000_000, 0) } : { x: Number(body.x), y: Number(body.y) }),
@@ -1005,8 +1014,15 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
   app.post('/api/browser/:id/preview', async (request) => {
     browserGuard(request);
-    const rules = parseRules(asRecord(request.body).rules);
-    try { return { items: await browser.extract(String((request.params as { id: string }).id), rules) }; } catch (error) { throw frameError(error, '预览匹配'); }
+    const body = asRecord(request.body);
+    const rules = parseRules(body.rules);
+    const pagination = parsePagination(body.pagination);
+    const id = String((request.params as { id: string }).id);
+    if (pagination && pagination.maxPages > 1) {
+      if (!browser.paginate) throw new AppError(501, '当前浏览器服务不支持预览翻页');
+      try { const result = await browser.paginate(id, rules, pagination); return { items: result.items, pagination: result.report }; } catch (error) { throw frameError(error, '预览翻页'); }
+    }
+    try { return { items: await browser.extract(id, rules) }; } catch (error) { throw frameError(error, '预览匹配'); }
   });
   app.post('/api/browser/:id/detect', async (request) => {
     browserGuard(request);

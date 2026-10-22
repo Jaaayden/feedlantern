@@ -38,6 +38,8 @@ export class FetchHistory {
     `);
     if (!db.prepare('PRAGMA table_info(fetch_alerts)').all().some(row => row.name === 'kind')) db.exec("ALTER TABLE fetch_alerts ADD COLUMN kind TEXT NOT NULL DEFAULT 'fetch'");
     if (!db.prepare('PRAGMA table_info(fetch_incidents)').all().some(row => row.name === 'failure_count')) db.exec('ALTER TABLE fetch_incidents ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0');
+    // Multi-page feeds: pages fetched, and where and why collection stopped.
+    if (!db.prepare('PRAGMA table_info(fetch_logs)').all().some(row => row.name === 'pages')) db.exec('ALTER TABLE fetch_logs ADD COLUMN pages INTEGER; ALTER TABLE fetch_logs ADD COLUMN note TEXT;');
     db.exec(`CREATE TABLE IF NOT EXISTS translation_incidents (feed_id TEXT PRIMARY KEY REFERENCES feeds(id) ON DELETE CASCADE, alert_id TEXT REFERENCES fetch_alerts(id) ON DELETE SET NULL);`);
   }
 
@@ -78,9 +80,9 @@ export class FetchHistory {
     return Number(this.db.prepare("INSERT INTO fetch_logs(feed_id,source,status,started_at) VALUES (?,?,'running',?)").run(feedId, source, startedAt).lastInsertRowid);
   }
 
-  succeed(id: number, feedId: string, durationMs: number, counts: { itemCount: number; newItemCount: number }): void {
-    this.db.prepare("UPDATE fetch_logs SET status='success', finished_at=?, duration_ms=?, item_count=?, new_item_count=? WHERE id=? AND status='running'")
-      .run(new Date().toISOString(), Math.max(0, Math.round(durationMs)), counts.itemCount, counts.newItemCount, id);
+  succeed(id: number, feedId: string, durationMs: number, counts: { itemCount: number; newItemCount: number }, detail?: { pages: number; note: string }): void {
+    this.db.prepare("UPDATE fetch_logs SET status='success', finished_at=?, duration_ms=?, item_count=?, new_item_count=?, pages=?, note=? WHERE id=? AND status='running'")
+      .run(new Date().toISOString(), Math.max(0, Math.round(durationMs)), counts.itemCount, counts.newItemCount, detail?.pages ?? null, detail ? safeDiagnostic(detail.note) : null, id);
     this.db.prepare("UPDATE fetch_alerts SET status='canceled' WHERE feed_id=? AND kind='fetch' AND status='pending'").run(feedId);
     this.db.prepare('DELETE FROM fetch_incidents WHERE feed_id=?').run(feedId);
   }
@@ -113,6 +115,7 @@ export class FetchHistory {
       id: Number(row.id), feedId: String(row.feed_id), source: row.source as FetchSource, status: row.status as FetchStatus,
       startedAt: String(row.started_at), finishedAt: row.finished_at as string | null, durationMs: row.duration_ms as number | null,
       itemCount: row.item_count as number | null, newItemCount: row.new_item_count as number | null, error: row.error as string | null,
+      ...(row.pages !== null && row.pages !== undefined ? { pages: Number(row.pages), note: row.note as string | null } : {}),
       notification: row.alert_status ? { status: row.alert_status as AlertStatus, error: row.alert_error as string | null }
         : row.notification_disabled ? { status: 'disabled', error: null } : null,
     }));

@@ -8,7 +8,31 @@ export interface SelectionRules {
   image?: string;
   date?: string;
 }
+/**
+ * Multi-page collection. Page 1 is always the source URL. `next` follows a
+ * picked "next page" link or button, `template` fills `{n}` with
+ * `start`, `start + step`, … for pages 2, 3, …, and `loadMore` clicks a button
+ * that appends items to the same page.
+ */
+export interface PaginationRules {
+  mode: 'next' | 'template' | 'loadMore';
+  /** Total pages including page 1, 1–10. */
+  maxPages: number;
+  /** Pause before each further page, 2–30 s; a small random jitter is added. */
+  delayMs: number;
+  nextSelector?: string;
+  urlTemplate?: string;
+  start?: number;
+  step?: number;
+}
+export const paginationLimits = { maxPages: 10, minDelayMs: 2_000, maxDelayMs: 30_000, defaultDelayMs: 3_000 } as const;
+export type PaginationStop = 'single' | 'max' | 'end' | 'repeat' | 'known' | 'empty' | 'failed' | 'blocked' | 'budget' | 'limit';
+export interface PageReport { page: number; url: string; count: number; added: number; error?: string }
+/** What a multi-page collection fetched, and where and why it stopped. */
+export interface PaginationReport { pages: PageReport[]; stoppedAt: number; stop: PaginationStop; message: string }
 export interface FeedInput {
+  /** Omitted: keep the saved setting; null: single page. */
+  pagination?: PaginationRules | null;
   sourceType?: 'website' | 'rss';
   translationMode?: 'original' | 'chinese' | 'bilingual';
   name: string;
@@ -59,6 +83,8 @@ export interface FetchLog {
   id: number; feedId: string; source: FetchSource; status: FetchStatus;
   startedAt: string; finishedAt: string | null; durationMs: number | null;
   itemCount: number | null; newItemCount: number | null; error: string | null;
+  /** Multi-page feeds: pages fetched and where/why collection stopped. */
+  pages?: number | null; note?: string | null;
   notification: { status: AlertStatus; error: string | null } | null;
 }
 export interface FetchLogPage { logs: FetchLog[]; nextCursor: string | null; retentionDays: number }
@@ -106,7 +132,7 @@ export interface Rect { x: number; y: number; width: number; height: number }
  * keeps the chosen element instead of widening to a repeated item or a
  * meaningful field. With `rules`, the response also previews the updated rules.
  */
-export interface PickRequest { x?: number; y?: number; node?: number; exact?: boolean; target: 'item' | FieldName; itemSelector?: string; ancestorLevel?: number; rules?: Partial<SelectionRules> }
+export interface PickRequest { x?: number; y?: number; node?: number; exact?: boolean; target: 'item' | FieldName | 'next'; itemSelector?: string; ancestorLevel?: number; rules?: Partial<SelectionRules> }
 export interface PickResult { selector: string; rects: Rect[]; count: number; sampleText: string; warning?: string; node?: number; items?: ExtractedItem[]; previewError?: string; datePreview?: { publishedAt: string; publishedAtSource: 'absolute' | 'relative'; dateText: string } }
 export interface DetectionCandidate {
   id: string;
@@ -138,7 +164,8 @@ export interface AuthState { userId?: string; role?: "admin" | "user"; setupRequ
 // POST /api/browser/:id/click {x,y} -> ScreenFrame; POST /api/browser/:id/follow {node} -> ScreenFrame
 // POST /api/browser/:id/segment {top} -> SegmentResult (top = height captured so far)
 // POST /api/browser/:id/pick PickRequest -> PickResult (with rules: also items/previewError)
-// POST /api/browser/:id/preview {rules:SelectionRules} -> {items:ExtractedItem[]}
+// POST /api/browser/:id/preview {rules:SelectionRules, pagination?} -> {items:ExtractedItem[], pagination?:PaginationReport}
+//   (with pagination of 2+ pages: collects the pages like a background refresh, in a separate tab of the session)
 // POST /api/browser/:id/detect {} -> DetectionResult
 // DELETE /api/browser/:id -> {ok:true}
 
