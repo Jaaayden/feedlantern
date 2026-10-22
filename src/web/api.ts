@@ -195,6 +195,8 @@ export const api = {
       request<ScreenFrame>(`/api/browser/${encodeURIComponent(id)}/scroll`, { method: 'POST', body: { deltaY, ...point } }),
     click: (id: string, x: number, y: number) =>
       request<ScreenFrame>(`/api/browser/${encodeURIComponent(id)}/click`, { method: 'POST', body: { x, y } }),
+    follow: (id: string, node: number) =>
+      request<ScreenFrame>(`/api/browser/${encodeURIComponent(id)}/follow`, { method: 'POST', body: { node } }),
     pick: (id: string, body: PickRequest) =>
       request<PickResult>(`/api/browser/${encodeURIComponent(id)}/pick`, { method: 'POST', body }),
     detect: (id: string) =>

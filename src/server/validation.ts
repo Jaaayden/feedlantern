@@ -3,6 +3,7 @@ import type { Cookie } from 'playwright';
 import type { FeedInput, SelectionRules } from '../shared/types.js';
 import { AppError } from './auth.js';
 import { CookieParseError } from './cookies.js';
+import { redactForLog } from './log.js';
 import type { CredentialValue } from './store.js';
 
 interface FeedBody {
@@ -73,6 +74,17 @@ export function parseRules(value: unknown): SelectionRules {
   };
 }
 
+/** Rules being edited in the picker: every field optional, empty means absent. */
+export function parsePartialRules(value: unknown): Partial<SelectionRules> {
+  const record = asRecord(value);
+  const output: Partial<SelectionRules> = {};
+  for (const key of ['item', 'title', 'link', 'description', 'image', 'date'] as const) {
+    const selector = asOptionalSelector(record[key], `${key} selector`);
+    if (selector) output[key] = selector;
+  }
+  return output;
+}
+
 function parseRuleOrigins(value: unknown): FeedInput['ruleOrigins'] {
   if (value === undefined || value === null) return undefined;
   const record = asRecord(value);
@@ -124,8 +136,16 @@ export function friendlyError(error: unknown, fallback: string): string {
   return fallback;
 }
 
-export function frameError(error: unknown): AppError {
-  return new AppError(400, friendlyError(error, '网页操作失败，请检查目标页面和等待条件'));
+/** Log the original error when the user only sees a summary of it. */
+export function logHiddenError(where: string, error: unknown, shown: string): void {
+  if (error instanceof Error && error.message === shown) return;
+  console.error(`${where}：${redactForLog(describeError(error))}`);
+}
+
+export function frameError(error: unknown, action = '网页操作'): AppError {
+  const shown = friendlyError(error, '网页操作失败，请检查目标页面和等待条件');
+  logHiddenError(`${action}失败`, error, shown);
+  return new AppError(400, shown);
 }
 
 export function cookieMetadata(cookies: readonly Cookie[], url: string): { domains: string[]; count: number; expiresAt: string | null } {

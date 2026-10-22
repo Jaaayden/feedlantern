@@ -83,10 +83,22 @@ export const defaultApplicationSettings: ApplicationSettings = {
   server: { backgroundConcurrency: 1, allowedHosts: [], dnsOverHttps: false, trustedProxies: [], publicOrigin: 'http://127.0.0.1:4321', cookieSecure: false, sessionTtlDays: 30, host: '127.0.0.1', port: 4321 },
 };
 export interface CredentialSummary { id: string; name: string; url: string; format: 'header' | 'json'; domains: string[]; count: number; updatedAt: string; expiresAt: string | null }
-export interface ScreenFrame { sessionId: string; image: string; width: number; height: number; url: string; title: string }
+/**
+ * Visible elements of a captured frame, measured in screenshot pixels from the
+ * top of the document. `boxes` holds five numbers per element: x, y, width,
+ * height and the index of the nearest mapped ancestor (-1 for a root).
+ */
+export interface ElementMap { boxes: number[]; labels: string[]; links: Record<string, string>; truncated: boolean; /** Some element scrolls on its own (only the remote page can scroll it). */ innerScroll?: boolean }
+/** `height` is the captured (possibly full-page) image height; `viewportHeight` is Chromium's window. */
+export interface ScreenFrame { sessionId: string; image: string; width: number; height: number; viewportHeight: number; url: string; title: string; map?: ElementMap; truncated?: boolean }
 export interface Rect { x: number; y: number; width: number; height: number }
-export interface PickRequest { x: number; y: number; target: 'item' | FieldName; itemSelector?: string; ancestorLevel?: number }
-export interface PickResult { selector: string; rects: Rect[]; count: number; sampleText: string; warning?: string; datePreview?: { publishedAt: string; publishedAtSource: 'absolute' | 'relative'; dateText: string } }
+/**
+ * Pick by element-map `node` (preferred) or by document coordinates. `exact`
+ * keeps the chosen element instead of widening to a repeated item or a
+ * meaningful field. With `rules`, the response also previews the updated rules.
+ */
+export interface PickRequest { x?: number; y?: number; node?: number; exact?: boolean; target: 'item' | FieldName; itemSelector?: string; ancestorLevel?: number; rules?: Partial<SelectionRules> }
+export interface PickResult { selector: string; rects: Rect[]; count: number; sampleText: string; warning?: string; node?: number; items?: ExtractedItem[]; previewError?: string; datePreview?: { publishedAt: string; publishedAtSource: 'absolute' | 'relative'; dateText: string } }
 export interface DetectionCandidate {
   id: string;
   label: string;
@@ -114,7 +126,8 @@ export interface AuthState { userId?: string; role?: "admin" | "user"; setupRequ
 // DELETE /api/feeds/:id; GET /feeds/:id/:token.xml -> RSS 2.0 (token grants read-only access)
 // POST /api/browser {url,credentialId,waitMs,waitForSelector?} -> ScreenFrame
 // GET /api/browser/:id -> ScreenFrame; POST /api/browser/:id/scroll {deltaY} -> ScreenFrame
-// POST /api/browser/:id/click {x,y} -> ScreenFrame; POST /api/browser/:id/pick PickRequest -> PickResult
+// POST /api/browser/:id/click {x,y} -> ScreenFrame; POST /api/browser/:id/follow {node} -> ScreenFrame
+// POST /api/browser/:id/pick PickRequest -> PickResult (with rules: also items/previewError)
 // POST /api/browser/:id/preview {rules:SelectionRules} -> {items:ExtractedItem[]}
 // POST /api/browser/:id/detect {} -> DetectionResult
 // DELETE /api/browser/:id -> {ok:true}

@@ -136,7 +136,7 @@ export async function previewDateSelection(page: Page, itemSelector: string | un
 }
 
 /** Highlight the date text without changing DOM or persisting text-node selectors. */
-export async function dateSelectionRects(page: Page, itemSelector: string | undefined, selector: string): Promise<import('../shared/types').Rect[]> {
+export async function dateSelectionRects(page: Page, itemSelector: string | undefined, selector: string, limitHeight?: number): Promise<import('../shared/types').Rect[]> {
   return page.evaluate(`(function(p) {
     const roots = p.itemSelector ? Array.from(document.querySelectorAll(p.itemSelector)) : [document.documentElement];
     const rects = [];
@@ -161,11 +161,13 @@ export async function dateSelectionRects(page: Page, itemSelector: string | unde
       }
       if (!started) continue;
       for (const r of range.getClientRects()) {
-        if (r.width > 0 && r.height > 0 && r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth)
-          rects.push({ x:r.x, y:r.y, width:r.width, height:r.height });
+        // Document pixels, matching the editor's full-page screenshot.
+        const x = r.x + scrollX, y = r.y + scrollY;
+        if (r.width > 0 && r.height > 0 && y + r.height > 0 && x + r.width > 0 && y < (p.limitHeight || innerHeight) && x < innerWidth)
+          rects.push({ x, y, width:r.width, height:r.height });
       }
       if (rects.length >= 100) break;
     }
     return rects.slice(0,100);
-  })(${JSON.stringify({ itemSelector, selector, relative: relativePattern.source, absolute: absolutePattern.source })})`) as Promise<import('../shared/types').Rect[]>;
+  })(${JSON.stringify({ itemSelector, selector, limitHeight, relative: relativePattern.source, absolute: absolutePattern.source })})`) as Promise<import('../shared/types').Rect[]>;
 }

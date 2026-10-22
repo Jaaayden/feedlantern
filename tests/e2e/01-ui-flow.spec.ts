@@ -1,6 +1,6 @@
 import { mkdir } from 'node:fs/promises';
 import { expect, test } from './fixtures';
-import type { Feed } from '../../src/shared/types';
+import type { Feed, ScreenFrame } from '../../src/shared/types';
 import { FIXTURE_URLS, locatorForUrl, loginInPage, firstVisible } from './support';
 
 test('completes setup login to automatic detection, save, RSS copy, and token rotation', async ({ page }) => {
@@ -100,16 +100,16 @@ test('allows a user to open matching adjustment after automatic preview', async 
   await expect(page.getByText('标题选择器')).toBeVisible();
   await expect(page.locator('.selector-grid input').first()).toBeVisible();
 
-  // The browser screenshot is rendered at a smaller CSS size than Chromium's
-  // 1280x800 capture. Clicking through the rendered image verifies that the
-  // UI converts CSS coordinates back to screenshot coordinates before calling
-  // the visual picker.
+  // The screenshot is rendered at a smaller CSS size than Chromium's 1280px
+  // wide capture. Clicking through the rendered image verifies that the UI
+  // converts CSS coordinates back to screenshot coordinates before picking.
   const browserImage = page.locator('.browser-screen img');
   await expect(browserImage).toBeVisible();
   const browserBox = await browserImage.boundingBox();
   expect(browserBox).not.toBeNull();
   if (browserBox) {
-    await browserImage.click({ position: { x: browserBox.width * 0.6, y: browserBox.height * 0.3 } });
+    const scale = browserBox.width / 1280;
+    await browserImage.click({ position: { x: 768 * scale, y: 240 * scale } });
   }
   await expect(page.getByText(/条目容器匹配\s*3\s*项/)).toBeVisible();
   await expect(page.locator('.preview-item')).toHaveCount(3);
@@ -233,7 +233,7 @@ test('日期裸文本点选显示时间片段和估算值，保存后仍可见',
   const image = page.locator('.browser-screen img');
   const box = await image.boundingBox();
   expect(box).not.toBeNull();
-  await image.click({ position: { x: box!.width * 170 / 1280, y: box!.height * 45 / 800 } });
+  await image.click({ position: { x: box!.width * 170 / 1280, y: box!.width * 45 / 1280 } });
   await expect(page.getByText(/已从选中区域提取时间.*3分前.*估算/)).toBeVisible();
   await expect(page.locator('.preview-item')).toHaveCount(3);
   await page.locator('.save-panel .field input').first().fill('相对日期回归');
@@ -241,7 +241,7 @@ test('日期裸文本点选显示时间片段和估算值，保存后仍可见',
   await expect(page.locator('.modal .preview-item time').first()).toContainText('估算');
 });
 
-test('网页通过上下按钮滚动，滚轮不发送远端操作', async ({ page }) => {
+test('长网页在本地滚动，悬停即时高亮，不发送远端操作', async ({ page }) => {
   await loginInPage(page);
   await page.getByRole('button', { name: '新建订阅', exact: true }).click();
   await (await locatorForUrl(page)).fill(new URL('/static-scroll', FIXTURE_URLS.static).href);
@@ -249,15 +249,61 @@ test('网页通过上下按钮滚动，滚轮不发送远端操作', async ({ pa
   await expect(page.locator('.preview-item')).toHaveCount(3, { timeout: 45000 });
   await page.getByRole('button', { name: '调整匹配', exact: true }).click();
   const image = page.locator('.browser-screen img');
-  const before = await image.getAttribute('src');
+  await expect(image).toBeVisible();
+  // The whole page arrives as one tall capture.
+  expect(await image.evaluate((element: HTMLImageElement) => element.naturalHeight)).toBeGreaterThan(800);
   let requests = 0;
-  page.on('request', request => { if (request.url().endsWith('/scroll')) requests++; });
-  await image.dispatchEvent('wheel', { deltaY: 300 });
-  await page.getByRole('button', { name: '向下滚动网页' }).click();
-  await expect(page.getByRole('button', { name: '向下滚动网页' })).toBeEnabled();
-  await expect.poll(async () => (await image.getAttribute('src')) !== before).toBe(true);
-  expect(requests).toBe(1);
-  await page.getByRole('button', { name: '向上滚动网页' }).click();
-  await expect(page.getByRole('button', { name: '向上滚动网页' })).toBeEnabled();
-  expect(requests).toBe(2);
+  page.on('request', request => { if (request.url().includes('/api/browser')) requests++; });
+
+  const box = (await image.boundingBox())!;
+  const scale = box.width / 1280;
+  await image.hover({ position: { x: 200 * scale, y: 200 * scale } });
+  await expect(page.locator('.hover-label')).toBeVisible();
+  const before = await page.locator('.hover-rect').getAttribute('style');
+  await page.keyboard.press('ArrowUp');
+  await expect(page.locator('.hover-label')).toContainText('已扩大 1 层');
+  expect(await page.locator('.hover-rect').getAttribute('style')).not.toBe(before);
+  await page.keyboard.press('ArrowDown');
+  await expect(page.locator('.hover-label em')).toHaveCount(0);
+
+  const viewport = page.locator('.browser-viewport');
+  await viewport.hover();
+  await page.mouse.wheel(0, 600);
+  await expect.poll(() => viewport.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+  await expect(page.getByRole('button', { name: '向下滚动网页' })).toHaveCount(0);
+  expect(requests).toBe(0);
+});
+
+test('按住修饰键点击链接跳转后，可以以此页为源网址', async ({ page }) => {
+  await loginInPage(page);
+  await page.getByRole('button', { name: '新建订阅', exact: true }).click();
+  const urlInput = await locatorForUrl(page);
+  await urlInput.fill(FIXTURE_URLS.hub);
+  const opened = page.waitForResponse(response => new URL(response.url()).pathname === '/api/browser' && response.request().method() === 'POST');
+  await page.getByRole('button', { name: '打开并自动识别', exact: true }).click();
+  const frame = await (await opened).json() as ScreenFrame;
+  await expect(page.getByRole('heading', { name: '在网页上调整匹配' })).toBeVisible({ timeout: 45000 });
+  const image = page.locator('.browser-screen img');
+  await expect(image).toBeVisible();
+  const box = (await image.boundingBox())!;
+  const scale = box.width / 1280;
+  // Aim at the link's centre using the element map the server returned.
+  const linkNode = Number(Object.entries(frame.map!.links).find(([, href]) => href.endsWith('/div-cards'))![0]);
+  const [lx, ly, lw, lh] = frame.map!.boxes.slice(linkNode * 5, linkNode * 5 + 4);
+  const linkPoint = { x: (lx + lw / 2) * scale, y: (ly + lh / 2) * scale };
+  await image.hover({ position: linkPoint, modifiers: ['ControlOrMeta'] });
+  await expect(page.locator('.hover-rect.link')).toBeVisible();
+  await expect(page.locator('.hover-label')).toContainText('点击打开此链接');
+
+  // A plain click on a page that is not the source never picks.
+  await image.click({ position: linkPoint!, modifiers: ['ControlOrMeta'] });
+  await expect(page.getByText('画面已跳转到')).toBeVisible({ timeout: 45000 });
+  await expect(page.getByRole('button', { name: '保存订阅', exact: true })).toBeDisabled();
+  await image.click({ position: { x: 300 * scale, y: 300 * scale } });
+  await expect(page.getByText('当前画面不是源网址')).toBeVisible();
+
+  await page.getByRole('button', { name: '以此页为源网址', exact: true }).click();
+  await expect(urlInput).toHaveValue(FIXTURE_URLS.divCards);
+  await expect(page.getByText('画面已跳转到')).toHaveCount(0);
+  await expect(page.locator('.preview-item').first()).toBeVisible({ timeout: 45000 });
 });

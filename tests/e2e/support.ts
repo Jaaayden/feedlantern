@@ -15,6 +15,7 @@ export const FIXTURE_URLS = {
   static: `${fixtureBaseUrl}/static`,
   relativeDates: `${fixtureBaseUrl}/relative-dates`,
   divCards: `${fixtureBaseUrl}/div-cards`,
+  hub: `${fixtureBaseUrl}/hub`,
   dynamic: `${fixtureBaseUrl}/dynamic`,
   cookieGated: `${fixtureBaseUrl}/cookie-gated`,
   ambiguous: `${fixtureBaseUrl}/ambiguous`,

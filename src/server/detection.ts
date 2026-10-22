@@ -487,7 +487,8 @@ export async function detectPage(page: Page): Promise<DetectionResult> {
         if (!date.selector || date.coverage < 0.5) warnings.push('未稳定识别日期字段');
         const rects = matched.slice(0, limits.maxItems).map((element) => {
           const rect = element.getBoundingClientRect();
-          return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+          // Document pixels, matching the editor's full-page screenshot.
+          return { x: rect.x + window.scrollX, y: rect.y + window.scrollY, width: rect.width, height: rect.height };
         });
         rawCandidates.push({
           label,

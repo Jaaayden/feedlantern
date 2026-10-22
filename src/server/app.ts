@@ -51,7 +51,7 @@ import {
 import { getConfig, ensureDataDir, hasDist, isAllowedOrigin, type ConfigInput, type ServerConfig } from './config.js';
 import { renderRss, rssEtag } from './rss.js';
 import { etagMatches, renderRssPreview, wantsHtmlPreview } from './rss-preview.js';
-import { asInteger, describeError, asNonEmptyString, asOptionalString, asRecord, cookieMetadata, frameError, friendlyError, parseCredentialInput, parseFeedInput, parseHttpUrl, parseRules } from './validation.js';
+import { asInteger, describeError, asNonEmptyString, asOptionalString, asRecord, cookieMetadata, frameError, friendlyError, logHiddenError, parseCredentialInput, parseFeedInput, parseHttpUrl, parsePartialRules, parseRules } from './validation.js';
 import { Store, type CredentialValue } from './store.js';
 
 export interface BrowserServiceLike {
@@ -60,6 +60,7 @@ export interface BrowserServiceLike {
   snapshot(id: string): Promise<ScreenFrame> | ScreenFrame;
   scroll(id: string, deltaY: number, point?: { x: number; y: number }): Promise<ScreenFrame> | ScreenFrame;
   click(id: string, x: number, y: number): Promise<ScreenFrame> | ScreenFrame;
+  follow?(id: string, node: number): Promise<ScreenFrame> | ScreenFrame;
   pick(id: string, request: PickRequest): Promise<PickResult> | PickResult;
   extract(id: string, rules: SelectionRules): Promise<ExtractedItem[]> | ExtractedItem[];
   scrape(options: { url: string; signal?: AbortSignal; cookies?: Cookie[]; waitMs: number; waitForSelector?: string; rules: SelectionRules }): Promise<ExtractedItem[]> | ExtractedItem[];
@@ -246,7 +247,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       return result;
     } catch (error) {
       if (!stillActive()) { store.history.interrupt(runId); return null; }
-      const message = safeDiagnostic(friendlyError(error, '抓取失败，已保留已有条目'));
+      const shown = friendlyError(error, '抓取失败，已保留已有条目');
+      logHiddenError(`后台抓取订阅 ${feed.id} 失败`, error, shown);
+      const message = safeDiagnostic(shown);
       store.transaction(() => {
         store.markFetchFailure(feed.id, message, nextFetchAt);
         store.history.fail(runId, feed, source, performance.now() - started, message, store.getSettings().bark.enabled);
@@ -941,11 +944,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       } catch (error) { await browser.close(frame.sessionId); throw error; }
       browserOwners.set(frame.sessionId, { userId, actorId, touchedAt: Date.now() });
       return frame;
-    } catch (error) { if (error instanceof AppError) throw error; throw frameError(error); }
+    } catch (error) { if (error instanceof AppError) throw error; throw frameError(error, '打开网页'); }
   });
   app.get('/api/browser/:id', async (request) => {
     browserGuard(request);
-    try { return await browser.snapshot(String((request.params as { id: string }).id)); } catch (error) { throw frameError(error); }
+    try { return await browser.snapshot(String((request.params as { id: string }).id)); } catch (error) { throw frameError(error, '截取网页画面'); }
   });
   app.post('/api/browser/:id/scroll', async (request) => {
     browserGuard(request);
@@ -957,14 +960,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       point = { x: body.x, y: body.y };
     }
     if (!Number.isFinite(deltaY) || Math.abs(deltaY) > 100_000) throw new AppError(400, 'deltaY 无效');
-    try { return await browser.scroll(String((request.params as { id: string }).id), deltaY, point); } catch (error) { throw frameError(error); }
+    try { return await browser.scroll(String((request.params as { id: string }).id), deltaY, point); } catch (error) { throw frameError(error, '滚动网页'); }
   });
   app.post('/api/browser/:id/click', async (request) => {
     browserGuard(request);
     const body = asRecord(request.body);
     const x = Number(body.x); const y = Number(body.y);
     if (![x, y].every(Number.isFinite) || x < 0 || y < 0 || x > 100_000 || y > 100_000) throw new AppError(400, '点击坐标无效');
-    try { return await browser.click(String((request.params as { id: string }).id), x, y); } catch (error) { throw frameError(error); }
+    try { return await browser.click(String((request.params as { id: string }).id), x, y); } catch (error) { throw frameError(error, '点击网页'); }
   });
   app.post('/api/browser/:id/pick', async (request) => {
     browserGuard(request);
@@ -972,26 +975,37 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const target = body.target;
     if (!['item', 'title', 'link', 'description', 'image', 'date'].includes(String(target))) throw new AppError(400, 'pick target 无效');
     const pickRequest: PickRequest = {
-      x: Number(body.x), y: Number(body.y), target: target as PickRequest['target'],
+      target: target as PickRequest['target'],
+      ...(body.node !== undefined ? { node: asInteger(body.node, 'node', 0, 1_000_000, 0) } : { x: Number(body.x), y: Number(body.y) }),
+      ...(body.exact === true ? { exact: true } : {}),
       ...(body.itemSelector ? { itemSelector: asNonEmptyString(body.itemSelector, 'itemSelector', 4_000) } : {}),
       ...(body.ancestorLevel !== undefined ? { ancestorLevel: asInteger(body.ancestorLevel, 'ancestorLevel', 0, 20, 0) } : {}),
+      ...(body.rules !== undefined ? { rules: parsePartialRules(body.rules) } : {}),
     };
-    if (![pickRequest.x, pickRequest.y].every(Number.isFinite) || pickRequest.x < 0 || pickRequest.y < 0) throw new AppError(400, 'pick 坐标无效');
-    try { return await browser.pick(String((request.params as { id: string }).id), pickRequest); } catch (error) { throw frameError(error); }
+    if (pickRequest.node === undefined && (![pickRequest.x, pickRequest.y].every(Number.isFinite) || pickRequest.x! < 0 || pickRequest.y! < 0)) throw new AppError(400, 'pick 坐标无效');
+    try { return await browser.pick(String((request.params as { id: string }).id), pickRequest); } catch (error) { throw frameError(error, '点选元素'); }
+  });
+  app.post('/api/browser/:id/follow', async (request) => {
+    browserGuard(request);
+    if (!browser.follow) throw new AppError(501, '当前浏览器服务不支持打开链接');
+    const body = asRecord(request.body);
+    if (body.node === undefined || body.node === null) throw new AppError(400, '缺少链接位置');
+    const node = asInteger(body.node, 'node', 0, 1_000_000, 0);
+    try { return await browser.follow(String((request.params as { id: string }).id), node); } catch (error) { throw frameError(error, '打开链接'); }
   });
   app.post('/api/browser/:id/preview', async (request) => {
     browserGuard(request);
     const rules = parseRules(asRecord(request.body).rules);
-    try { return { items: await browser.extract(String((request.params as { id: string }).id), rules) }; } catch (error) { throw frameError(error); }
+    try { return { items: await browser.extract(String((request.params as { id: string }).id), rules) }; } catch (error) { throw frameError(error, '预览匹配'); }
   });
   app.post('/api/browser/:id/detect', async (request) => {
     browserGuard(request);
     if (!browser.detect) throw new AppError(501, '当前浏览器服务不支持自动识别');
-    try { return await browser.detect(String((request.params as { id: string }).id)); } catch (error) { throw frameError(error); }
+    try { return await browser.detect(String((request.params as { id: string }).id)); } catch (error) { throw frameError(error, '自动识别'); }
   });
   app.delete('/api/browser/:id', async (request) => {
     browserGuard(request);
-    try { const id = String((request.params as { id: string }).id); await browser.close(id); browserOwners.delete(id); } catch (error) { throw frameError(error); }
+    try { const id = String((request.params as { id: string }).id); await browser.close(id); browserOwners.delete(id); } catch (error) { throw frameError(error, '关闭网页会话'); }
     return { ok: true };
   });
 

@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { chromium, type Browser, type BrowserContext, type Cookie, type Page } from 'playwright';
 import type {
   DetectionResult,
+  ElementMap,
   ExtractedItem,
   FieldName,
   PickRequest,
@@ -12,6 +13,8 @@ import type {
   SelectionRules,
 } from '../shared/types';
 import { cookiesForUrl, toPlaywrightCookies } from './cookies';
+import { hitTest, linkFor } from '../shared/element-map';
+import { redactForLog } from './log';
 import { extractPage } from './extraction';
 import { prepareScrollContent } from './page-preparation';
 import {
@@ -29,6 +32,11 @@ const SESSION_IDLE_MS = 5 * 60 * 1000;
 const NAVIGATION_TIMEOUT_MS = 30_000;
 const SELECTOR_TIMEOUT_MS = 15_000;
 const ACTION_SETTLE_MS = 80;
+// The editor scrolls a single tall screenshot locally. Cap it well below
+// Chromium's texture limit; list pages rarely need more than this.
+const MAX_CAPTURE_HEIGHT = 8_000;
+const MAX_MAP_NODES = 6_000;
+const SCREENSHOT_QUALITY = 75;
 const BROWSER_OPERATION_TIMEOUT_MS = 60_000;
 
 export interface BrowserOpenOptions {
@@ -72,6 +80,11 @@ interface BrowserSession {
   lastUsedAt: number;
   idleTimer?: NodeJS.Timeout;
   pointer?: { x: number; y: number };
+  waitMs: number;
+  /** Page global holding the elements of the latest element map. */
+  mapKey: string;
+  map?: ElementMap;
+  frameHeight?: number;
 }
 
 interface RawPickResult {
@@ -82,7 +95,7 @@ interface RawPickResult {
   warning?: string;
 }
 
-const PICK_SCRIPT = String.raw`(request) => {
+const PICK_SCRIPT = String.raw`(request, mapKey) => {
   function clean(value) { return (value || '').replace(/\s+/g, ' ').trim(); }
   function escaped(value) {
     if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') return CSS.escape(value);
@@ -90,10 +103,14 @@ const PICK_SCRIPT = String.raw`(request) => {
   }
   const dynamic = /(?:^|[-_])(?:[a-f0-9]{6,}|\d{3,})(?:$|[-_])/i;
   function stable(value) { return Boolean(value) && value.length <= 64 && !dynamic.test(value); }
+  // Rects are in document pixels, matching the full-page screenshot.
+  const limitHeight = request.frameHeight || innerHeight;
   function visibleRect(element) {
     const rect = element.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0 || rect.bottom <= 0 || rect.right <= 0 || rect.left >= innerWidth || rect.top >= innerHeight) return null;
-    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+    const x = rect.x + scrollX;
+    const y = rect.y + scrollY;
+    if (rect.width <= 0 || rect.height <= 0 || y + rect.height <= 0 || x + rect.width <= 0 || x >= innerWidth || y >= limitHeight) return null;
+    return { x: x, y: y, width: rect.width, height: rect.height };
   }
   function segment(element) {
     const tag = element.tagName.toLowerCase();
@@ -171,13 +188,19 @@ const PICK_SCRIPT = String.raw`(request) => {
     });
     return best ? { element: best.element, selector: best.selector } : { element: element, selector: globalSelector(element) };
   }
-  const atPoint = document.elementFromPoint(request.x, request.y);
+  const mapped = (mapKey && window[mapKey]) || [];
+  let atPoint;
+  if (request.node !== undefined && request.node !== null) {
+    atPoint = mapped[request.node];
+    if (!atPoint || !atPoint.isConnected) return { selector: '', rects: [], count: 0, sampleText: '', warning: '网页内容已经变化，请点击“更新网页画面”后重试' };
+  } else atPoint = document.elementFromPoint(request.x, request.y);
   if (!atPoint) return { selector: '', rects: [], count: 0, sampleText: '', warning: '坐标处没有可选的 DOM 元素' };
   if (atPoint instanceof HTMLIFrameElement) return { selector: '', rects: [], count: 0, sampleText: '', warning: '暂不支持跨域 iframe 内选取' };
   if (atPoint instanceof HTMLCanvasElement) return { selector: '', rects: [], count: 0, sampleText: '', warning: 'canvas 内没有可持久化的 DOM selector' };
   if (atPoint.getRootNode() instanceof ShadowRoot) return { selector: '', rects: [], count: 0, sampleText: '', warning: '暂不支持 Shadow DOM 内选取' };
   let target = atPoint;
-  if (request.target !== 'item') {
+  // exact: the user widened or narrowed the choice by hand; keep it as-is.
+  if (request.target !== 'item' && !request.exact) {
     const selectors = {
       title: 'h1,h2,h3,h4,h5,h6,[class*="title"],[class*="headline"]',
       link: 'a[href]',
@@ -190,7 +213,7 @@ const PICK_SCRIPT = String.raw`(request) => {
   }
   let item = null;
   if (request.target === 'item') {
-    item = repeatedItem(target);
+    item = request.exact ? { element: target, selector: repeatedSelector(target) } : repeatedItem(target);
   } else if (request.itemSelector) {
     try {
       const closest = target.closest(request.itemSelector);
@@ -210,7 +233,9 @@ const PICK_SCRIPT = String.raw`(request) => {
     }
   } else matches.push.apply(matches, queryAll(document, selector));
   const rects = matches.map(visibleRect).filter(function(rect) { return Boolean(rect); }).slice(0, 100);
+  const node = mapped.indexOf(request.target === 'item' ? item.element : target);
   return {
+    ...(node >= 0 ? { node: node } : {}),
     selector: selector,
     rects: rects,
     count: matches.length,
@@ -218,6 +243,79 @@ const PICK_SCRIPT = String.raw`(request) => {
     ...(!root && request.target !== 'item' ? { warning: '未提供 itemSelector，字段 selector 按整页生成' } : {}),
   };
 }`;
+
+// Record every visible element once per capture so the editor can outline
+// what is under the pointer without asking the server. Elements stay in a
+// page global (non-enumerable, random name) so a later pick can address them
+// by index; a navigation clears it, which picks report as a stale frame.
+const MAP_SCRIPT = String.raw`(mapKey, limitHeight, maxNodes) => {
+  const skip = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'HEAD', 'META', 'LINK', 'BR', 'WBR', 'OPTION']);
+  const dynamic = /(?:^|[-_])(?:[a-f0-9]{6,}|\d{3,})(?:$|[-_])/i;
+  const width = innerWidth;
+  const elements = [];
+  const boxes = [];
+  const labels = [];
+  const links = {};
+  let truncated = false;
+  let innerScroll = false;
+  function label(element) {
+    let text = element.tagName.toLowerCase();
+    if (element.id && element.id.length <= 32 && !dynamic.test(element.id)) text += '#' + element.id;
+    const classes = Array.from(element.classList).filter(function(value) { return value.length <= 32 && !dynamic.test(value); }).slice(0, 2);
+    if (classes.length) text += '.' + classes.join('.');
+    return text.slice(0, 64);
+  }
+  function visit(element, parent) {
+    if (elements.length >= maxNodes) { truncated = true; return; }
+    if (skip.has(element.tagName)) return;
+    const style = getComputedStyle(element);
+    if (style.display === 'none') return;
+    let own = parent;
+    if (!innerScroll && (style.overflowY === 'auto' || style.overflowY === 'scroll') && element.scrollHeight > element.clientHeight + 4 && element.clientHeight > 40) innerScroll = true;
+    if (style.display !== 'contents' && style.visibility !== 'hidden' && style.opacity !== '0') {
+      const rect = element.getBoundingClientRect();
+      const x = rect.left + scrollX;
+      const y = rect.top + scrollY;
+      if (rect.width >= 2 && rect.height >= 2 && y < limitHeight && y + rect.height > 0 && x < width && x + rect.width > 0) {
+        own = elements.length;
+        elements.push(element);
+        boxes.push(Math.round(x), Math.round(y), Math.round(rect.width), Math.round(rect.height), parent);
+        labels.push(label(element));
+        if (element instanceof HTMLAnchorElement && /^https?:/i.test(element.href)) links[own] = element.href;
+      }
+    }
+    if (element.tagName.toLowerCase() === 'svg') return;
+    for (const child of Array.from(element.children)) visit(child, own);
+  }
+  if (document.body) for (const child of Array.from(document.body.children)) visit(child, -1);
+  Object.defineProperty(window, mapKey, { value: elements, configurable: true, enumerable: false, writable: true });
+  return { boxes: boxes, labels: labels, links: links, truncated: truncated, innerScroll: innerScroll };
+}`;
+
+/** Width and height from a baseline or progressive JPEG header. */
+function jpegSize(image: Buffer): { width: number; height: number } | undefined {
+  let offset = 2;
+  while (offset + 9 < image.length) {
+    if (image[offset] !== 0xff) return undefined;
+    const marker = image[offset + 1];
+    const length = image.readUInt16BE(offset + 2);
+    if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+      return { height: image.readUInt16BE(offset + 5), width: image.readUInt16BE(offset + 7) };
+    }
+    offset += 2 + length;
+  }
+  return undefined;
+}
+
+/**
+ * A one-line, actionable message for a Chromium launch failure. Playwright's own
+ * message is a multi-line banner, which the API would replace with a generic hint.
+ */
+export function launchFailureMessage(message: string, executablePath?: string): string | undefined {
+  if (!/executable doesn't exist|playwright install/i.test(message)) return undefined;
+  if (executablePath) return '找不到 BROWSER_EXECUTABLE_PATH 指定的 Chromium，请检查该路径，或删除这项设置并运行 pnpm browser:install。';
+  return '未找到 Chromium 浏览器。请在服务主机的项目目录运行 pnpm browser:install；如果 .env 设置了 PLAYWRIGHT_BROWSERS_PATH，安装时也要使用同样的值。';
+}
 
 function finiteNumber(value: unknown, field: string): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) throw new BrowserServiceError(`${field} 必须是有限数字`);
@@ -254,6 +352,8 @@ export class BrowserService {
   private openingSessions = 0;
   private scrapeSessions = 0;
   private disposing = false;
+  /** Last launch failure written to the log; repeats are not logged again. */
+  private lastLaunchError?: string;
   private readonly backgroundConcurrency: number;
 
   constructor(options: BrowserServiceOptions = {}) {
@@ -286,10 +386,18 @@ export class BrowserService {
           ],
           ...(this.executablePath ? { executablePath: this.executablePath } : {}),
         });
+        this.lastLaunchError = undefined;
         return this.browser;
       } catch (error) {
         await this.proxy.close().catch(() => undefined);
         this.proxy = undefined;
+        const message = error instanceof Error ? error.message : String(error);
+        if (message !== this.lastLaunchError) {
+          this.lastLaunchError = message;
+          console.error(`启动 Chromium 失败：${redactForLog(message)}`);
+        }
+        const hint = launchFailureMessage(message, this.executablePath);
+        if (hint) throw new BrowserServiceError(hint);
         throw cleanError(error, '启动 Chromium 失败');
       }
     })();
@@ -408,17 +516,36 @@ export class BrowserService {
     }
   }
 
+  /**
+   * Capture the page from the top as one tall image (up to MAX_CAPTURE_HEIGHT)
+   * plus its element map, so the editor can scroll and outline locally.
+   */
   private async frame(session: BrowserSession): Promise<ScreenFrame> {
     try {
-      const image = await session.page.screenshot({ type: 'jpeg', quality: 80, scale: 'css', timeout: 10_000 });
-      const viewport = session.page.viewportSize() ?? VIEWPORT;
+      const page = session.page;
+      const viewport = page.viewportSize() ?? VIEWPORT;
+      await page.evaluate("window.scrollTo({ left: 0, top: 0, behavior: 'instant' })");
+      const documentHeight = Number(await page.evaluate('Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0)')) || viewport.height;
+      const wanted = Math.max(viewport.height, Math.min(MAX_CAPTURE_HEIGHT, Math.ceil(documentHeight)));
+      const image = await page.screenshot({
+        type: 'jpeg', quality: SCREENSHOT_QUALITY, scale: 'css', timeout: 15_000,
+        ...(wanted > viewport.height ? { fullPage: true, clip: { x: 0, y: 0, width: viewport.width, height: wanted } } : {}),
+      });
+      // The document can shrink between measuring and capturing; trust the image.
+      const size = jpegSize(image) ?? { width: viewport.width, height: wanted };
+      const map = await page.evaluate(`(${MAP_SCRIPT})(${JSON.stringify(session.mapKey)}, ${size.height}, ${MAX_MAP_NODES})`) as ElementMap;
+      session.map = map;
+      session.frameHeight = size.height;
       return {
         sessionId: session.id,
         image: `data:image/jpeg;base64,${image.toString('base64')}`,
-        width: viewport.width,
-        height: viewport.height,
-        url: session.page.url(),
-        title: await session.page.title().catch(() => ''),
+        width: size.width,
+        height: size.height,
+        viewportHeight: viewport.height,
+        url: page.url(),
+        title: await page.title().catch(() => ''),
+        map,
+        ...(documentHeight > MAX_CAPTURE_HEIGHT ? { truncated: true } : {}),
       };
     } catch (error) {
       throw cleanError(error, '生成页面截图失败');
@@ -447,7 +574,7 @@ export class BrowserService {
       await this.preparePage(page, options);
       const pointer = { x: VIEWPORT.width / 2, y: VIEWPORT.height / 2 };
       await page.mouse.move(pointer.x, pointer.y);
-      const session: BrowserSession = { id, context, page, busy: false, lastUsedAt: Date.now(), pointer };
+      const session: BrowserSession = { id, context, page, busy: false, lastUsedAt: Date.now(), pointer, waitMs: boundedWait(options.waitMs), mapKey: `__feedlantern_${randomUUID().replace(/-/g, '')}` };
       this.sessions.set(id, session);
       this.scheduleIdle(session);
       return await this.frame(session);
@@ -500,28 +627,68 @@ export class BrowserService {
     });
   }
 
+  /**
+   * Turn a picked element into a selector. With `request.rules`, the same call
+   * also previews the rules with the new selector, saving a second round trip.
+   */
   async pick(id: string, request: PickRequest): Promise<PickResult> {
-    finiteNumber(request.x, 'x');
-    finiteNumber(request.y, 'y');
+    if (request.node !== undefined) {
+      if (!Number.isInteger(request.node) || request.node < 0) throw new BrowserServiceError('选择的元素无效');
+    } else {
+      finiteNumber(request.x, 'x');
+      finiteNumber(request.y, 'y');
+    }
     return this.withSession(id, async session => {
       const viewport = session.page.viewportSize() ?? VIEWPORT;
-      if (request.x < 0 || request.y < 0 || request.x > viewport.width || request.y > viewport.height) {
-        throw new BrowserServiceError('选择坐标超出页面视口');
+      const frameHeight = session.frameHeight ?? viewport.height;
+      let node = request.node;
+      if (node === undefined) {
+        const x = request.x!, y = request.y!;
+        if (x < 0 || y < 0 || x > viewport.width || y > frameHeight) throw new BrowserServiceError('选择坐标超出页面视口');
+        if (session.map) {
+          node = hitTest(session.map, x, y);
+          if (node < 0) throw new BrowserServiceError('坐标处没有可选的 DOM 元素');
+        }
       }
+      const { rules, ...rest } = request;
+      const pageRequest = { ...rest, ...(node !== undefined ? { node } : {}), frameHeight };
+      let result: PickResult;
       try {
-        const expression = `(${PICK_SCRIPT})(${JSON.stringify(request)})`;
-        const result = await session.page.evaluate(expression) as RawPickResult;
+        const expression = `(${PICK_SCRIPT})(${JSON.stringify(pageRequest)}, ${JSON.stringify(session.mapKey)})`;
+        result = await session.page.evaluate(expression) as RawPickResult;
         if (!result.selector && result.warning) throw new BrowserServiceError(result.warning);
         if (request.target === 'date') {
           const datePreview = await previewDateSelection(session.page, request.itemSelector, result.selector);
-          const dateRects = datePreview ? await dateSelectionRects(session.page, request.itemSelector, result.selector) : [];
-          return { ...result, ...(datePreview ? { datePreview, sampleText: datePreview.dateText, ...(dateRects.length ? { rects: dateRects } : {}) } : {}), warning: [result.warning, datePreview ? '已从选中区域提取时间；保存的规则仍使用日期所在容器。' : '未找到唯一可解析的日期，请调整选中区域。'].filter(Boolean).join(' ') };
+          const dateRects = datePreview ? await dateSelectionRects(session.page, request.itemSelector, result.selector, frameHeight) : [];
+          result = { ...result, ...(datePreview ? { datePreview, sampleText: datePreview.dateText, ...(dateRects.length ? { rects: dateRects } : {}) } : {}), warning: [result.warning, datePreview ? '已从选中区域提取时间；保存的规则仍使用日期所在容器。' : '未找到唯一可解析的日期，请调整选中区域。'].filter(Boolean).join(' ') };
         }
-        return result;
       } catch (error) {
         if (error instanceof BrowserServiceError) throw error;
         throw normalizeSelectorError(error, '分析选取元素失败');
       }
+      if (rules) {
+        const next = { ...rules, [request.target]: result.selector };
+        if (next.item && next.title && next.link) {
+          try {
+            result.items = await extractPage(session.page, next as SelectionRules);
+          } catch (error) {
+            result.previewError = (error instanceof BrowserServiceError ? error : cleanError(error, '抽取页面内容失败')).message;
+          }
+        }
+      }
+      return result;
+    });
+  }
+
+  /** Open the link at a mapped element in this session, then recapture. */
+  async follow(id: string, node: number): Promise<ScreenFrame> {
+    if (!Number.isInteger(node) || node < 0) throw new BrowserServiceError('链接位置无效');
+    return this.withSession(id, async session => {
+      const href = session.map ? linkFor(session.map, node) : undefined;
+      if (!href) throw new BrowserServiceError('这里不是可以打开的链接');
+      await new NetworkPolicy(this.networkOptions).assertAllowed(href);
+      await this.preparePage(session.page, { url: href, waitMs: session.waitMs });
+      return this.frame(session);
     });
   }
 
