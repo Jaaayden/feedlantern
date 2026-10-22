@@ -141,6 +141,17 @@ export interface AuthState { userId?: string; role?: "admin" | "user"; setupRequ
 // POST /api/browser/:id/preview {rules:SelectionRules} -> {items:ExtractedItem[]}
 // POST /api/browser/:id/detect {} -> DetectionResult
 // DELETE /api/browser/:id -> {ok:true}
+// GET /api/bundles -> BundlePayload[]; POST /api/bundles BundleInput -> BundlePayload
+// PUT /api/bundles/:id Partial<BundleInput> -> BundlePayload; POST /api/bundles/:id/feeds {feedIds} -> BundlePayload (adds members)
+// POST /api/bundles/:id/rotate-token {} -> BundlePayload; DELETE /api/bundles/:id
+// GET /bundles/:id/:token.xml -> RSS 2.0 merging the members' stored items (read-only, never fetches)
+
+/** A bundle merges several of one owner's feeds into a single RSS address. */
+export interface BundleInput { name: string; feedIds: string[]; itemLimit?: number }
+export interface Bundle { id: string; ownerId?: string; name: string; feedIds: string[]; itemLimit: number; createdAt: string; updatedAt: string }
+export interface BundlePayload { bundle: Bundle; bundleUrl: string }
+export const BUNDLE_ITEM_LIMIT = { min: 10, max: 500, default: 100 } as const;
+export const BUNDLE_MAX_FEEDS = 200;
 
 export interface ImportEntry {
   sourceType?: 'website' | 'rss'; translationMode?: 'original' | 'chinese' | 'bilingual';

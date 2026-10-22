@@ -109,7 +109,7 @@ export const api = {
   },
   users: {
     update: (id: string, body: Partial<Pick<UserSummary, 'username' | 'enabled' | 'role'>>) => request<UserSummary>(`/api/users/${encodeURIComponent(id)}`, { method: 'PATCH', body }),
-    deletionPreview: (id: string) => request<{ user: UserSummary; feeds: number; credentials: number; jobs: number }>(`/api/users/${encodeURIComponent(id)}/deletion-preview`),
+    deletionPreview: (id: string) => request<{ user: UserSummary; feeds: number; bundles?: number; credentials: number; jobs: number }>(`/api/users/${encodeURIComponent(id)}/deletion-preview`),
     delete: (id: string, username: string) => request<{ ok: boolean }>(`/api/users/${encodeURIComponent(id)}`, { method: 'DELETE', body: { username } }),
     list: () => request<UserSummary[]>('/api/users'),
     create: (username: string, password: string) => request<UserSummary>('/api/users', { method: 'POST', body: { username, password } }),

@@ -54,6 +54,7 @@ import { renderRss, rssEtag } from './rss.js';
 import { etagMatches, renderRssPreview, wantsHtmlPreview } from './rss-preview.js';
 import { asInteger, describeError, asNonEmptyString, asOptionalString, asRecord, cookieMetadata, frameError, friendlyError, logHiddenError, parseCredentialInput, parseFeedInput, parseHttpUrl, parsePartialRules, parseRules } from './validation.js';
 import { Store, type CredentialValue } from './store.js';
+import { exportConfigBundles, importConfigBundles, parseConfigBundles, previewConfigBundles, registerBundleRoutes } from './bundle-routes.js';
 
 export interface BrowserServiceLike {
   discover?(options: { url: string; signal?: AbortSignal; cookies?: Cookie[]; waitMs: number }): Promise<{ title: string; detection: DetectionResult }>;
@@ -620,7 +621,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       if (snapshot.tables.rss_sources.some(s => !ids.has(s.feed_id)) || snapshot.tables.translations.some(t => itemFeeds.get(t.item_id) !== t.feed_id)) throw Error();
       if (snapshot.tables.feed_items.some(i => !ids.has(i.feed_id)) || snapshot.tables.feeds.some(f => f.credential_id && !creds.has(f.credential_id))) throw Error();
     } catch { limiter.registerFailure(request.ip); throw new AppError(400, '备份密码错误、文件损坏或格式不受支持'); }
-    if (action === 'preview') return { appVersion: snapshot.appVersion, createdAt: snapshot.createdAt, feeds: snapshot.tables.feeds.length, items: snapshot.tables.feed_items.length, credentials: snapshot.tables.credentials.length, username: snapshot.tables.users.find(u => u.role === 'admin')!.username, sourceSecurity: snapshot.security, targetSecurity: security(), settings: snapshot.tables.settings.some(row => row.key === 'application') ? settingsPreview(parseSettings(JSON.parse(snapshot.tables.settings.find(row => row.key === 'application')!.value))) : null };
+    if (action === 'preview') return { appVersion: snapshot.appVersion, createdAt: snapshot.createdAt, feeds: snapshot.tables.feeds.length, bundles: snapshot.tables.bundles.length, items: snapshot.tables.feed_items.length, credentials: snapshot.tables.credentials.length, username: snapshot.tables.users.find(u => u.role === 'admin')!.username, sourceSecurity: snapshot.security, targetSecurity: security(), settings: snapshot.tables.settings.some(row => row.key === 'application') ? settingsPreview(parseSettings(JSON.parse(snapshot.tables.settings.find(row => row.key === 'application')!.value))) : null };
     if (body.confirm !== true) throw new AppError(400, '请先预览并确认覆盖恢复');
     maintenance = true; jobs.stop();
     try {
@@ -642,7 +643,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
   app.get('/api/backups/config', async request => {
     adminGuard(request);
-    return { format: 'feedlantern-config', version: 2, settings: { ...store.getSettings(), bark: store.getBark(authenticated(request).userId) }, feeds: store.listFeeds(authenticated(request).userId).map(f => ({ sourceType: f.sourceType, translationMode: f.translationMode, name: f.name, channelTitle: f.channelTitle, url: f.url, rules: f.rules, ruleOrigins: f.ruleOrigins, intervalMinutes: f.intervalMinutes, waitMs: f.waitMs, waitForSelector: f.waitForSelector, enabled: f.enabled, requiresCredential: !!f.credentialId })) };
+    const feeds = store.listFeeds(authenticated(request).userId);
+    return { format: 'feedlantern-config', version: 2, settings: { ...store.getSettings(), bark: store.getBark(authenticated(request).userId) }, bundles: exportConfigBundles(store, authenticated(request).userId, feeds.map(f => f.id)), feeds: feeds.map(f => ({ sourceType: f.sourceType, translationMode: f.translationMode, name: f.name, channelTitle: f.channelTitle, url: f.url, rules: f.rules, ruleOrigins: f.ruleOrigins, intervalMinutes: f.intervalMinutes, waitMs: f.waitMs, waitForSelector: f.waitForSelector, enabled: f.enabled, requiresCredential: !!f.credentialId })) };
   });
   app.post('/api/backups/config', { bodyLimit: 10_000_000 }, async request => {
     adminGuard(request);
@@ -654,28 +656,32 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       const value = asRecord(raw);
       return { input: parseFeedInput({ ...value, credentialId: null }), title: asOptionalString(value.channelTitle, '频道名称', 200), enabled: value.enabled !== false, needsCookie: value.requiresCredential === true };
     });
+    const bundles = parseConfigBundles(archive.bundles, entries.length);
     const signature = (f: FeedInput) => JSON.stringify([f.sourceType ?? 'website', f.translationMode ?? 'bilingual', normalizeSource(f.url), ...['item', 'title', 'link', 'description', 'image', 'date'].map(k => f.rules[k as keyof SelectionRules] ?? '')]);
     if (body.confirm !== true) {
       const seen = new Set(store.listFeeds(authenticated(request).userId).map(signature));
-      return { settings: importedSettings ? settingsPreview(importedSettings) : null, entries: entries.map(e => { const duplicate = seen.has(signature(e.input)); seen.add(signature(e.input)); return { name: e.input.name, url: e.input.url, duplicate, needsCookie: e.needsCookie }; }) };
+      return { settings: importedSettings ? settingsPreview(importedSettings) : null, entries: entries.map(e => { const duplicate = seen.has(signature(e.input)); seen.add(signature(e.input)); return { name: e.input.name, url: e.input.url, duplicate, needsCookie: e.needsCookie }; }), ...(bundles.length ? { bundles: previewConfigBundles(store, authenticated(request).userId, bundles) } : {}) };
     }
     return enqueueRefresh(async () => {
       adminGuard(request);
-      let result = { created: 0, skipped: 0 };
+      let result: { created: number; skipped: number; bundles?: { created: number; skipped: number } } = { created: 0, skipped: 0 };
       const write = () => store.transaction(() => {
       const seen = new Set(store.listFeeds(authenticated(request).userId).map(signature));
+      // Bundles refer to config entries; a skipped duplicate maps to the feed already there.
+      const existing = new Map(store.listFeeds(authenticated(request).userId).map(f => [signature(f), f.id])), entryIds: Array<string | undefined> = [];
       let created = 0, skipped = 0;
       for (const entry of entries) {
         const key = signature(entry.input);
+        entryIds.push(existing.get(key));
         if (seen.has(key)) { skipped++; continue; }
         const { feed } = store.createFeed(entry.input, authenticated(request).userId);
         if (entry.title) store.setChannelTitle(feed.id, entry.title);
         if (!entry.enabled || entry.needsCookie) store.toggleFeed(feed.id);
         if (entry.needsCookie) store.markFetchFailure(feed.id, '请绑定 Cookie 凭据后恢复订阅', feed.nextFetchAt);
-        seen.add(key); created++;
+        seen.add(key); existing.set(key, feed.id); entryIds[entryIds.length - 1] = feed.id; created++;
       }
       if (importedSettings) { const originalBark = store.getBark('admin'); store.setSettings({ ...importedSettings, bark: originalBark }); store.setBark(authenticated(request).userId, importedSettings.bark); }
-      result = { created, skipped };
+      result = { created, skipped, ...(bundles.length ? { bundles: importConfigBundles(store, authenticated(request).userId, bundles, entryIds) } : {}) };
       });
       if (importedSettings) await applySettings(importedSettings, write); else write();
       return result;
@@ -1048,9 +1054,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return reply.type(raw ? 'application/xml; charset=utf-8' : 'application/rss+xml; charset=utf-8').send(renderRss(feed, items, publicUrl));
   });
 
+  registerBundleRoutes(app, store, () => currentConfig().publicOrigin, request => { resourceGuard(request); return workspace(request).userId; });
+
   if (hasDist(config.distDir)) await app.register(fastifyStatic, { root: config.distDir, wildcard: false });
   app.setNotFoundHandler(async (request, reply) => {
-    if (request.url.startsWith('/api/') || request.url.startsWith('/feeds/')) return reply.code(404).send({ error: '资源不存在' });
+    if (request.url.startsWith('/api/') || request.url.startsWith('/feeds/') || request.url.startsWith('/bundles/')) return reply.code(404).send({ error: '资源不存在' });
     if (request.method === 'GET' && existsSync(resolve(config.distDir, 'index.html'))) return reply.type('text/html; charset=utf-8').send(await readFile(resolve(config.distDir, 'index.html')));
     return reply.type('text/html; charset=utf-8').send('<!doctype html><meta charset="utf-8"><title>FeedLantern</title><p>FeedLantern 服务已启动，请先构建或启动前端。</p>');
   });

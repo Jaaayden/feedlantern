@@ -41,7 +41,7 @@ function cdata(value: string): string {
   return `<![CDATA[${value.replaceAll(']]>', ']]]]><![CDATA[>')}]]>`;
 }
 
-function fixedDate(value: string | undefined, fallback: string): string {
+export function fixedDate(value: string | undefined, fallback: string): string {
   const parsed = value ? new Date(value) : new Date(fallback);
   return Number.isNaN(parsed.getTime()) ? new Date(0).toUTCString() : parsed.toUTCString();
 }
@@ -65,9 +65,8 @@ function thumbnail(item: FeedItem, feed: Feed): string {
   return url ? `<media:thumbnail url="${escapeAttribute(url)}"/>` : '';
 }
 
-export function renderRss(feed: Feed, items: FeedItem[], feedUrl: string): string {
-  const buildDate = fixedDate(feed.lastSuccessAt ?? feed.createdAt, feed.createdAt);
-  const renderedItems = publishedItems(feed, items).map((item) => {
+/** One `<item>` exactly as the feed's own RSS shows it; `extra` is appended XML (a bundle adds the source). */
+export function renderRssItem(feed: Feed, item: FeedItem, extra = ''): string {
     const description = translationEnabled(feed) && item.contentHtml !== undefined ? safeHtml(item.contentHtml, item.link) : feed.sourceType === 'rss' ? safeHtml(item.description ?? '', item.link) : sanitizeDescription(item.description, feed.url, item.image);
     // RSS readers interpret the XML-decoded description as HTML. Preserve the
     // HTML escaping through XML decoding, even when there is no image.
@@ -80,9 +79,14 @@ export function renderRss(feed: Feed, items: FeedItem[], feedUrl: string): strin
       `<description>${descriptionXml}</description>`,
       item.publishedAt ? `<pubDate>${escapeXml(fixedDate(item.publishedAt, item.firstSeenAt))}</pubDate>` : '',
       thumbnail(item, feed),
+      extra,
       '</item>',
     ].join('');
-  }).join('');
+}
+
+export function renderRss(feed: Feed, items: FeedItem[], feedUrl: string): string {
+  const buildDate = fixedDate(feed.lastSuccessAt ?? feed.createdAt, feed.createdAt);
+  const renderedItems = publishedItems(feed, items).map(item => renderRssItem(feed, item)).join('');
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/">',
