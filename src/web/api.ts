@@ -2,6 +2,8 @@ import type { TranslationProgressData } from './TranslationProgress';
 import type {
   UserSummary,
   BarkSummary,
+  BundleInput,
+  BundlePayload,
   AuthState,
   ApplicationSettings,
   ImportJob,
@@ -187,6 +189,14 @@ export const api = {
     rotate: (id: string) =>
       request<{ feedUrl: string }>(`/api/feeds/${encodeURIComponent(id)}/rotate-token`, { method: 'POST', body: {} }),
     remove: (id: string) => request<void>(`/api/feeds/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  },
+  bundles: {
+    list: () => request<BundlePayload[]>('/api/bundles'),
+    create: (body: BundleInput) => request<BundlePayload>('/api/bundles', { method: 'POST', body }),
+    update: (id: string, body: Partial<BundleInput>) => request<BundlePayload>(`/api/bundles/${encodeURIComponent(id)}`, { method: 'PUT', body }),
+    addFeeds: (id: string, feedIds: string[]) => request<BundlePayload>(`/api/bundles/${encodeURIComponent(id)}/feeds`, { method: 'POST', body: { feedIds } }),
+    rotate: (id: string) => request<BundlePayload>(`/api/bundles/${encodeURIComponent(id)}/rotate-token`, { method: 'POST', body: {} }),
+    remove: (id: string) => request<{ ok: true }>(`/api/bundles/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   },
   browser: {
     open: (body: { url: string; credentialId: string | null; waitMs: number; waitForSelector?: string }) =>
