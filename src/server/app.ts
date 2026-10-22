@@ -32,6 +32,7 @@ import type {
   PickRequest,
   PickResult,
   ScreenFrame,
+  SegmentResult,
   SelectionRules,
 } from '../shared/types.js';
 import { parseCookies, cookiesForUrl, CookieParseError } from './cookies.js';
@@ -61,6 +62,7 @@ export interface BrowserServiceLike {
   scroll(id: string, deltaY: number, point?: { x: number; y: number }): Promise<ScreenFrame> | ScreenFrame;
   click(id: string, x: number, y: number): Promise<ScreenFrame> | ScreenFrame;
   follow?(id: string, node: number): Promise<ScreenFrame> | ScreenFrame;
+  segment?(id: string, top: number): Promise<SegmentResult> | SegmentResult;
   pick(id: string, request: PickRequest): Promise<PickResult> | PickResult;
   extract(id: string, rules: SelectionRules): Promise<ExtractedItem[]> | ExtractedItem[];
   scrape(options: { url: string; signal?: AbortSignal; cookies?: Cookie[]; waitMs: number; waitForSelector?: string; rules: SelectionRules }): Promise<ExtractedItem[]> | ExtractedItem[];
@@ -984,6 +986,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     };
     if (pickRequest.node === undefined && (![pickRequest.x, pickRequest.y].every(Number.isFinite) || pickRequest.x! < 0 || pickRequest.y! < 0)) throw new AppError(400, 'pick 坐标无效');
     try { return await browser.pick(String((request.params as { id: string }).id), pickRequest); } catch (error) { throw frameError(error, '点选元素'); }
+  });
+  app.post('/api/browser/:id/segment', async (request) => {
+    browserGuard(request);
+    if (!browser.segment) throw new AppError(501, '当前浏览器服务不支持分段截图');
+    const body = asRecord(request.body);
+    if (body.top === undefined || body.top === null) throw new AppError(400, '缺少分段位置');
+    const top = asInteger(body.top, 'top', 1, 1_000_000, 1);
+    try { return await browser.segment(String((request.params as { id: string }).id), top); } catch (error) { throw frameError(error, '加载网页画面'); }
   });
   app.post('/api/browser/:id/follow', async (request) => {
     browserGuard(request);

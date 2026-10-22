@@ -906,12 +906,13 @@ summary { cursor: pointer; }
   border: 1px solid var(--line-2); border-radius: 0 0 var(--r-md) var(--r-md);
   background: #fff;
 }
-.browser-screen { position: relative; line-height: 0; overflow: hidden; }
-.browser-screen > img { display: block; width: 100%; height: auto; cursor: crosshair; }
-.browser-screen.link-mode > img { cursor: pointer; }
-.browser-screen.navigated > img { cursor: default; }
-.browser-screen.navigated.link-mode > img { cursor: pointer; }
-.browser-screen.waiting > img { cursor: progress; }
+.browser-screen { position: relative; line-height: 0; overflow: hidden; cursor: crosshair; }
+.browser-screen > img { display: block; width: 100%; height: auto; }
+.segment-status { display: flex; justify-content: center; padding: 12px; border-top: 1px dashed var(--line-2); background: var(--bg-sunken); color: var(--muted); font-size: 12.5px; line-height: 1.4; }
+.browser-screen.link-mode { cursor: pointer; }
+.browser-screen.navigated { cursor: default; }
+.browser-screen.navigated.link-mode { cursor: pointer; }
+.browser-screen.waiting { cursor: progress; }
 .hover-rect {
   position: absolute; pointer-events: none; box-sizing: border-box;
   /* Fixed colours: the screenshot keeps the site's own palette in either theme. */

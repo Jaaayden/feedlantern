@@ -55,7 +55,7 @@ Store 的无 owner 参数列表方法保留给整站后台调度和备份使用�
 | `GET/POST /api/backups/config` | 轻量配置导出/预览与确认导入 |
 | `/feeds/:id/:token.xml` | 无管理员登录的密钥授权 RSS 2.0 |
 
-`ScreenFrame` 是从页面顶部截取的整页 JPEG（质量 75，data URL，最高 8000 像素；更长时 `truncated: true`），`height` 为截图高度，`viewportHeight` 为远端视口高度。`map` 是元素地图：`boxes` 每 5 个数一组（x、y、宽、高、最近的上层元素序号，根为 -1），坐标相对整页顶部，另含 `labels`、`links`（仅 http/https）和 `innerScroll`。编辑器据此在本地完成悬停高亮、↑/↓ 调整范围和滚动。
+`ScreenFrame` 是从页面顶部截取的第一段截图（JPEG 质量 75，data URL，每段最高 8000 像素）。`height` 为已截取的高度，`documentHeight` 为可截取的总高度（最高 48000 像素；网页更长时 `truncated: true`），`viewportHeight` 为远端视口高度。`POST /api/browser/:id/segment {top}` 截取下一段，`top` 必须等于已截取的高度，否则拒绝，避免重复或跳段；返回 `{top, height, image, documentHeight, map}`。`map` 是元素地图：`boxes` 每 5 个数一组（x、y、宽、高、最近的上层元素序号，根为 -1），坐标相对整页顶部，另含 `labels`、`links`（仅 http/https）和 `innerScroll`。地图是累计的：后续分段只追加新元素，已有序号不变。编辑器据此在本地完成悬停高亮、↑/↓ 调整范围和滚动。
 
 `POST /api/browser/:id/pick` 优先接受元素序号 `{node, exact?}`，也接受整页坐标 `{x, y}`；`exact: true` 保留所选元素，不自动扩展到重复条目或字段元素。带上 `rules` 时，同一请求按新选择器预览并返回 `items`（失败时为 `previewError`）。`POST /api/browser/:id/follow {node}` 在当前会话打开该元素或其上层元素的链接（受同样的网络策略限制）并返回新的 `ScreenFrame`。高亮框、自动识别和日期选区的坐标均相对整页顶部。
 

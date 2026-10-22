@@ -89,8 +89,17 @@ export interface CredentialSummary { id: string; name: string; url: string; form
  * height and the index of the nearest mapped ancestor (-1 for a root).
  */
 export interface ElementMap { boxes: number[]; labels: string[]; links: Record<string, string>; truncated: boolean; /** Some element scrolls on its own (only the remote page can scroll it). */ innerScroll?: boolean }
-/** `height` is the captured (possibly full-page) image height; `viewportHeight` is Chromium's window. */
-export interface ScreenFrame { sessionId: string; image: string; width: number; height: number; viewportHeight: number; url: string; title: string; map?: ElementMap; truncated?: boolean }
+/** One captured slice of the page, `top` pixels below the document top. */
+export interface ScreenSegment { top: number; height: number; image: string }
+/**
+ * The first captured segment of a page. `height` is how much is captured so
+ * far, `documentHeight` how much can be (capped; `truncated` when the page is
+ * longer still), `viewportHeight` is Chromium's window. The editor appends
+ * later `segments` as the user scrolls; the server never sends them here.
+ */
+export interface ScreenFrame { sessionId: string; image: string; width: number; height: number; viewportHeight: number; documentHeight: number; url: string; title: string; map?: ElementMap; truncated?: boolean; segments?: ScreenSegment[] }
+/** The next segment, with the element map extended to cover it. */
+export interface SegmentResult extends ScreenSegment { documentHeight: number; map: ElementMap; truncated?: boolean }
 export interface Rect { x: number; y: number; width: number; height: number }
 /**
  * Pick by element-map `node` (preferred) or by document coordinates. `exact`
@@ -127,6 +136,7 @@ export interface AuthState { userId?: string; role?: "admin" | "user"; setupRequ
 // POST /api/browser {url,credentialId,waitMs,waitForSelector?} -> ScreenFrame
 // GET /api/browser/:id -> ScreenFrame; POST /api/browser/:id/scroll {deltaY} -> ScreenFrame
 // POST /api/browser/:id/click {x,y} -> ScreenFrame; POST /api/browser/:id/follow {node} -> ScreenFrame
+// POST /api/browser/:id/segment {top} -> SegmentResult (top = height captured so far)
 // POST /api/browser/:id/pick PickRequest -> PickResult (with rules: also items/previewError)
 // POST /api/browser/:id/preview {rules:SelectionRules} -> {items:ExtractedItem[]}
 // POST /api/browser/:id/detect {} -> DetectionResult

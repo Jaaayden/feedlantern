@@ -9,7 +9,7 @@ import { BackupPanel } from './BackupPanel';
 import { BatchView } from './BatchView';
 import { FeedCollection } from './FeedCollection';
 import { FetchLogs } from './FetchLogs';
-import { PageScreen, linkModifier, type ScreenChoice } from './PageScreen';
+import { PageScreen, linkModifier, loadedHeight, type ScreenChoice, type SegmentState } from './PageScreen';
 import { levelsBetween, liftNode } from '../shared/element-map';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type React from 'react';
@@ -121,6 +121,9 @@ export function Editor({ initial, draft, existing = [], submitFeed, saved, cance
   const [navigated, setNavigated] = useState(false);
   // Last picked element (and the element under the pointer at the time), for 扩大/缩小.
   const [lastPick, setLastPick] = useState<{ base: number; node: number } | null>(null);
+  // Loading of the next screenshot segment below what is shown.
+  const [segmentState, setSegmentState] = useState<SegmentState>('idle');
+  const segmentLoading = useRef(false);
   const [target, setTarget] = useState<'item' | FieldName>('item');
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
@@ -277,6 +280,23 @@ export function Editor({ initial, draft, existing = [], submitFeed, saved, cance
       setFrame(result); setRects([]); setItems([]); setPreviewSignature(''); setLastPick(null); setNavigated(true); setNote('');
     } catch (error) { setError(messageOf(error)); } finally { setBusy(''); }
   }
+  useEffect(() => { setSegmentState('idle'); }, [frame?.image]);
+  async function loadMore() {
+    if (!frame || busy || segmentLoading.current) return;
+    const top = loadedHeight(frame);
+    if (top >= frame.documentHeight) return;
+    const first = frame.image;
+    segmentLoading.current = true; setSegmentState('loading');
+    try {
+      const segment = await api.browser.segment(frame.sessionId, top);
+      // Ignore a segment that arrives after the frame was replaced (refresh, link, reopen).
+      setFrame(current => current && current.image === first ? {
+        ...current, map: segment.map, documentHeight: segment.documentHeight, ...(segment.truncated ? { truncated: true } : {}),
+        segments: [...(current.segments ?? []), { top: segment.top, height: segment.height, image: segment.image }],
+      } : current);
+      setSegmentState('idle');
+    } catch { setSegmentState('error'); } finally { segmentLoading.current = false; }
+  }
   function adoptCurrentPage() {
     if (!frame) return;
     const target = frame.url;
@@ -307,8 +327,7 @@ export function Editor({ initial, draft, existing = [], submitFeed, saved, cance
       <p className="hint">点击网页中的<strong>{fieldLabels[target]}</strong>。悬停时按 ↑ / ↓ 扩大或缩小范围；按住 {linkModifier} 点击链接可以跳转到该页。</p>
       {navigated && <div className="notice navigated-notice" role="status"><Globe2 size={16} /><span>画面已跳转到 <code>{frame.url}</code>。要订阅这一页，请把它设为源网址。</span><span className="inline"><button className="button small primary" disabled={!!busy} onClick={adoptCurrentPage}>以此页为源网址</button><button className="button small" disabled={!!busy} onClick={() => void open()}>返回源网址</button></span></div>}
       <div className="browser-bar"><span /><span /><span /><code>{frame.url}</code>{busy && <small className="browser-busy"><LoaderCircle size={13} className="spin" />{busy}</small>}</div>
-      <PageScreen frame={frame} rects={rects} disabled={!!busy} navigated={navigated} revealKey={[frame.image.length, frame.url, candidateId].join('|')} pick={choice => void pickAt(choice)} follow={(node, href) => void followLink(node, href)} />
-      {frame.truncated && <p className="hint">网页较长，这里只显示前 {frame.height} 像素。</p>}
+      <PageScreen frame={frame} rects={rects} disabled={!!busy || segmentState === 'loading'} navigated={navigated} revealKey={[frame.image.length, frame.url, candidateId].join('|')} segmentState={segmentState} loadMore={() => void loadMore()} pick={choice => void pickAt(choice)} follow={(node, href) => void followLink(node, href)} />
       <details className="advanced"><summary>高级：编辑匹配规则<ChevronDown size={14} /></summary><div className="selector-grid">{keys.map(key => <Field key={key} label={`${fieldLabels[key]}选择器`} hint={origins[key] === 'manual' ? '手动配置 · 重新识别时保留' : '自动配置'}><input value={rules[key] ?? ''} onChange={e => changeRule(key, e.target.value)} placeholder={key === 'item' ? 'article' : key === 'title' || key === 'link' ? 'h2 a' : '可留空'} spellCheck={false} /></Field>)}</div>{chosen && <button type="button" className="button small" onClick={() => { if (confirm('使用此候选替换全部匹配规则，包括你手动修改的字段？')) void applyCandidate(chosen, true); }}>替换全部匹配</button>}</details></section>}
     <div className="editor-results"><section className="panel"><div className="panel-heading"><h2>订阅预览</h2><span className="muted">与后台抓取使用相同规则</span></div><ItemPreview items={items} empty={detection?.candidates.length ? '选择候选列表，或调整匹配以查看内容' : '没有找到可靠列表，可以手动点选条目与字段'} /></section><form className="save-panel panel" onSubmit={save}><div className="panel-heading"><h2>保存订阅</h2><Rss size={18} /></div><Field label="订阅名称"><input required value={name} onChange={e => setName(e.target.value)} /></Field><Field label="刷新间隔（分钟）"><input type="number" required min={5} max={1440} value={intervalMinutes} onChange={e => setIntervalMinutes(Number(e.target.value))} /></Field><p className="hint">保存后会在后台定时更新。页面关闭不影响运行中的服务。</p><button className="button primary full" disabled={!!busy || navigated || !items.length || !sourceUnchanged || previewSignature !== rulesSignature(rules)}>{busy === '正在保存订阅' ? <Busy /> : <><Check size={16} />保存订阅</>}</button></form></div></>}
   </>;

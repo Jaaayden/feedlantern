@@ -307,3 +307,25 @@ test('按住修饰键点击链接跳转后，可以以此页为源网址', async
   await expect(page.getByText('画面已跳转到')).toHaveCount(0);
   await expect(page.locator('.preview-item').first()).toBeVisible({ timeout: 45000 });
 });
+
+test('超过 8000 像素的长网页按需加载下面的画面，列表在下面也能点选', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await loginInPage(page);
+  await page.getByRole('button', { name: '新建订阅', exact: true }).click();
+  await (await locatorForUrl(page)).fill(FIXTURE_URLS.veryLong);
+  await page.getByRole('button', { name: '打开并自动识别', exact: true }).click();
+  await expect(page.locator('.preview-item')).toHaveCount(3, { timeout: 45000 });
+  await page.getByRole('button', { name: '调整匹配', exact: true }).click();
+
+  // The recognized list sits below the first segment: the editor loads the
+  // next segment by itself and scrolls the highlight into view.
+  await expect(page.locator('.browser-screen img')).toHaveCount(2, { timeout: 30000 });
+  const rect = page.locator('.selection-rect').first();
+  await expect(rect).toBeInViewport();
+  await expect(page.locator('.segment-status')).toHaveCount(0);
+
+  const box = (await rect.boundingBox())!;
+  await page.mouse.click(box.x + box.width * 0.8, box.y + box.height / 2);
+  await expect(page.getByText(/条目容器匹配\s*3\s*项/)).toBeVisible();
+  await expect(page.locator('.preview-item')).toHaveCount(3);
+});
