@@ -10,6 +10,7 @@ import type {
   PickResult,
   Rect,
   ScreenFrame,
+  SegmentResult,
   SelectionRules,
 } from '../shared/types';
 import { cookiesForUrl, toPlaywrightCookies } from './cookies';
@@ -32,10 +33,13 @@ const SESSION_IDLE_MS = 5 * 60 * 1000;
 const NAVIGATION_TIMEOUT_MS = 30_000;
 const SELECTOR_TIMEOUT_MS = 15_000;
 const ACTION_SETTLE_MS = 80;
-// The editor scrolls a single tall screenshot locally. Cap it well below
-// Chromium's texture limit; list pages rarely need more than this.
-const MAX_CAPTURE_HEIGHT = 8_000;
-const MAX_MAP_NODES = 6_000;
+// The editor scrolls tall screenshots locally. Each capture is one segment,
+// well below Chromium's texture limit; the editor asks for the next segment
+// when the user scrolls near the bottom, up to MAX_DOCUMENT_HEIGHT in total.
+const SEGMENT_HEIGHT = 8_000;
+const MAX_DOCUMENT_HEIGHT = 48_000;
+const MAX_MAP_NODES = 6_000; // per segment
+const DOCUMENT_HEIGHT_SCRIPT = 'Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0)';
 const SCREENSHOT_QUALITY = 75;
 const BROWSER_OPERATION_TIMEOUT_MS = 60_000;
 
@@ -84,6 +88,7 @@ interface BrowserSession {
   /** Page global holding the elements of the latest element map. */
   mapKey: string;
   map?: ElementMap;
+  /** Captured height so far: the first segment plus any later ones. */
   frameHeight?: number;
 }
 
@@ -188,7 +193,8 @@ const PICK_SCRIPT = String.raw`(request, mapKey) => {
     });
     return best ? { element: best.element, selector: best.selector } : { element: element, selector: globalSelector(element) };
   }
-  const mapped = (mapKey && window[mapKey]) || [];
+  const mapState = mapKey ? window[mapKey] : null;
+  const mapped = (mapState && mapState.elements) || [];
   let atPoint;
   if (request.node !== undefined && request.node !== null) {
     atPoint = mapped[request.node];
@@ -244,20 +250,25 @@ const PICK_SCRIPT = String.raw`(request, mapKey) => {
   };
 }`;
 
-// Record every visible element once per capture so the editor can outline
-// what is under the pointer without asking the server. Elements stay in a
-// page global (non-enumerable, random name) so a later pick can address them
-// by index; a navigation clears it, which picks report as a stale frame.
-const MAP_SCRIPT = String.raw`(mapKey, limitHeight, maxNodes) => {
+// Record every visible element so the editor can outline what is under the
+// pointer without asking the server. The map is cumulative: the first segment
+// starts it (reset), later segments only append elements that became visible,
+// so existing indexes and parent links never change. The state stays in a page
+// global (non-enumerable, random name) so a later pick can address elements by
+// index; a navigation clears it, which picks report as a stale frame.
+const MAP_SCRIPT = String.raw`(mapKey, limitHeight, maxNodes, reset) => {
   const skip = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'HEAD', 'META', 'LINK', 'BR', 'WBR', 'OPTION']);
   const dynamic = /(?:^|[-_])(?:[a-f0-9]{6,}|\d{3,})(?:$|[-_])/i;
   const width = innerWidth;
-  const elements = [];
-  const boxes = [];
-  const labels = [];
-  const links = {};
-  let truncated = false;
-  let innerScroll = false;
+  let state = reset ? null : window[mapKey];
+  if (!state || !state.index) {
+    state = { elements: [], index: new Map(), boxes: [], labels: [], links: {}, truncated: false, innerScroll: false };
+    Object.defineProperty(window, mapKey, { value: state, configurable: true, enumerable: false, writable: true });
+  }
+  const elements = state.elements;
+  const boxes = state.boxes;
+  const labels = state.labels;
+  const links = state.links;
   function label(element) {
     let text = element.tagName.toLowerCase();
     if (element.id && element.id.length <= 32 && !dynamic.test(element.id)) text += '#' + element.id;
@@ -266,19 +277,21 @@ const MAP_SCRIPT = String.raw`(mapKey, limitHeight, maxNodes) => {
     return text.slice(0, 64);
   }
   function visit(element, parent) {
-    if (elements.length >= maxNodes) { truncated = true; return; }
+    if (elements.length >= maxNodes) { state.truncated = true; return; }
     if (skip.has(element.tagName)) return;
     const style = getComputedStyle(element);
     if (style.display === 'none') return;
-    let own = parent;
-    if (!innerScroll && (style.overflowY === 'auto' || style.overflowY === 'scroll') && element.scrollHeight > element.clientHeight + 4 && element.clientHeight > 40) innerScroll = true;
-    if (style.display !== 'contents' && style.visibility !== 'hidden' && style.opacity !== '0') {
+    const known = state.index.get(element);
+    let own = known === undefined ? parent : known;
+    if (!state.innerScroll && (style.overflowY === 'auto' || style.overflowY === 'scroll') && element.scrollHeight > element.clientHeight + 4 && element.clientHeight > 40) state.innerScroll = true;
+    if (known === undefined && style.display !== 'contents' && style.visibility !== 'hidden' && style.opacity !== '0') {
       const rect = element.getBoundingClientRect();
       const x = rect.left + scrollX;
       const y = rect.top + scrollY;
       if (rect.width >= 2 && rect.height >= 2 && y < limitHeight && y + rect.height > 0 && x < width && x + rect.width > 0) {
         own = elements.length;
         elements.push(element);
+        state.index.set(element, own);
         boxes.push(Math.round(x), Math.round(y), Math.round(rect.width), Math.round(rect.height), parent);
         labels.push(label(element));
         if (element instanceof HTMLAnchorElement && /^https?:/i.test(element.href)) links[own] = element.href;
@@ -288,8 +301,7 @@ const MAP_SCRIPT = String.raw`(mapKey, limitHeight, maxNodes) => {
     for (const child of Array.from(element.children)) visit(child, own);
   }
   if (document.body) for (const child of Array.from(document.body.children)) visit(child, -1);
-  Object.defineProperty(window, mapKey, { value: elements, configurable: true, enumerable: false, writable: true });
-  return { boxes: boxes, labels: labels, links: links, truncated: truncated, innerScroll: innerScroll };
+  return { boxes: boxes, labels: labels, links: links, truncated: state.truncated, innerScroll: state.innerScroll };
 }`;
 
 /** Width and height from a baseline or progressive JPEG header. */
@@ -517,39 +529,79 @@ export class BrowserService {
   }
 
   /**
-   * Capture the page from the top as one tall image (up to MAX_CAPTURE_HEIGHT)
-   * plus its element map, so the editor can scroll and outline locally.
+   * Capture one segment of the page, starting `top` pixels below the document
+   * top, and extend (or with `reset`, restart) the element map to match.
    */
+  private async capture(session: BrowserSession, top: number, reset: boolean) {
+    const page = session.page;
+    const viewport = page.viewportSize() ?? VIEWPORT;
+    // Fixed headers render once at the top of a full-page capture; keep every
+    // segment and the element map measured from the same scroll position.
+    await page.evaluate("window.scrollTo({ left: 0, top: 0, behavior: 'instant' })");
+    const measured = Number(await page.evaluate(DOCUMENT_HEIGHT_SCRIPT)) || viewport.height;
+    const documentHeight = Math.max(viewport.height, Math.min(MAX_DOCUMENT_HEIGHT, Math.ceil(measured)));
+    if (top >= documentHeight) throw new BrowserServiceError('已经显示到网页底部');
+    const wanted = Math.min(SEGMENT_HEIGHT, documentHeight - top);
+    const tall = top > 0 || wanted > viewport.height;
+    const image = await page.screenshot({
+      type: 'jpeg', quality: SCREENSHOT_QUALITY, scale: 'css', timeout: 15_000,
+      ...(tall ? { fullPage: true, clip: { x: 0, y: top, width: viewport.width, height: wanted } } : {}),
+    });
+    // The document can shrink between measuring and capturing; trust the image.
+    const size = jpegSize(image) ?? { width: viewport.width, height: wanted };
+    const loaded = top + size.height;
+    const maxNodes = MAX_MAP_NODES * Math.ceil(loaded / SEGMENT_HEIGHT);
+    const map = await page.evaluate(`(${MAP_SCRIPT})(${JSON.stringify(session.mapKey)}, ${loaded}, ${maxNodes}, ${reset})`) as ElementMap;
+    session.map = map;
+    session.frameHeight = loaded;
+    return {
+      image: `data:image/jpeg;base64,${image.toString('base64')}`,
+      width: size.width,
+      height: size.height,
+      documentHeight: Math.max(documentHeight, loaded),
+      truncated: measured > MAX_DOCUMENT_HEIGHT,
+      map,
+    };
+  }
+
+  /** The first segment of the page and a fresh element map. */
   private async frame(session: BrowserSession): Promise<ScreenFrame> {
     try {
       const page = session.page;
       const viewport = page.viewportSize() ?? VIEWPORT;
-      await page.evaluate("window.scrollTo({ left: 0, top: 0, behavior: 'instant' })");
-      const documentHeight = Number(await page.evaluate('Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0)')) || viewport.height;
-      const wanted = Math.max(viewport.height, Math.min(MAX_CAPTURE_HEIGHT, Math.ceil(documentHeight)));
-      const image = await page.screenshot({
-        type: 'jpeg', quality: SCREENSHOT_QUALITY, scale: 'css', timeout: 15_000,
-        ...(wanted > viewport.height ? { fullPage: true, clip: { x: 0, y: 0, width: viewport.width, height: wanted } } : {}),
-      });
-      // The document can shrink between measuring and capturing; trust the image.
-      const size = jpegSize(image) ?? { width: viewport.width, height: wanted };
-      const map = await page.evaluate(`(${MAP_SCRIPT})(${JSON.stringify(session.mapKey)}, ${size.height}, ${MAX_MAP_NODES})`) as ElementMap;
-      session.map = map;
-      session.frameHeight = size.height;
+      const captured = await this.capture(session, 0, true);
       return {
         sessionId: session.id,
-        image: `data:image/jpeg;base64,${image.toString('base64')}`,
-        width: size.width,
-        height: size.height,
+        image: captured.image,
+        width: captured.width,
+        height: captured.height,
         viewportHeight: viewport.height,
+        documentHeight: captured.documentHeight,
         url: page.url(),
         title: await page.title().catch(() => ''),
-        map,
-        ...(documentHeight > MAX_CAPTURE_HEIGHT ? { truncated: true } : {}),
+        map: captured.map,
+        ...(captured.truncated ? { truncated: true } : {}),
       };
     } catch (error) {
-      throw cleanError(error, '生成页面截图失败');
+      throw error instanceof BrowserServiceError ? error : cleanError(error, '生成页面截图失败');
     }
+  }
+
+  /**
+   * The next segment below what the editor already shows. `top` must equal the
+   * height captured so far, so a repeated or stale request cannot skip a part.
+   */
+  async segment(id: string, top: number): Promise<SegmentResult> {
+    if (!Number.isInteger(top) || top <= 0) throw new BrowserServiceError('画面分段位置无效');
+    return this.withSession(id, async session => {
+      if (top !== session.frameHeight) throw new BrowserServiceError('网页画面已经变化，请点击“更新网页画面”后重试');
+      try {
+        const captured = await this.capture(session, top, false);
+        return { top, image: captured.image, height: captured.height, documentHeight: captured.documentHeight, map: captured.map, ...(captured.truncated ? { truncated: true } : {}) };
+      } catch (error) {
+        throw error instanceof BrowserServiceError ? error : cleanError(error, '生成页面截图失败');
+      }
+    });
   }
 
   async open(options: BrowserOpenOptions): Promise<ScreenFrame> {

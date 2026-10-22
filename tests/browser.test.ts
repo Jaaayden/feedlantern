@@ -179,3 +179,50 @@ test('长网页一次截全、元素地图点选并同时预览、按住修饰�
     await new Promise<void>(resolve => server.close(() => resolve()));
   }
 });
+
+test('超长网页分段截图：元素序号保持不变，按顺序加载到底部，超过上限时标记截断', async () => {
+  const rows = Array.from({ length: 50 }, (_, n) => `<article class="row"><h2><a href="/r/${n}">第 ${n} 行</a></h2></article>`).join('');
+  const server = createServer((request, response) => {
+    response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    if (request.url === '/huge') { response.end('<!doctype html><style>body{margin:0}</style><div style="height:60000px">huge</div>'); return; }
+    response.end(`<!doctype html><style>body{margin:0}.row{height:400px}.row h2{margin:0}</style><title>long</title>${rows}`);
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const host = `127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const browser = new BrowserService({ allowedHosts: [host] });
+  try {
+    const frame = await browser.open({ url: `http://${host}`, waitMs: 0 });
+    assert.equal(frame.height, 8000);
+    assert.equal(frame.documentHeight, 20000);
+    assert.ok(!frame.truncated);
+    await assert.rejects(browser.segment(frame.sessionId, 7999), /网页画面已经变化/);
+
+    const second = await browser.segment(frame.sessionId, 8000);
+    assert.equal(second.top, 8000);
+    assert.equal(second.height, 8000);
+    assert.deepEqual(second.map.boxes.slice(0, frame.map!.boxes.length), frame.map!.boxes, 'earlier nodes keep their indexes');
+    assert.ok(second.map.labels.length > frame.map!.labels.length);
+    const third = await browser.segment(frame.sessionId, 16000);
+    assert.equal(third.height, 4000);
+    await assert.rejects(browser.segment(frame.sessionId, 20000), /已经显示到网页底部/);
+
+    const deep = third.map.labels.findIndex((label, i) => label === 'article.row' && third.map.boxes[i * 5 + 1] > 16000);
+    assert.ok(deep >= 0);
+    const pick = await browser.pick(frame.sessionId, { node: deep, exact: true, target: 'item' });
+    assert.equal(pick.count, 50);
+    assert.equal(pick.rects.length, 50, 'every loaded row is highlighted, including the last segment');
+    assert.ok(pick.rects.some(rect => rect.y > 16000));
+
+    const refreshed = await browser.snapshot(frame.sessionId);
+    assert.equal(refreshed.height, 8000, 'a new frame starts from the first segment again');
+    await assert.rejects(browser.segment(frame.sessionId, 16000), /网页画面已经变化/);
+    await browser.close(frame.sessionId);
+
+    const huge = await browser.open({ url: `http://${host}/huge`, waitMs: 0 });
+    assert.equal(huge.documentHeight, 48000);
+    assert.equal(huge.truncated, true);
+  } finally {
+    await browser.dispose(); server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});

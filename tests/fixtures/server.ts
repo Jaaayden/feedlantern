@@ -242,6 +242,11 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (requestUrl.pathname === '/very-long') {
+    // The list starts below the first 8000px screenshot segment.
+    sendHtml(response, 200, staticPage().replace('<h1>Fixture static cards</h1>', '<h1>Fixture static cards</h1><div style="height:14000px">Long page spacer</div>'));
+    return;
+  }
   if (requestUrl.pathname === '/hub') {
     sendHtml(response, 200, page('Fixture hub', '<main><h1>Fixture hub</h1><p><a class="hub-link" href="/div-cards" style="display:inline-block;padding:12px 24px">Open the card list</a></p></main>'));
     return;

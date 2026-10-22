@@ -18,6 +18,7 @@ import type {
   PickRequest,
   PickResult,
   ScreenFrame,
+  SegmentResult,
 } from '../shared/types';
 
 export class ApiError extends Error {
@@ -195,6 +196,8 @@ export const api = {
       request<ScreenFrame>(`/api/browser/${encodeURIComponent(id)}/scroll`, { method: 'POST', body: { deltaY, ...point } }),
     click: (id: string, x: number, y: number) =>
       request<ScreenFrame>(`/api/browser/${encodeURIComponent(id)}/click`, { method: 'POST', body: { x, y } }),
+    segment: (id: string, top: number) =>
+      request<SegmentResult>(`/api/browser/${encodeURIComponent(id)}/segment`, { method: 'POST', body: { top } }),
     follow: (id: string, node: number) =>
       request<ScreenFrame>(`/api/browser/${encodeURIComponent(id)}/follow`, { method: 'POST', body: { node } }),
     pick: (id: string, body: PickRequest) =>
