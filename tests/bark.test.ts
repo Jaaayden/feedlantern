@@ -4,8 +4,13 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
-import { BarkWorker, sendBark, validateBarkUrl } from '../src/server/bark.js';
+import { sendBark, validateBarkUrl } from '../src/server/bark.js';
+import { NotificationWorker } from '../src/server/notify.js';
+import { NetworkPolicy } from '../src/server/network.js';
 import { Store } from '../src/server/store.js';
+
+type BarkFn = (url: string, body: string, signal: AbortSignal) => Promise<void>;
+const barkWorker = (store: Store, send: BarkFn) => new NotificationWorker(store.history, { target: id => store.notificationTarget(id), senders: { bark: (config, message, context) => send(config.url, message.body, context.signal) } });
 
 async function until(fn: () => boolean) { for (let i = 0; i < 200; i++) { if (fn()) return; await new Promise(r => setTimeout(r, 5)); } throw Error('worker timeout'); }
 
@@ -25,10 +30,13 @@ test('Bark 使用 JSON POST，验证服务端结果、HTTP 错误、超时和禁
     res.end(JSON.stringify({ code: mode === 'api-error' ? 400 : 200 }));
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
-  const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/bark/test-key/`;
+  const host = `127.0.0.1:${(server.address() as { port: number }).port}`, url = `http://${host}/bark/test-key/`;
+  const policy = new NetworkPolicy({ allowedHosts: [host] });
   try {
-    await sendBark(url, 'failure', AbortSignal.timeout(2000));
-    for (mode of ['http-error', 'api-error', 'redirect', 'timeout']) await assert.rejects(sendBark(url, 'failure', AbortSignal.timeout(mode === 'timeout' ? 20 : 2000)));
+    // Loopback is refused unless the exact host:port is allowlisted.
+    await assert.rejects(sendBark(url, 'failure', AbortSignal.timeout(2000)), /SSRF|私网|特殊地址/);
+    await sendBark(url, 'failure', AbortSignal.timeout(2000), undefined, policy);
+    for (mode of ['http-error', 'api-error', 'redirect', 'timeout']) await assert.rejects(sendBark(url, 'failure', AbortSignal.timeout(mode === 'timeout' ? 20 : 2000), undefined, policy));
     assert.equal(redirected, 0);
     assert.equal(validateBarkUrl(''), undefined);
     assert.equal(validateBarkUrl('https://api.day.app/test-key/'), 'https://api.day.app/test-key/');
@@ -43,7 +51,7 @@ test('后台发送不阻塞，恢复／删除取消进行中的通知，重启�
   const h = store.history;
   const fail = () => { const id = h.start(feed.id, 'scheduled'); h.fail(id, feed, 'scheduled', 1, '网络错误', true); return id; };
   let started = false, aborted = false, calls = 0;
-  let worker = new BarkWorker(h, 'https://api.day.app/test-key/', async (_url, _body, signal) => {
+  let worker = barkWorker(store, async (_url, _body, signal) => {
     started = true; await new Promise<void>((_resolve, reject) => { signal.addEventListener('abort', () => { aborted = true; reject(Error('aborted')); }, { once: true }); });
   });
   try {
@@ -52,13 +60,13 @@ test('后台发送不阻塞，恢复／删除取消进行中的通知，重启�
     await until(() => aborted); await worker.stop();
     assert.equal(h.list(feed.id).logs.find(l => l.id === id)?.notification?.status, 'canceled');
     fail();
-    worker = new BarkWorker(h, 'https://api.day.app/test-key/', async () => { calls++; });
+    worker = barkWorker(store, async () => { calls++; });
     worker.start(); await until(() => h.list(feed.id).logs[0].notification?.status === 'sent');
     fail(); worker.wake(); await new Promise(r => setImmediate(r)); assert.equal(calls, 1);
     await worker.stop();
     h.succeed(h.start(feed.id, 'manual'), feed.id, 2, { itemCount: 1, newItemCount: 0 }); fail();
     started = false; aborted = false;
-    worker = new BarkWorker(h, 'https://api.day.app/test-key/', async (_u, _b, signal) => { started = true; await new Promise<void>((_, reject) => signal.addEventListener('abort', () => { aborted = true; reject(Error()); }, { once: true })); });
+    worker = barkWorker(store, async (_u, _b, signal) => { started = true; await new Promise<void>((_, reject) => signal.addEventListener('abort', () => { aborted = true; reject(Error()); }, { once: true })); });
     worker.start(); await until(() => started); store.deleteFeed(feed.id); worker.wake(); await until(() => aborted);
     assert.equal(h.nextAlert(), null);
   } finally { await worker.stop(); store.close(); rmSync(dir, { recursive: true, force: true }); }
@@ -72,7 +80,7 @@ test('后台发送错误不泄漏密钥；重启后不会发送第四次重试',
   h.fail(run, feed, 'scheduled', 1, '超时', true);
   const job = h.nextAlert()!;
   let sends = 0;
-  let worker = new BarkWorker(h, 'https://api.day.app/test-secret/', async () => { sends++; throw Error('https://api.day.app/test-secret/ Authorization: private'); });
+  let worker = barkWorker(store, async () => { sends++; throw Error('https://api.day.app/test-secret/ Authorization: private'); });
   try {
     worker.start(); await until(() => h.list(feed.id).logs[0].notification?.error !== null); await worker.stop();
     assert.equal(sends, 1); assert.equal(h.nextAlert(), null);
@@ -80,7 +88,7 @@ test('后台发送错误不泄漏密钥；重启后不会发送第四次重试',
     // Simulate an interrupted third send whose persisted lease has expired.
     const past = Date.now() - 120_000;
     h.beginAttempt(job.id, past); h.beginAttempt(job.id, past);
-    worker = new BarkWorker(h, 'https://api.day.app/test-secret/', async () => { sends++; });
+    worker = barkWorker(store, async () => { sends++; });
     worker.start(); await until(() => h.list(feed.id).logs[0].notification?.status === 'failed');
     assert.equal(sends, 1);
   } finally { await worker.stop(); store.close(); rmSync(dir, { recursive: true, force: true }); }

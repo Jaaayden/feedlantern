@@ -5,7 +5,8 @@ import { TRANSLATION_CACHE_LIMIT, type Tables } from './backups.js';
 import { FetchHistory } from './fetch-history.js';
 import { AppError } from './auth.js';
 import { applicationSettingsSchema } from './settings.js';
-import { defaultApplicationSettings, type ApplicationSettings } from '../shared/types.js';
+import { defaultApplicationSettings, defaultNotificationChannels, type ApplicationSettings, type NotificationChannelSettings } from '../shared/types.js';
+import { activeChannels, notificationChannelsSchema, storedNotificationSchema, type ChannelConfigs, type NotificationTarget } from './notify.js';
 import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { join } from 'node:path';
@@ -291,7 +292,12 @@ export class Store {
       CREATE TABLE user_notifications (user_id TEXT PRIMARY KEY, value TEXT NOT NULL);
       PRAGMA user_version=8; COMMIT;`);
     this.translations = new RssTranslations(this.db, id => this.userSignal(id));
-    this.history = new FetchHistory(this.db, () => this.getSettings(), id => this.getBarkForFeed(id));
+    this.history = new FetchHistory(this.db, () => this.getSettings(), id => {
+      const { policy, configs } = this.notificationTarget(id);
+      return { policy, channels: Object.keys(configs) as (keyof ChannelConfigs)[] };
+    });
+    // Alerts raised before notification channels existed were Bark-only.
+    if (version < 10) { this.db.exec('BEGIN'); this.history.migrateLegacyDeliveries(); this.db.exec('PRAGMA user_version=10; COMMIT'); }
     this.migrateBark();
     this.ensureSetupToken();
   }
@@ -777,24 +783,56 @@ export class Store {
     this.db.prepare("UPDATE settings SET value=? WHERE key='application'").run(encrypt(this.masterKey, JSON.stringify(value)));
   }
 
-  getBark(userId: string): ApplicationSettings['bark'] {
+  /** One account's Bark settings, shared alert policy and other channels (stored encrypted together). */
+  getNotifications(userId: string): { bark: ApplicationSettings['bark']; channels: NotificationChannelSettings } {
     const row = this.db.prepare('SELECT value FROM user_notifications WHERE user_id=?').get(userId);
-    return row ? applicationSettingsSchema.shape.bark.parse(JSON.parse(decrypt(this.masterKey, String(row.value)))) : structuredClone(defaultApplicationSettings.bark);
+    if (!row) return { bark: structuredClone(defaultApplicationSettings.bark), channels: structuredClone(defaultNotificationChannels) };
+    const { channels, ...bark } = storedNotificationSchema.parse(JSON.parse(decrypt(this.masterKey, String(row.value))));
+    return { bark, channels: notificationChannelsSchema.parse(channels ?? {}) };
+  }
+  getBark(userId: string): ApplicationSettings['bark'] { return this.getNotifications(userId).bark; }
+  private feedOwner(id: string): string | undefined {
+    const row = this.db.prepare('SELECT owner_id FROM feeds WHERE id=?').get(id);
+    return row ? String(row.owner_id) : undefined;
   }
   getBarkForFeed(id: string): ApplicationSettings['bark'] {
-    const row = this.db.prepare('SELECT owner_id FROM feeds WHERE id=?').get(id);
-    return row ? this.getBark(String(row.owner_id)) : structuredClone(defaultApplicationSettings.bark);
+    const owner = this.feedOwner(id);
+    return owner ? this.getBark(owner) : structuredClone(defaultApplicationSettings.bark);
   }
-  private writeBark(userId: string, value: ApplicationSettings['bark']): void {
+  /** Alert policy and enabled, complete channels of a feed's owner. */
+  notificationTarget(feedId: string): NotificationTarget {
+    const owner = this.feedOwner(feedId);
+    const { bark, channels } = owner ? this.getNotifications(owner) : { bark: structuredClone(defaultApplicationSettings.bark), channels: structuredClone(defaultNotificationChannels) };
+    const { enabled: _enabled, url: _url, ...policy } = bark;
+    return { policy, configs: activeChannels(bark, channels) };
+  }
+  private writeNotifications(userId: string, bark: ApplicationSettings['bark'], channels: NotificationChannelSettings): void {
+    const value = storedNotificationSchema.parse({ ...bark, channels });
     this.db.prepare('INSERT INTO user_notifications(user_id,value) VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET value=excluded.value').run(userId, encrypt(this.masterKey, JSON.stringify(value)));
   }
-  setBark(userId: string, patch: Partial<ApplicationSettings['bark']>): ApplicationSettings['bark'] {
-    const previous = this.getBark(userId);
-    const value = applicationSettingsSchema.shape.bark.parse({ ...previous, ...patch, ...(patch.url === '' ? { enabled: false } : {}) });
+  private writeBark(userId: string, value: ApplicationSettings['bark']): void {
+    this.writeNotifications(userId, value, this.getNotifications(userId).channels);
+  }
+  /**
+   * Saves validated notification settings. Changing where alerts go (enabling,
+   * disabling or re-targeting any channel) cancels this account's pending alerts,
+   * as changing the Bark address always did; other accounts are unaffected.
+   */
+  setNotifications(userId: string, next: { bark: ApplicationSettings['bark']; channels: NotificationChannelSettings }): void {
+    const previous = this.getNotifications(userId);
+    const destinations = (value: typeof next) => JSON.stringify(activeChannels(value.bark, value.channels));
     this.transaction(() => {
-      this.writeBark(userId, value);
-      if (previous.url !== value.url || previous.enabled !== value.enabled) this.history.resetNotifications(userId);
+      this.writeNotifications(userId, next.bark, next.channels);
+      if (destinations(previous) !== destinations(next)) this.history.resetNotifications(userId);
     });
+  }
+  setNotificationChannels(userId: string, channels: NotificationChannelSettings): void {
+    this.setNotifications(userId, { bark: this.getBark(userId), channels });
+  }
+  setBark(userId: string, patch: Partial<ApplicationSettings['bark']>): ApplicationSettings['bark'] {
+    const previous = this.getNotifications(userId);
+    const value = applicationSettingsSchema.shape.bark.parse({ ...previous.bark, ...patch, ...(patch.url === '' ? { enabled: false } : {}) });
+    this.setNotifications(userId, { bark: value, channels: previous.channels });
     return value;
   }
 
