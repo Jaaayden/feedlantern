@@ -1452,3 +1452,15 @@ button.card-error:hover { text-decoration: underline; text-underline-offset: 3px
 .switcher-list > button:hover, .switcher-list > button:focus-visible { background: var(--surface-hover); box-shadow: none; }
 .switcher-list > button.current { background: var(--glow-soft); }
 .switcher-menu > button { padding: 8px 10px; }
+
+/* Clickable attention cues */
+.stats-row > button .stat-arrow { align-self: center; margin-left: 2px; color: var(--danger); transition: transform .15s; }
+.stats-row > button:hover .stat-arrow { transform: translateX(2px); }
+.stats-row > button.active .stat-arrow { transform: rotate(90deg); }
+.stats-row > button:focus-visible { box-shadow: inset var(--ring); }
+.badge-button { cursor: pointer; font-family: inherit; }
+.badge-button:hover { box-shadow: 0 0 0 1px currentColor inset; }
+button.user-failing { padding: 0; border: 0; background: none; font: inherit; font-size: 12px; font-weight: 650; color: var(--danger); cursor: pointer; }
+button.user-failing:hover { text-decoration: underline; text-underline-offset: 3px; }
+.link-button { padding: 0; border: 0; background: none; font: inherit; color: var(--accent-ink); font-weight: 600; cursor: pointer; }
+.link-button:hover { text-decoration: underline; }

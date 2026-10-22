@@ -2,12 +2,12 @@ import { useEffect, useState, type FormEvent } from 'react';
 import type { UserSummary } from '../shared/types';
 import { api } from './api';
 import { Modal } from './Modal';
-import { Ban, CircleCheck, MoreHorizontal, Pencil, Plus, Search, Trash2 } from 'lucide-react';
+import { Ban, ChevronRight, CircleCheck, MoreHorizontal, Pencil, Plus, Search, Trash2 } from 'lucide-react';
 import { ActionMenu } from './Menu';
 import { absoluteTime, relativeTime } from './format';
 
 type Preview = Awaited<ReturnType<typeof api.users.deletionPreview>>;
-export function UsersPanel({ currentUserId, manage, changed, identityChanged }: { currentUserId: string; manage: (user: UserSummary) => void; changed?: () => void; identityChanged: () => void }) {
+export function UsersPanel({ currentUserId, manage, changed, identityChanged }: { currentUserId: string; manage: (user: UserSummary | null, attention?: boolean) => void; changed?: () => void; identityChanged: () => void }) {
   const [users, setUsers] = useState<UserSummary[]>([]);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -20,6 +20,7 @@ export function UsersPanel({ currentUserId, manage, changed, identityChanged }: 
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [query, setQuery] = useState('');
+  const [onlyFailing, setOnlyFailing] = useState(false);
   useEffect(() => { void api.users.list().then(setUsers).catch(e => setError(e.message)); }, []);
   async function run(action: () => Promise<unknown>, message: string) {
     setBusy(true); setError(''); setNotice('');
@@ -39,7 +40,7 @@ export function UsersPanel({ currentUserId, manage, changed, identityChanged }: 
     }, editing ? '账号已更新；身份或密码变化后需要重新登录。' : '用户已创建。');
     if (ok) reset();
   }
-  const shown = users.filter(user => user.username.toLowerCase().includes(query.trim().toLowerCase()));
+  const shown = users.filter(user => user.username.toLowerCase().includes(query.trim().toLowerCase()) && (!onlyFailing || !!user.stats?.failingFeeds));
   const totals = users.reduce((sum, user) => ({ feeds: sum.feeds + (user.stats?.feeds ?? 0), failing: sum.failing + (user.stats?.failingFeeds ?? 0) }), { feeds: 0, failing: 0 });
   return <>
     <div className="page-heading"><div><span className="section-kicker">ACCOUNTS</span><h1>用户管理</h1><p>管理账号权限，或进入用户的独立工作台。管理员拥有相同管理权限。</p></div><button className="button primary" disabled={busy} onClick={() => { reset(); setError(''); setFormOpen(true); }}><Plus size={17} />创建用户</button></div>
@@ -56,13 +57,13 @@ export function UsersPanel({ currentUserId, manage, changed, identityChanged }: 
       <div><span>账号</span><strong>{users.length}<small>{users.filter(user => user.role === 'admin').length} 位管理员</small></strong></div>
       <div><span>已停用</span><strong>{users.filter(user => !user.enabled).length}<small>个账号</small></strong></div>
       <div><span>订阅总数</span><strong>{totals.feeds}<small>个来源</small></strong></div>
-      <div className={totals.failing ? 'attention' : ''}><span>出错订阅</span><strong>{totals.failing}<small>{totals.failing ? '需要检查' : '一切正常'}</small></strong></div>
+      {totals.failing ? <button className={`attention ${onlyFailing ? 'active' : ''}`} aria-pressed={onlyFailing} title={onlyFailing ? '显示全部账号' : '只看有出错订阅的账号'} onClick={() => setOnlyFailing(!onlyFailing)}><span>出错订阅</span><strong>{totals.failing}<small>{onlyFailing ? '已筛选' : '点击筛选'}</small><ChevronRight size={15} className="stat-arrow" /></strong></button> : <div><span>出错订阅</span><strong>0<small>一切正常</small></strong></div>}
     </div>}
     <section className="panel settings-form users-list" aria-label="用户列表"><div className="panel-heading"><h2>全部账号 <span>{users.length}</span></h2>{users.length > 5 && <div className="input-icon users-search"><Search size={15} /><input aria-label="搜索用户" placeholder="搜索用户名" value={query} onChange={e => setQuery(e.target.value)} /></div>}</div>
       <div className="user-row user-head" aria-hidden="true"><span>账号</span><span>订阅</span><span>凭据</span><span>最近活跃</span><span /></div>
       {shown.map(user => <div className={`user-row ${user.enabled ? '' : 'is-disabled'}`} key={user.id}>
         <div className="user-identity"><span className={`avatar ${user.enabled ? '' : 'off'}`}>{user.username.slice(0, 1).toUpperCase()}</span><div><strong>{user.username}{user.id === currentUserId ? '（自己）' : ''}</strong><p className="inline user-badges"><span className={`badge ${user.role === 'admin' ? 'good' : ''}`}>{user.role === 'admin' ? '管理员' : '普通用户'}</span><span className={`badge ${user.enabled ? '' : 'bad'}`}>{user.enabled ? '已启用' : '已停用'}</span></p></div></div>
-        <div className="user-cell user-feeds" data-label="订阅"><strong>{user.stats?.feeds ?? '—'}</strong>{!!user.stats?.failingFeeds && <span className="user-failing">{user.stats.failingFeeds} 出错</span>}{!!user.stats?.pausedFeeds && <span className="user-paused">{user.stats.pausedFeeds} 暂停</span>}</div>
+        <div className="user-cell user-feeds" data-label="订阅"><strong>{user.stats?.feeds ?? '—'}</strong>{!!user.stats?.failingFeeds && <button type="button" className="user-failing" title={user.id === currentUserId ? '查看我的出错订阅' : `进入 ${user.username} 的工作台并只看出错订阅`} onClick={() => manage(user.id === currentUserId ? null : user, true)}>{user.stats.failingFeeds} 出错</button>}{!!user.stats?.pausedFeeds && <span className="user-paused">{user.stats.pausedFeeds} 暂停</span>}</div>
         <div className="user-cell" data-label="凭据">{user.stats ? `${user.stats.credentials} 组` : '—'}</div>
         <div className="user-cell user-seen" data-label="最近活跃"><span title={absoluteTime(user.stats?.lastSeenAt)}>{user.stats?.lastSeenAt ? relativeTime(user.stats.lastSeenAt) : '暂无会话'}</span><small title={absoluteTime(user.createdAt)}>创建于 {new Date(user.createdAt).toLocaleDateString('zh-CN')}</small></div>
         <div className="inline user-actions">
@@ -79,7 +80,7 @@ export function UsersPanel({ currentUserId, manage, changed, identityChanged }: 
           ]} />
         </div>
       </div>)}
-      {users.length > 0 && !shown.length && <p className="muted users-empty">没有匹配的用户</p>}
+      {users.length > 0 && !shown.length && <p className="muted users-empty">没有匹配的用户{onlyFailing && <> · <button type="button" className="link-button" onClick={() => setOnlyFailing(false)}>显示全部账号</button></>}</p>}
     </section>
     {deletion && <div className="modal-backdrop"><section className="panel settings-form delete-user-dialog" role="dialog" aria-modal="true" aria-label="永久删除用户">
       <h2>永久删除 {deletion.user.username}</h2><p>将删除 {deletion.feeds} 个订阅、{deletion.credentials} 个凭据、{deletion.jobs} 个批量任务，以及全部历史、个人设置和通知记录。原 RSS 地址将失效，此操作不可撤销。</p>
