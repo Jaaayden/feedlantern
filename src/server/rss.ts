@@ -51,6 +51,20 @@ export function publishedItems(feed: Feed, items: FeedItem[]): FeedItem[] {
   return (translationEnabled(feed) ? items.filter(item => item.translationStatus === 'success' && typeof item.contentHtml === 'string') : items).slice(0, 100);
 }
 
+function channelDescription(feed: Feed): string {
+  let host = feed.url;
+  try { host = new URL(feed.url).host; } catch { /* keep the raw value */ }
+  if (feed.sourceType !== 'rss') return `由 FeedLantern 从 ${host} 网页生成的订阅`;
+  return translationEnabled(feed) ? `由 FeedLantern 翻译的 ${host} RSS 订阅` : `由 FeedLantern 转发的 ${host} RSS 订阅`;
+}
+
+/** Readers such as Inoreader and NetNewsWire show `media:thumbnail` in list views. */
+function thumbnail(item: FeedItem, feed: Feed): string {
+  if (!item.image) return '';
+  const url = validHttpUrl(item.image, feed.url);
+  return url ? `<media:thumbnail url="${escapeAttribute(url)}"/>` : '';
+}
+
 export function renderRss(feed: Feed, items: FeedItem[], feedUrl: string): string {
   const buildDate = fixedDate(feed.lastSuccessAt ?? feed.createdAt, feed.createdAt);
   const renderedItems = publishedItems(feed, items).map((item) => {
@@ -65,18 +79,23 @@ export function renderRss(feed: Feed, items: FeedItem[], feedUrl: string): strin
       `<guid isPermaLink="false">${escapeXml(item.id)}</guid>`,
       `<description>${descriptionXml}</description>`,
       item.publishedAt ? `<pubDate>${escapeXml(fixedDate(item.publishedAt, item.firstSeenAt))}</pubDate>` : '',
+      thumbnail(item, feed),
       '</item>',
     ].join('');
   }).join('');
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
-    '<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">',
+    '<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/">',
     '<channel>',
     `<title>${escapeXml(feed.name)}</title>`,
     `<link>${escapeXml(feed.url)}</link>`,
-    `<description>${escapeXml(`FeedLantern feed: ${feed.name}`)}</description>`,
+    `<description>${escapeXml(channelDescription(feed))}</description>`,
     `<atom:link href="${escapeAttribute(feedUrl)}" rel="self" type="application/rss+xml"/>`,
     `<lastBuildDate>${escapeXml(buildDate)}</lastBuildDate>`,
+    '<generator>FeedLantern</generator>',
+    // Translated feeds publish Chinese (or Chinese-first bilingual) text.
+    translationEnabled(feed) ? '<language>zh-cn</language>' : '',
+    `<ttl>${Math.max(1, Math.round(feed.intervalMinutes))}</ttl>`,
     renderedItems,
     '</channel>',
     '</rss>',

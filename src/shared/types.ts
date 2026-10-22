@@ -131,6 +131,7 @@ export function translationEnabled(feed: Pick<FeedInput, 'sourceType' | 'transla
   return feed.translationMode === 'chinese' || feed.translationMode === 'bilingual' || feed.sourceType === 'rss' && feed.translationMode !== 'original';
 }
 
-export interface UserSummary { id: string; username: string; role: "admin" | "user"; enabled: boolean; createdAt: string; updatedAt: string }
+export interface UserStats { feeds: number; failingFeeds: number; pausedFeeds: number; credentials: number; lastSeenAt: string | null }
+export interface UserSummary { id: string; username: string; role: "admin" | "user"; enabled: boolean; createdAt: string; updatedAt: string; stats?: UserStats }
 
 export type BarkSummary = Omit<ApplicationSettings["bark"], "url"> & { configured: boolean; maskedUrl: string };

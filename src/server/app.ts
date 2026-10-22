@@ -50,6 +50,7 @@ import {
 } from './auth.js';
 import { getConfig, ensureDataDir, hasDist, isAllowedOrigin, type ConfigInput, type ServerConfig } from './config.js';
 import { renderRss, rssEtag } from './rss.js';
+import { etagMatches, renderRssPreview, wantsHtmlPreview } from './rss-preview.js';
 import { asInteger, describeError, asNonEmptyString, asOptionalString, asRecord, cookieMetadata, frameError, friendlyError, parseCredentialInput, parseFeedInput, parseHttpUrl, parseRules } from './validation.js';
 import { Store, type CredentialValue } from './store.js';
 
@@ -436,7 +437,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   };
   const credentialsGuard = (request: FastifyRequest) => { const actor = resourceGuard(request, 'credentials'); workspace(request, request.method === 'POST'); return actor; };
 
-  app.get('/api/users', async request => { adminGuard(request); return store.listUsers(); });
+  app.get('/api/users', async request => { adminGuard(request); return store.listUsersWithStats(); });
   app.post('/api/users', async request => {
     adminGuard(request);
     const { username, password } = asRecord(request.body);
@@ -1002,12 +1003,25 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (!feed) throw new AppError(404, 'Feed 不存在');
     const items = store.getItems(feed.id, 100);
     const publicUrl = `${currentConfig().publicOrigin}/feeds/${encodeURIComponent(feed.id)}/${encodeURIComponent(token)}.xml`;
-    const etag = rssEtag(feed, items);
+    const query = request.query as Record<string, unknown> | undefined;
+    const preview = wantsHtmlPreview(request.headers, query);
+    const etag = preview ? rssEtag(feed, items).replace(/"$/, '-html"') : rssEtag(feed, items);
     reply.header('Cache-Control', 'private, max-age=60');
     reply.header('Referrer-Policy', 'no-referrer');
+    reply.header('X-Robots-Tag', 'noindex, nofollow');
+    reply.header('X-Content-Type-Options', 'nosniff');
+    reply.header('Vary', 'Accept, Sec-Fetch-Dest, Sec-Fetch-Mode');
     reply.header('ETag', etag);
-    if (request.headers['if-none-match'] === etag) return reply.code(304).send();
-    return reply.type('application/rss+xml; charset=utf-8').send(renderRss(feed, items, publicUrl));
+    if (etagMatches(request.headers['if-none-match'], etag)) return reply.code(304).send();
+    if (preview) {
+      const page = renderRssPreview(feed, items, publicUrl);
+      reply.header('Content-Security-Policy', page.csp);
+      reply.header('X-Frame-Options', 'DENY');
+      return reply.type('text/html; charset=utf-8').send(page.html);
+    }
+    // A browser asking for the raw document gets an XML type it can display instead of downloading.
+    const raw = typeof query?.format === 'string' && request.headers['sec-fetch-dest'] === 'document';
+    return reply.type(raw ? 'application/xml; charset=utf-8' : 'application/rss+xml; charset=utf-8').send(renderRss(feed, items, publicUrl));
   });
 
   if (hasDist(config.distDir)) await app.register(fastifyStatic, { root: config.distDir, wildcard: false });

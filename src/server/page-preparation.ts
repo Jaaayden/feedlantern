@@ -14,9 +14,11 @@ const SCROLL_PREPARATION = String.raw`async () => {
     for (let step = 0; step < 20 && Date.now() - started < 8000; step++) {
       window.scrollBy({ left: 0, top: Math.max(1, innerHeight * 0.8), behavior: 'instant' });
       // Allow scroll/IntersectionObserver handlers to run at each viewport.
-      // Keep the longer grace period at the bottom for appended content.
+      // Sites often debounce reveals by ~250 ms; content stays in view for two
+      // steps, so 220 ms per step leaves margin on slow hosts. Keep the longer
+      // grace period at the bottom for appended content.
       const before = document.scrollingElement || document.documentElement;
-      await pause(scrollY + innerHeight >= before.scrollHeight - 2 ? 300 : 150);
+      await pause(scrollY + innerHeight >= before.scrollHeight - 2 ? 300 : 220);
       const root = document.scrollingElement || document.documentElement;
       const height = root.scrollHeight;
       const atBottom = scrollY + innerHeight >= height - 2;
