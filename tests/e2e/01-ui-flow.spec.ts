@@ -291,14 +291,18 @@ test('按住修饰键点击链接跳转后，可以以此页为源网址', async
   const linkNode = Number(Object.entries(frame.map!.links).find(([, href]) => href.endsWith('/div-cards'))![0]);
   const [lx, ly, lw, lh] = frame.map!.boxes.slice(linkNode * 5, linkNode * 5 + 4);
   const linkPoint = { x: (lx + lw / 2) * scale, y: (ly + lh / 2) * scale };
-  await image.hover({ position: linkPoint, modifiers: ['ControlOrMeta'] });
+  // Hold the key like a user would. `hover({ modifiers })` releases it right
+  // after moving, and link mode correctly ends on key release, so on a slow
+  // runner the outline could disappear before the assertion.
+  await page.keyboard.down('ControlOrMeta');
+  await image.hover({ position: linkPoint });
   await expect(page.locator('.hover-rect.link')).toBeVisible();
   await expect(page.locator('.hover-label')).toContainText('点击打开此链接');
-
-  // A plain click on a page that is not the source never picks.
-  await image.click({ position: linkPoint!, modifiers: ['ControlOrMeta'] });
+  await image.click({ position: linkPoint });
+  await page.keyboard.up('ControlOrMeta');
   await expect(page.getByText('画面已跳转到')).toBeVisible({ timeout: 45000 });
   await expect(page.getByRole('button', { name: '保存订阅', exact: true })).toBeDisabled();
+  // A plain click on a page that is not the source never picks.
   await image.click({ position: { x: 300 * scale, y: 300 * scale } });
   await expect(page.getByText('当前画面不是源网址')).toBeVisible();
 
