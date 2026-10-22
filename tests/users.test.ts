@@ -14,8 +14,8 @@ import type { FeedInput } from '../src/shared/types.js';
 const input: FeedInput = { name: 'private', url: 'https://example.test/articles', rules: { item: 'article', title: 'h2', link: 'a' }, credentialId: null, intervalMinutes: 60, waitMs: 0 };
 const item = { title: 'Original', link: 'https://example.test/one' };
 const browser: BrowserServiceLike = {
-  open: async options => ({ sessionId: randomUUID(), image: '', width: 1, height: 1, url: options.url, title: 'test' }),
-  snapshot: async id => ({ sessionId: id, image: '', width: 1, height: 1, url: input.url, title: 'test' }),
+  open: async options => ({ sessionId: randomUUID(), image: '', width: 1, height: 1, viewportHeight: 1, url: options.url, title: 'test' }),
+  snapshot: async id => ({ sessionId: id, image: '', width: 1, height: 1, viewportHeight: 1, url: input.url, title: 'test' }),
   async scroll(id) { return this.snapshot(id); }, async click(id) { return this.snapshot(id); },
   pick: async () => ({ selector: 'article', rects: [], count: 1, sampleText: '' }), extract: async () => [item],
   scrape: async () => [item], detect: async () => ({ candidates: [], recommendedId: null, warnings: [] }),

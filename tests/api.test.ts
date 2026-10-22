@@ -6,8 +6,8 @@ import { test } from 'node:test';
 import { createApp, Store, type BrowserServiceLike } from '../src/server/app.js';
 
 const fakeBrowser: BrowserServiceLike = {
-  async open(options) { return { sessionId: 'browser_test', image: '', width: 1, height: 1, url: options.url, title: 'test' }; },
-  async snapshot(_id = 'browser_test') { return { sessionId: 'browser_test', image: '', width: 1, height: 1, url: 'https://example.test', title: 'test' }; },
+  async open(options) { return { sessionId: 'browser_test', image: '', width: 1, height: 1, viewportHeight: 1, url: options.url, title: 'test' }; },
+  async snapshot(_id = 'browser_test') { return { sessionId: 'browser_test', image: '', width: 1, height: 1, viewportHeight: 1, url: 'https://example.test', title: 'test' }; },
   async scroll(_id = 'browser_test') { return this.snapshot(_id); }, async click(_id = 'browser_test') { return this.snapshot(_id); },
   async pick() { return { selector: '.item', rects: [], count: 0, sampleText: '' }; },
   async extract() { return []; }, async detect() { return { candidates: [], recommendedId: null, warnings: [] }; },

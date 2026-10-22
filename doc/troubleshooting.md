@@ -8,6 +8,8 @@
 | 请求来源/主机不允许 | 按 Nginx 模板覆盖 Host、X-Forwarded-Host 和 X-Forwarded-Proto；无需配置 PUBLIC_ORIGIN |
 | HTTPS 后无法登录 | 确认 Nginx 转发 X-Forwarded-Proto 为 https，浏览器 Cookie 为 Secure |
 | 日志提示未设置 TRUSTED_PROXIES，或所有人同时提示“登录尝试过于频繁” | 反代后默认把所有用户视为同一来源，8 次失败会锁定所有人 15 分钟。在“设置 → 服务器与网络”或 `.env` 的 `TRUSTED_PROXIES` 中填写直接代理的 IP（Docker 网桥可用 `docker network inspect` 查看网关地址），并让 Nginx 传递 X-Forwarded-For |
+| 提示“未找到 Chromium 浏览器” | 源码运行时在项目目录执行 `pnpm browser:install`；若 `.env` 设置了 `PLAYWRIGHT_BROWSERS_PATH=0`，浏览器装在 `node_modules` 里，重装依赖后需要再装一次（`PLAYWRIGHT_BROWSERS_PATH=0 pnpm browser:install`） |
+| 提示“网页操作失败，请检查目标页面和等待条件” | 这是原始错误无法完整显示时的通用提示；服务端日志会记录“打开网页失败：…”等原始错误（已隐藏网址参数和凭据） |
 | 识别超时 | 检查目标可达性、等待设置、Cookie；Nginx 等待时间不能短于实际排队与抓取时间 |
 | 没有列表或歧义 | 使用候选预览和调整匹配；页面改版需修复已保存规则 |
 | Cookie 无效 | 从已登录浏览器重新导入，检查域名、路径及过期时间 |

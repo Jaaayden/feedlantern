@@ -242,6 +242,10 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (requestUrl.pathname === '/hub') {
+    sendHtml(response, 200, page('Fixture hub', '<main><h1>Fixture hub</h1><p><a class="hub-link" href="/div-cards" style="display:inline-block;padding:12px 24px">Open the card list</a></p></main>'));
+    return;
+  }
   if (requestUrl.pathname === '/static-scroll') {
     sendHtml(response, 200, staticPage().replace('</main>', '<div style="height:1600px">Scroll fixture spacer</div></main>'));
     return;

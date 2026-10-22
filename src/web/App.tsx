@@ -9,6 +9,8 @@ import { BackupPanel } from './BackupPanel';
 import { BatchView } from './BatchView';
 import { FeedCollection } from './FeedCollection';
 import { FetchLogs } from './FetchLogs';
+import { PageScreen, linkModifier, type ScreenChoice } from './PageScreen';
+import { levelsBetween, liftNode } from '../shared/element-map';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type React from 'react';
 import type { FormEvent, ReactNode } from 'react';
@@ -21,7 +23,7 @@ import { readTheme, saveTheme, themeLabels } from './theme';
 import type { Theme } from './theme';
 import { api, onUnauthorized, setCsrfToken, setWorkspaceUser } from './api';
 import type { CredentialPayload } from './api';
-import type { AuthState, CredentialSummary, DetectionCandidate, DetectionResult, ExtractedItem, Feed, FeedInput, FeedItem, FieldName, Rect, RuleOrigins, ScreenFrame, SelectionRules } from '../shared/types';
+import type { AuthState, CredentialSummary, DetectionCandidate, DetectionResult, ExtractedItem, Feed, FeedInput, FeedItem, FieldName, PickResult, Rect, RuleOrigins, ScreenFrame, SelectionRules } from '../shared/types';
 
 type Notify = (message: string) => void;
 const fieldLabels: Record<'item' | FieldName, string> = { item: '条目容器', title: '标题', link: '链接', description: '摘要', image: '图片', date: '日期' };
@@ -115,16 +117,17 @@ export function Editor({ initial, draft, existing = [], submitFeed, saved, cance
   const [previewSignature, setPreviewSignature] = useState('');
   const [rects, setRects] = useState<Rect[]>([]);
   const [adjusting, setAdjusting] = useState(false);
-  const [browsing, setBrowsing] = useState(false);
+  // The frame shows a page reached by following a link, not the source URL.
+  const [navigated, setNavigated] = useState(false);
+  // Last picked element (and the element under the pointer at the time), for 扩大/缩小.
+  const [lastPick, setLastPick] = useState<{ base: number; node: number } | null>(null);
   const [target, setTarget] = useState<'item' | FieldName>('item');
-  const [ancestorLevel, setAncestorLevel] = useState(-1);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
   const [note, setNote] = useState('');
   const sessionRef = useRef<string | null>(null);
   const mountedRef = useRef(false);
   const previewSeq = useRef(0);
-  const imageRef = useRef<HTMLImageElement>(null);
   const currentKey = JSON.stringify([url, credentialId, waitMs, waitForSelector]);
   const sourceUnchanged = sourceKey === currentKey;
   useEffect(() => {
@@ -193,21 +196,23 @@ export function Editor({ initial, draft, existing = [], submitFeed, saved, cance
     else { setNote(result.warnings.join('；') || '发现多个可能的内容列表，请选择你想关注的一组。'); if (!initial) { setItems([]); setCandidateId(''); } }
     if (!result.candidates.length) setAdjusting(true);
   }
-  async function open(event?: FormEvent) {
+  async function open(event?: FormEvent, target = url) {
     event?.preventDefault(); setError(''); setNote(''); setBusy('正在打开网页并分析内容');
     try {
       if (sessionRef.current) { await api.browser.close(sessionRef.current).catch(() => {}); sessionRef.current = null; }
-      const result = await api.browser.open({ url, credentialId: credentialId || null, waitMs, waitForSelector: waitForSelector || undefined });
+      const result = await api.browser.open({ url: target, credentialId: credentialId || null, waitMs, waitForSelector: waitForSelector || undefined });
       if (!mountedRef.current) { await api.browser.close(result.sessionId).catch(() => {}); return; }
-      sessionRef.current = result.sessionId; setFrame(result); setSourceKey(currentKey); setRects([]);
-      if (!name) setName(result.title || hostLabel(url));
+      sessionRef.current = result.sessionId; setFrame(result); setSourceKey(JSON.stringify([target, credentialId, waitMs, waitForSelector])); setRects([]); setNavigated(false); setLastPick(null);
+      if (!name) setName(result.title || hostLabel(target));
       if (initial) { await preview(rules, result.sessionId); setNote('已载入保存的匹配规则。需要时可以重新识别。'); }
       else await detect(result.sessionId);
     } catch (error) { setFrame(null); setError(messageOf(error)); } finally { setBusy(''); }
   }
   async function rescan() { if (!frame) return; setBusy('正在重新识别'); setError(''); try { await detect(frame.sessionId); } catch (error) { setError(messageOf(error)); } finally { setBusy(''); } }
   useEffect(() => {
-    if (!frame || busy || !sourceUnchanged) return;
+    if (!frame || busy || !sourceUnchanged || navigated) return;
+    // A pick already returned the preview for exactly these rules.
+    if (previewSignature && previewSignature === rulesSignature(rules)) return;
     const timer = setTimeout(() => void preview(rules, frame.sessionId), 450);
     return () => clearTimeout(timer);
     // Preview only tracks edits; action handlers explicitly refresh on new frames.
@@ -226,26 +231,61 @@ export function Editor({ initial, draft, existing = [], submitFeed, saved, cance
   }
   async function frameAction(operation: () => Promise<ScreenFrame>) {
     setBusy('正在更新网页'); setError('');
-    try { const result = await operation(); setFrame(result); setRects([]); } catch (error) { setError(messageOf(error)); } finally { setBusy(''); }
+    try { const result = await operation(); setFrame(result); setRects([]); setLastPick(null); } catch (error) { setError(messageOf(error)); } finally { setBusy(''); }
   }
-  async function clickImage(event: React.MouseEvent<HTMLImageElement>) {
+  async function pickAt(choice: ScreenChoice) {
     if (!frame || busy) return;
-    const bounds = event.currentTarget.getBoundingClientRect();
-    const x = (event.clientX - bounds.left) * frame.width / bounds.width;
-    const y = (event.clientY - bounds.top) * frame.height / bounds.height;
-    if (browsing) {
-      setBusy('正在浏览'); setError('');
-      try { const result = await api.browser.click(frame.sessionId, x, y); setFrame(result); setRects([]); setItems([]); setPreviewSignature(''); setSourceKey(''); setNote('浏览操作未被记录。请将目标列表的直接网址填入上方，再打开并识别后保存。'); }
-      catch (error) { setError(messageOf(error)); } finally { setBusy(''); }
-      return;
-    }
+    if (navigated) { setNote('当前画面不是源网址。请先选择“以此页为源网址”，或返回源网址后再点选。'); return; }
     setBusy('正在定位内容'); setError('');
-    try { const picked = await api.browser.pick(frame.sessionId, { x, y, target, itemSelector: rules.item || undefined, ancestorLevel: ancestorLevel < 0 ? undefined : ancestorLevel }); changeRule(target, picked.selector); setRects(picked.rects); setNote(`${fieldLabels[target]}匹配 ${picked.count} 项。${picked.warning ?? ''}${picked.datePreview ? ` ${picked.datePreview.dateText} → ${dateLabel(picked.datePreview.publishedAt)}${picked.datePreview.publishedAtSource === 'relative' ? '（估算）' : ''}` : ''}`); await preview({ ...rules, [target]: picked.selector }, frame.sessionId); }
-    catch (error) { setError(messageOf(error)); } finally { setBusy(''); }
+    try {
+      const at = choice.node !== undefined ? { node: choice.node, ...(choice.exact ? { exact: true } : {}) } : { x: choice.x, y: choice.y };
+      // Sending the current rules makes the server preview them in the same request.
+      const picked = await api.browser.pick(frame.sessionId, { ...at, target, itemSelector: rules.item || undefined, rules });
+      applyPick(picked, choice.base);
+    } catch (error) { setError(messageOf(error)); } finally { setBusy(''); }
+  }
+  function applyPick(picked: PickResult, base?: number) {
+    const next = { ...rules, [target]: picked.selector };
+    previewSeq.current += 1;
+    setRules(next);
+    setOrigins(previous => ({ ...previous, [target]: 'manual' }));
+    setRects(picked.rects);
+    setLastPick(picked.node !== undefined ? { base: base ?? picked.node, node: picked.node } : null);
+    if (picked.items) { setItems(picked.items); setPreviewSignature(rulesSignature(next)); }
+    else { setItems([]); setPreviewSignature(''); }
+    if (picked.previewError) setError(picked.previewError);
+    setNote(`${fieldLabels[target]}匹配 ${picked.count} 项。${picked.warning ?? ''}${picked.datePreview ? ` ${picked.datePreview.dateText} → ${dateLabel(picked.datePreview.publishedAt)}${picked.datePreview.publishedAtSource === 'relative' ? '（估算）' : ''}` : ''}`);
+  }
+  // Widen or narrow the last pick along the chain from the pointed element outwards.
+  async function resize(delta: 1 | -1) {
+    const map = frame?.map;
+    if (!map || !lastPick) return;
+    let base = lastPick.base;
+    let level = levelsBetween(map, base, lastPick.node);
+    if (level < 0) { base = lastPick.node; level = 0; }
+    const node = liftNode(map, base, Math.max(0, level + delta));
+    if (node === lastPick.node) { setNote(delta > 0 ? '已经是最外层的元素。' : '已经是最内层的元素。'); return; }
+    await pickAt({ x: 0, y: 0, base, node, exact: true });
+  }
+  async function followLink(node: number, href: string | undefined) {
+    if (!frame || busy) return;
+    if (!href) { setNote(`这里不是链接。按住 ${linkModifier} 点击网页中的链接，可以跳转到对应页面。`); return; }
+    setBusy('正在打开链接'); setError('');
+    try {
+      const result = await api.browser.follow(frame.sessionId, node);
+      previewSeq.current += 1;
+      setFrame(result); setRects([]); setItems([]); setPreviewSignature(''); setLastPick(null); setNavigated(true); setNote('');
+    } catch (error) { setError(messageOf(error)); } finally { setBusy(''); }
+  }
+  function adoptCurrentPage() {
+    if (!frame) return;
+    const target = frame.url;
+    setUrl(target);
+    void open(undefined, target);
   }
   async function save(event: FormEvent) {
     event.preventDefault();
-    if (!sourceUnchanged || !items.length || previewSignature !== rulesSignature(rules)) {
+    if (navigated || !sourceUnchanged || !items.length || previewSignature !== rulesSignature(rules)) {
       if (sourceUnchanged && rulesSignature(rules) !== previewSignature) setNote('匹配规则正在重新预览，请稍候再保存。');
       return;
     }
@@ -262,8 +302,15 @@ export function Editor({ initial, draft, existing = [], submitFeed, saved, cance
     {!frame && !busy && <div className="editor-welcome"><div className="welcome-step"><span>01</span><Globe2 size={23} /><h3>打开网页</h3><p>支持动态内容与 Cookie 登录态</p></div><div className="welcome-step"><span>02</span><Sparkles size={23} /><h3>自动识别</h3><p>找到列表，匹配标题、图片与摘要</p></div><div className="welcome-step"><span>03</span><Rss size={23} /><h3>持续关注</h3><p>复制 RSS 地址到你喜欢的阅读器</p></div></div>}
     {frame && <><div className="result-toolbar"><div><span className={`badge ${chosen?.confidence === 'high' ? 'good' : ''}`}><Sparkles size={13} />{chosen?.confidence === 'high' ? '已自动匹配' : '匹配结果'}</span><span className="muted">{items.length} 条内容</span></div><div className="inline"><button type="button" className="button small" onClick={() => void rescan()} disabled={!!busy}><RefreshCw size={14} />重新识别</button><button type="button" className="button small" disabled={!!busy} onClick={() => setAdjusting(!adjusting)}><MousePointer2 size={14} />{adjusting ? '收起调整' : '调整匹配'}</button></div></div>{note && <div className="notice"><CircleHelp size={16} /><span>{note}</span></div>}{!sourceUnchanged && <div className="notice">网址或加载设置已变化，请重新打开网页后保存。</div>}
     {!!detection?.candidates.length && (detection.candidates.length > 1 || !candidateId) && <div className="candidate-grid">{detection.candidates.map(candidate => <button key={candidate.id} className={`candidate ${candidate.id === candidateId ? 'selected' : ''}`} disabled={!!busy} onClick={() => void applyCandidate(candidate)}><span className="inline"><Radio size={15} />{candidate.label}<span className="muted">{candidate.count} 条</span></span><strong>{candidate.items[0]?.title ?? '查看候选内容'}</strong><small>{candidate.confidence === 'high' ? '匹配明确' : '请检查样例'}</small></button>)}</div>}
-    {adjusting && <section className="adjust-panel"><div className="adjust-heading"><h2>在网页上调整匹配</h2><div className="inline"><button className={`button small ${browsing ? 'active' : ''}`} onClick={() => setBrowsing(!browsing)}>{browsing ? '浏览模式' : '选择模式'}</button><button className="icon-button" aria-label="向上滚动网页" disabled={!!busy} onClick={() => void frameAction(() => api.browser.scroll(frame.sessionId, -500))}><ArrowUp size={17} /></button><button className="icon-button" aria-label="向下滚动网页" disabled={!!busy} onClick={() => void frameAction(() => api.browser.scroll(frame.sessionId, 500))}><ArrowDown size={17} /></button><button className="icon-button" aria-label="更新网页画面" disabled={!!busy} onClick={() => void frameAction(() => api.browser.frame(frame.sessionId))}><RefreshCw size={16} /></button></div></div><div className="field-tabs">{keys.map(key => <button className={target === key ? 'selected' : ''} key={key} onClick={() => { setTarget(key); setBrowsing(false); }}>{fieldLabels[key]}{rules[key] && <Check size={12} />}</button>)}<label className="ancestor" title="点选后向外扩大几层作为匹配范围。点中的只是标题文字、但想选整篇条目时调大；“自动”适合大多数页面。">父级层数<select value={ancestorLevel} onChange={e => setAncestorLevel(Number(e.target.value))}>{[-1, 0, 1, 2, 3, 4, 5].map(n => <option key={n} value={n}>{n < 0 ? "自动" : n}</option>)}</select></label></div><p className="hint">{browsing ? '点击会与目标网页交互。浏览操作不保存为抓取步骤。' : `点击网页中的${fieldLabels[target]}，选择模式不会触发网页链接。`}</p><div className="browser-bar"><span /><span /><span /><code>{frame.url}</code></div><div className={`browser-screen ${browsing ? 'browse' : ''}`}><img ref={imageRef} src={frame.image} alt="目标网页预览" onClick={event => void clickImage(event)} draggable={false} />{rects.map((rect, index) => <span className="selection-rect" key={index} style={{ left: `${rect.x / frame.width * 100}%`, top: `${rect.y / frame.height * 100}%`, width: `${rect.width / frame.width * 100}%`, height: `${rect.height / frame.height * 100}%` }} />)}</div><details className="advanced"><summary>高级：编辑匹配规则<ChevronDown size={14} /></summary><div className="selector-grid">{keys.map(key => <Field key={key} label={`${fieldLabels[key]}选择器`} hint={origins[key] === 'manual' ? '手动配置 · 重新识别时保留' : '自动配置'}><input value={rules[key] ?? ''} onChange={e => changeRule(key, e.target.value)} placeholder={key === 'item' ? 'article' : key === 'title' || key === 'link' ? 'h2 a' : '可留空'} spellCheck={false} /></Field>)}</div>{chosen && <button type="button" className="button small" onClick={() => { if (confirm('使用此候选替换全部匹配规则，包括你手动修改的字段？')) void applyCandidate(chosen, true); }}>替换全部匹配</button>}</details></section>}
-    <div className="editor-results"><section className="panel"><div className="panel-heading"><h2>订阅预览</h2><span className="muted">与后台抓取使用相同规则</span></div><ItemPreview items={items} empty={detection?.candidates.length ? '选择候选列表，或调整匹配以查看内容' : '没有找到可靠列表，可以手动点选条目与字段'} /></section><form className="save-panel panel" onSubmit={save}><div className="panel-heading"><h2>保存订阅</h2><Rss size={18} /></div><Field label="订阅名称"><input required value={name} onChange={e => setName(e.target.value)} /></Field><Field label="刷新间隔（分钟）"><input type="number" required min={5} max={1440} value={intervalMinutes} onChange={e => setIntervalMinutes(Number(e.target.value))} /></Field><p className="hint">保存后会在后台定时更新。页面关闭不影响运行中的服务。</p><button className="button primary full" disabled={!!busy || !items.length || !sourceUnchanged || previewSignature !== rulesSignature(rules)}>{busy === '正在保存订阅' ? <Busy /> : <><Check size={16} />保存订阅</>}</button></form></div></>}
+    {adjusting && <section className="adjust-panel"><div className="adjust-heading"><h2>在网页上调整匹配</h2><div className="inline">{(frame.map ? frame.map.innerScroll : frame.height <= frame.viewportHeight) && <><button className="icon-button" aria-label="在网页内向上滚动" title="滚动网页内部的滚动区域" disabled={!!busy} onClick={() => void frameAction(() => api.browser.scroll(frame.sessionId, -500))}><ArrowUp size={17} /></button><button className="icon-button" aria-label="在网页内向下滚动" title="滚动网页内部的滚动区域" disabled={!!busy} onClick={() => void frameAction(() => api.browser.scroll(frame.sessionId, 500))}><ArrowDown size={17} /></button></>}<button className="icon-button" aria-label="更新网页画面" title="重新截取网页画面" disabled={!!busy} onClick={() => void frameAction(() => api.browser.frame(frame.sessionId))}><RefreshCw size={16} /></button></div></div>
+      <div className="field-tabs">{keys.map(key => <button className={target === key ? 'selected' : ''} key={key} onClick={() => { setTarget(key); setLastPick(null); }}>{fieldLabels[key]}{rules[key] && <Check size={12} />}</button>)}<span className="scope-controls"><button className="button small" disabled={!!busy || !lastPick} title="把刚才的选择扩大到外层元素（悬停时也可按 ↑）" onClick={() => void resize(1)}><ArrowUp size={14} />扩大</button><button className="button small" disabled={!!busy || !lastPick} title="把刚才的选择缩小到内层元素（悬停时也可按 ↓）" onClick={() => void resize(-1)}><ArrowDown size={14} />缩小</button></span></div>
+      <p className="hint">点击网页中的<strong>{fieldLabels[target]}</strong>。悬停时按 ↑ / ↓ 扩大或缩小范围；按住 {linkModifier} 点击链接可以跳转到该页。</p>
+      {navigated && <div className="notice navigated-notice" role="status"><Globe2 size={16} /><span>画面已跳转到 <code>{frame.url}</code>。要订阅这一页，请把它设为源网址。</span><span className="inline"><button className="button small primary" disabled={!!busy} onClick={adoptCurrentPage}>以此页为源网址</button><button className="button small" disabled={!!busy} onClick={() => void open()}>返回源网址</button></span></div>}
+      <div className="browser-bar"><span /><span /><span /><code>{frame.url}</code>{busy && <small className="browser-busy"><LoaderCircle size={13} className="spin" />{busy}</small>}</div>
+      <PageScreen frame={frame} rects={rects} disabled={!!busy} navigated={navigated} revealKey={[frame.image.length, frame.url, candidateId].join('|')} pick={choice => void pickAt(choice)} follow={(node, href) => void followLink(node, href)} />
+      {frame.truncated && <p className="hint">网页较长，这里只显示前 {frame.height} 像素。</p>}
+      <details className="advanced"><summary>高级：编辑匹配规则<ChevronDown size={14} /></summary><div className="selector-grid">{keys.map(key => <Field key={key} label={`${fieldLabels[key]}选择器`} hint={origins[key] === 'manual' ? '手动配置 · 重新识别时保留' : '自动配置'}><input value={rules[key] ?? ''} onChange={e => changeRule(key, e.target.value)} placeholder={key === 'item' ? 'article' : key === 'title' || key === 'link' ? 'h2 a' : '可留空'} spellCheck={false} /></Field>)}</div>{chosen && <button type="button" className="button small" onClick={() => { if (confirm('使用此候选替换全部匹配规则，包括你手动修改的字段？')) void applyCandidate(chosen, true); }}>替换全部匹配</button>}</details></section>}
+    <div className="editor-results"><section className="panel"><div className="panel-heading"><h2>订阅预览</h2><span className="muted">与后台抓取使用相同规则</span></div><ItemPreview items={items} empty={detection?.candidates.length ? '选择候选列表，或调整匹配以查看内容' : '没有找到可靠列表，可以手动点选条目与字段'} /></section><form className="save-panel panel" onSubmit={save}><div className="panel-heading"><h2>保存订阅</h2><Rss size={18} /></div><Field label="订阅名称"><input required value={name} onChange={e => setName(e.target.value)} /></Field><Field label="刷新间隔（分钟）"><input type="number" required min={5} max={1440} value={intervalMinutes} onChange={e => setIntervalMinutes(Number(e.target.value))} /></Field><p className="hint">保存后会在后台定时更新。页面关闭不影响运行中的服务。</p><button className="button primary full" disabled={!!busy || navigated || !items.length || !sourceUnchanged || previewSignature !== rulesSignature(rules)}>{busy === '正在保存订阅' ? <Busy /> : <><Check size={16} />保存订阅</>}</button></form></div></>}
   </>;
 }
 

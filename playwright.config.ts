@@ -12,8 +12,11 @@ const inheritedEnv = Object.fromEntries(
 );
 
 export const e2eDataDir = dataDir;
-export const e2eBaseUrl = 'http://127.0.0.1:4322';
-export const fixtureBaseUrl = 'http://127.0.0.1:8766';
+// Override with E2E_PORT / E2E_FIXTURE_PORT to run beside another instance.
+const backendPort = process.env.E2E_PORT ?? '4322';
+const fixturePort = process.env.E2E_FIXTURE_PORT ?? '8766';
+export const e2eBaseUrl = `http://127.0.0.1:${backendPort}`;
+export const fixtureBaseUrl = `http://127.0.0.1:${fixturePort}`;
 
 export default defineConfig({
   testDir: './tests/e2e',
@@ -49,10 +52,10 @@ export default defineConfig({
         NODE_ENV: 'test',
         BARK_URL: '',
         HOST: '127.0.0.1',
-        PORT: '4322',
+        PORT: backendPort,
         PUBLIC_ORIGIN: e2eBaseUrl,
         DATA_DIR: dataDir,
-        ALLOWED_TARGET_HOSTS: '127.0.0.1:8766',
+        ALLOWED_TARGET_HOSTS: `127.0.0.1:${fixturePort}`,
       },
     },
     {
@@ -62,7 +65,7 @@ export default defineConfig({
       url: `${fixtureBaseUrl}/health`,
       timeout: 30_000,
       reuseExistingServer: false,
-      env: { ...inheritedEnv, FIXTURE_HOST: '127.0.0.1', FIXTURE_PORT: '8766' },
+      env: { ...inheritedEnv, FIXTURE_HOST: '127.0.0.1', FIXTURE_PORT: fixturePort },
     },
   ],
 });

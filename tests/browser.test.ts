@@ -124,6 +124,7 @@ test('滚轮坐标支持独立滚动区域，截图保持完整视口', async ()
   try {
     const frame = await browser.open({url:`http://${host}`,waitMs:0});
     assert.equal(frame.width,1280); assert.equal(frame.height,800);
+    assert.equal(frame.map?.innerScroll, true, 'editor offers remote scrolling only for inner scroll areas');
     const moved = await browser.scroll(frame.sessionId,400,{x:200,y:200});
     assert.ok(Number(moved.title)>0);
     const back = await browser.scroll(frame.sessionId,-400,{x:200,y:200});
@@ -131,4 +132,50 @@ test('滚轮坐标支持独立滚动区域，截图保持完整视口', async ()
     await assert.rejects(browser.scroll(frame.sessionId,10,{x:NaN,y:0}), /有限数字/);
     await assert.rejects(browser.scroll(frame.sessionId,10,{x:1281,y:0}), /超出/);
   } finally { await browser.dispose(); server.closeAllConnections(); await new Promise<void>(resolve=>server.close(()=>resolve())); }
+});
+
+test('长网页一次截全、元素地图点选并同时预览、按住修饰键跳转链接', async () => {
+  const list = Array.from({ length: 6 }, (_, n) => `<article class="post"><h2 class="post-title"><a href="/post/${n + 1}">长页文章 ${n + 1}</a></h2><p>摘要 ${n + 1}</p></article>`).join('');
+  const server = createServer((request, response) => {
+    response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    if (request.url === '/next') { response.end('<title>next</title><h1>Next page</h1>'); return; }
+    response.end(`<!doctype html><style>body{margin:0}.hero{height:1200px}.post{height:180px}</style><title>long</title><div class="hero"><a id="next" href="/next">下一页</a></div><main>${list}</main>`);
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const host = `127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const browser = new BrowserService({ allowedHosts: [host] });
+  try {
+    const frame = await browser.open({ url: `http://${host}`, waitMs: 0 });
+    assert.equal(frame.viewportHeight, 800);
+    assert.equal(frame.map?.innerScroll, false);
+    assert.ok(frame.height > 2000, `captured ${frame.height}px`);
+    assert.ok(frame.map && frame.map.labels.length > 10);
+    const map = frame.map!;
+    const titleNode = map.labels.findIndex(label => label === 'h2.post-title');
+    assert.ok(titleNode >= 0);
+    const titleBox = map.boxes.slice(titleNode * 5, titleNode * 5 + 4);
+    assert.ok(titleBox[1] > 1200, 'element map uses document coordinates');
+
+    const item = await browser.pick(frame.sessionId, { node: titleNode, target: 'item', rules: {} });
+    assert.equal(item.count, 6);
+    assert.ok(item.rects.length === 6 && item.rects[0].y > 1200, 'highlights below the first viewport');
+    assert.equal(item.items, undefined, 'no preview until title and link exist');
+
+    const byPoint = await browser.pick(frame.sessionId, { x: titleBox[0] + 5, y: titleBox[1] + 5, target: 'title', itemSelector: item.selector, rules: { item: item.selector, link: 'a' } });
+    assert.equal(byPoint.count, 6);
+    assert.deepEqual(byPoint.items?.map(entry => entry.title), Array.from({ length: 6 }, (_, n) => `长页文章 ${n + 1}`));
+
+    const exact = await browser.pick(frame.sessionId, { node: titleNode, exact: true, target: 'item' });
+    assert.equal(exact.node, titleNode, 'exact keeps the chosen element instead of widening to the card');
+
+    await assert.rejects(browser.follow(frame.sessionId, 0), /不是可以打开的链接/, 'node 0 is the hero block, not a link');
+    const linkNode = Number(Object.entries(map.links).find(([, href]) => href.endsWith('/next'))?.[0]);
+    const next = await browser.follow(frame.sessionId, linkNode);
+    assert.equal(next.title, 'next');
+    assert.ok(next.url.endsWith('/next'));
+    await assert.rejects(browser.pick(frame.sessionId, { node: titleNode, target: 'item' }), /网页内容已经变化/);
+  } finally {
+    await browser.dispose(); server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
 });

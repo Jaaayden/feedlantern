@@ -55,7 +55,11 @@ Store 的无 owner 参数列表方法保留给整站后台调度和备份使用�
 | `GET/POST /api/backups/config` | 轻量配置导出/预览与确认导入 |
 | `/feeds/:id/:token.xml` | 无管理员登录的密钥授权 RSS 2.0 |
 
-`POST /api/browser/:id/scroll` 接受 `{deltaY,x?,y?}`，坐标须同时提供并位于远端视口内；省略时使用视口中心。截图仍为 data URL，编码改用 JPEG 质量 80。显式关闭编辑会话会取消进行中的操作并释放容量。
+`ScreenFrame` 是从页面顶部截取的整页 JPEG（质量 75，data URL，最高 8000 像素；更长时 `truncated: true`），`height` 为截图高度，`viewportHeight` 为远端视口高度。`map` 是元素地图：`boxes` 每 5 个数一组（x、y、宽、高、最近的上层元素序号，根为 -1），坐标相对整页顶部，另含 `labels`、`links`（仅 http/https）和 `innerScroll`。编辑器据此在本地完成悬停高亮、↑/↓ 调整范围和滚动。
+
+`POST /api/browser/:id/pick` 优先接受元素序号 `{node, exact?}`，也接受整页坐标 `{x, y}`；`exact: true` 保留所选元素，不自动扩展到重复条目或字段元素。带上 `rules` 时，同一请求按新选择器预览并返回 `items`（失败时为 `previewError`）。`POST /api/browser/:id/follow {node}` 在当前会话打开该元素或其上层元素的链接（受同样的网络策略限制）并返回新的 `ScreenFrame`。高亮框、自动识别和日期选区的坐标均相对整页顶部。
+
+`POST /api/browser/:id/scroll` 接受 `{deltaY,x?,y?}`，坐标须同时提供并位于远端视口内；省略时使用视口中心。编辑器只在 `map.innerScroll` 为真时用它滚动页面内部的滚动区域。显式关闭编辑会话会取消进行中的操作并释放容量。
 
 完整备份格式版本为 3（兼容导入 version 1、2），独立于数据库迁移版本；敏感值只在加密包内部携带可迁移明文，目标实例使用自己的主密钥重新加密。
 
