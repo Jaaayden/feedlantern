@@ -40,8 +40,9 @@ test('网络配置：设置中管理、编辑器预览与后台刷新经代理�
     await section.screenshot({ path: 'test-results/visual-qa/network-profiles.png' });
     await page.setViewportSize({ width: 390, height: 844 });
     await card.getByRole('button', { name: '编辑网络配置 E2E proxy' }).click();
+    await expect(page.getByRole('dialog', { name: '编辑网络配置' }).getByLabel('请求头 1 值')).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
-    await page.screenshot({ path: 'test-results/visual-qa/network-profile-form-mobile.png' });
+    await page.screenshot({ path: 'test-results/visual-qa/network-profile-form-mobile.png', animations: 'disabled' });
     await page.getByRole('dialog', { name: '编辑网络配置' }).getByRole('button', { name: '取消' }).click();
     await page.setViewportSize({ width: 1280, height: 900 });
     // Secrets are never sent back to the page.

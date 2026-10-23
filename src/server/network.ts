@@ -466,9 +466,17 @@ export async function createRestrictedForwardProxy(
       incoming.pipe(upstreamRequest);
     } catch (error) {
       const message = error instanceof Error ? error.message : '代理请求被阻止';
-      // Send the error first; a request body still arriving is dropped after it.
+      if (error instanceof ProxyConnectError) {
+        // An upstream proxy failure is answered with a readable 502, so the
+        // browser service can report the reason; a body still arriving is dropped.
+        writeProxyError(outgoing, 502, message);
+        if (!incoming.complete) outgoing.once('finish', () => abortIncoming(incoming));
+        return;
+      }
+      // A blocked target must fail as a network error, never as a page that
+      // loads: Chromium follows redirects to this proxy without the route guard.
+      abortIncoming(incoming);
       writeProxyError(outgoing, error instanceof NetworkPolicyError ? 403 : 502, message);
-      if (!incoming.complete) outgoing.once('finish', () => abortIncoming(incoming));
     }
   });
 

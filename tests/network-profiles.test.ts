@@ -193,3 +193,12 @@ test('日志与错误提示隐藏网址中的用户名和密码，包括 socks5 
   assert.match(logged, /socks5:\/\/\[已隐藏\]@proxy\.example:1080/);
   assert.doesNotMatch(friendlyError(new Error('connect socks5://alice:hunter2@proxy.example:1080'), 'x'), /hunter2|alice/);
 });
+
+test('被策略拦截的目标仍以断开连接失败，不会变成可打开的错误页（重定向不经过路由守卫）', async () => {
+  const upstream = await startHttpProxy();
+  const restricted = await createRestrictedForwardProxy({ allowedHosts: [`127.0.0.1:${upstream.port}`], upstream: { type: 'http', host: '127.0.0.1', port: upstream.port } });
+  try {
+    await assert.rejects(viaProxy(restricted.url, 'http://127.0.0.1:9/secret'), /socket hang up|ECONNRESET/);
+    assert.equal(upstream.connections, 0);
+  } finally { await restricted.close(); await upstream.close(); }
+});
