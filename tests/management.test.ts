@@ -32,7 +32,9 @@ test('新管理 API 权限、名称缓存、批量结果、配置合并及完整
     const bulk = await app.inject({ method: 'POST', url: '/api/feeds/bulk', headers, payload: { ids: [feed.id, 'missing'], action: 'pause' } });
     assert.deepEqual(bulk.json().results.map((r: { ok: boolean }) => r.ok), [true, false]);
     const config = (await app.inject({ url: '/api/backups/config', headers })).json();
-    assert.ok(!JSON.stringify(config).includes('token'));
+    // Feeds never carry their RSS token; notification channels (with their own `token` fields) are exported on purpose.
+    assert.ok(!JSON.stringify(config.feeds).includes('token'));
+    assert.ok(!JSON.stringify(config).includes(path.split('/').at(-1)!.replace(/\.xml$/, '')));
     const imported = await app.inject({ method: 'POST', url: '/api/backups/config', headers, payload: { archive: config, confirm: true } });
     assert.deepEqual(imported.json(), { created: 0, skipped: 1 });
     const archive = await app.inject({ method: 'POST', url: '/api/backups/export', headers, payload: { currentPassword: 'test-password', password: 'long-backup-password' } });
@@ -163,11 +165,11 @@ test('批量设置校验、权限、逐项结果与只更新指定字段', async
     assert.deepEqual(changed.json().results, [{ id: a.id, ok: true }, { id: b.id, ok: true }, { id: 'missing', ok: false, error: '订阅不存在' }]);
     for (const feed of [a, b]) {
       const after = store.getFeed(feed.id)!;
-      assert.equal(after.translationMode, 'chinese'); assert.equal(after.intervalMinutes, feed.intervalMinutes);
+      assert.equal(after.translationMode, 'translated'); assert.equal(after.intervalMinutes, feed.intervalMinutes);
       assert.equal(after.name, feed.name); assert.equal(after.nextFetchAt, feed.nextFetchAt);
     }
     await bulk({ intervalMinutes: 15 });
-    for (const id of [a.id, b.id]) { assert.equal(store.getFeed(id)!.intervalMinutes, 15); assert.equal(store.getFeed(id)!.translationMode, 'chinese'); }
+    for (const id of [a.id, b.id]) { assert.equal(store.getFeed(id)!.intervalMinutes, 15); assert.equal(store.getFeed(id)!.translationMode, 'translated'); }
     await bulk({ translationMode: 'bilingual', intervalMinutes: 30 });
     for (const id of [a.id, b.id]) { assert.equal(store.getFeed(id)!.intervalMinutes, 30); assert.equal(store.getFeed(id)!.translationMode, 'bilingual'); }
     assert.equal(store.getFeed(b.id)!.enabled, false);

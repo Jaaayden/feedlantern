@@ -183,22 +183,50 @@ test('完整备份跨密钥恢复网络配置与绑定；轻量配置只导出�
   } finally { await app.close(); store.close(); rmSync(appDir, { recursive: true, force: true }); }
 });
 
-test('迁移 17 可重复执行：版本号较低时补齐，较高时不降级', () => {
+test('迁移 17 按表和列是否存在判断，可重复执行，不降低版本号', () => {
   const dir = mkdtempSync(join(tmpdir(), 'fl-network-migrate-'));
   try {
     new Store(dir).close();
     const version = () => { const db = new DatabaseSync(join(dir, 'app.db')); try { return Number((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version); } finally { db.close(); } };
     const setVersion = (value: number) => { const db = new DatabaseSync(join(dir, 'app.db')); db.exec(`PRAGMA user_version=${value}`); db.close(); };
     assert.ok(version() >= 17);
+    // Like migrations 13–16, 17 checks for its own table and column: rerunning
+    // the older migrations on an up-to-date schema neither fails nor redoes it.
     setVersion(8);
     let store = new Store(dir);
     assert.deepEqual(store.listNetworkProfiles(), []);
     store.close();
-    assert.ok(version() >= 17);
     setVersion(18);
     store = new Store(dir);
     store.createNetworkProfile({ name: 'n', proxy: null, userAgent: 'x', headers: [] });
     store.close();
     assert.equal(version(), 18);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('访问令牌调用网络配置：按令牌所属用户隔离，read 令牌只能读取，管理员可指定工作台', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fl-network-token-'));
+  const store = new Store(dir);
+  store.createAdmin('admin', 'admin-password');
+  const alice = store.createUser('alice', 'alice-password'), bob = store.createUser('bob', 'bob-password');
+  const app = await createApp({ dataDir: dir, store, browserService: recordingBrowser([]), startScheduler: false });
+  const session = (username: string) => { const s = store.createSession(username, 60_000); return { ...base, cookie: `feedlantern_session=${s.id}`, 'x-csrf-token': s.csrfToken }; };
+  const mint = async (username: string, scope: 'read' | 'write') => (await app.inject({ method: 'POST', url: '/api/tokens', headers: session(username), payload: { name: `${username}-${scope}`, scope } })).json().secret as string;
+  const bearer = (secret: string, extra: Record<string, string> = {}) => ({ authorization: `Bearer ${secret}`, ...extra });
+  try {
+    const bobProfile = store.createNetworkProfile({ name: 'bob', proxy: null, userAgent: 'Bob/1', headers: [{ name: 'X-Key', value: 'bob-secret' }] }, bob.id);
+    const write = await mint('alice', 'write'), read = await mint('alice', 'read'), admin = await mint('admin', 'write');
+    const created = await app.inject({ method: 'POST', url: '/api/network-profiles', headers: bearer(write), payload: { name: 'alice', userAgent: 'Alice/1', headers: [{ name: 'X-Key', value: 'alice-secret' }] } });
+    assert.equal(created.statusCode, 200, created.body);
+    assert.ok(store.owns('network_profiles', created.json().id, alice.id));
+    const listed = await app.inject({ url: '/api/network-profiles', headers: bearer(read) });
+    assert.deepEqual(listed.json().map((p: { name: string }) => p.name), ['alice']);
+    assert.doesNotMatch(listed.body, /alice-secret|bob-secret/);
+    assert.equal((await app.inject({ method: 'POST', url: '/api/network-profiles', headers: bearer(read), payload: { name: 'x', userAgent: 'x' } })).statusCode, 403);
+    assert.equal((await app.inject({ method: 'POST', url: `/api/network-profiles/${created.json().id}/test`, headers: bearer(read), payload: { url: 'https://example.test/' } })).statusCode, 403);
+    assert.equal((await app.inject({ method: 'DELETE', url: `/api/network-profiles/${bobProfile.id}`, headers: bearer(write) })).statusCode, 404);
+    assert.equal((await app.inject({ method: 'POST', url: '/api/feeds', headers: bearer(write), payload: { name: 'x', url: 'https://example.test/', networkProfileId: bobProfile.id, rules: { item: 'a', title: 'a', link: 'a' } } })).statusCode, 404);
+    assert.equal((await app.inject({ url: '/api/network-profiles', headers: bearer(write, { 'x-feedlantern-user': bob.id }) })).statusCode, 403);
+    assert.deepEqual((await app.inject({ url: '/api/network-profiles', headers: bearer(admin, { 'x-feedlantern-user': bob.id }) })).json().map((p: { name: string }) => p.name), ['bob']);
+  } finally { await app.close(); store.close(); rmSync(dir, { recursive: true, force: true }); }
 });

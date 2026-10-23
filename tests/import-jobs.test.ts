@@ -85,14 +85,14 @@ test('RSS 批量导入读取一次、保留模式、失败重试，并与网页�
     if (entry.url.includes('bad') && fail) throw Error('invalid RSS');
     return { title: 'RSS source', etag: 'one', items: [{ key: 'one', title: 'Hello', link: 'https://example.test/a', html: '<p>English</p>' }] };
   }, () => wake++);
-  const entry = { url: 'https://example.test/feed', credentialId: null, intervalMinutes: 30, sourceType: 'rss' as const, translationMode: 'chinese' as const };
+  const entry = { url: 'https://example.test/feed', credentialId: null, intervalMinutes: 30, sourceType: 'rss' as const, translationMode: 'translated' as const };
   try {
     store.createFeed({ name: 'Website', ...entry, sourceType: 'website', waitMs: 0, rules: { item: 'article', title: 'h2', link: 'a' } });
     const job = jobs.create([entry, entry, { ...entry, url: 'https://example.test/bad' }]);
     await until(() => jobs.get(job.id).entries.every(e => ['created', 'failed'].includes(e.state)));
     assert.equal(calls, 2); assert.equal(wake, 1); assert.equal(jobs.get(job.id).entries.length, 2);
     const feed = store.getFeed(jobs.get(job.id).entries[0].feedId!)!;
-    assert.equal(feed.translationMode, 'chinese'); assert.equal(feed.sourceType, 'rss');
+    assert.equal(feed.translationMode, 'translated'); assert.equal(feed.sourceType, 'rss');
     assert.equal(store.translations.stats(feed.id).pending, 1); assert.equal(store.translations.sourceState(feed.id).etag, 'one');
     assert.equal(jobs.create([entry]).entries[0].state, 'existing');
     fail = false; jobs.update(job.id, 'retry');

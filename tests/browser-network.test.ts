@@ -98,3 +98,45 @@ test('Chromium 经代理失败时给出代理原因；未加入白名单的内�
     await proxy.close(); await target.close();
   }
 });
+
+test('多页采集的每一页都沿用订阅的代理、UA 和请求头，翻页仍经过网络安全拦截', async () => {
+  const target = await startTarget((request, response) => {
+    const url = new URL(request.url ?? '/', 'http://x');
+    const page = Number(url.searchParams.get('page') ?? 1);
+    const next = url.pathname === '/internal' ? 'http://10.0.0.9/next' : page < 2 ? `/list?page=${page + 1}` : '';
+    response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    response.end(`<title>page ${page}</title><main>${[1, 2, 3].map(n => `<article><h2><a href="/item/${page}-${n}">Item ${page}-${n}</a></h2></article>`).join('')}</main>${next ? `<a class="next" rel="next" href="${next}">Next</a>` : ''}`);
+  });
+  const proxy = await startHttpProxy({ username: 'pager', password: 'pager-pass' });
+  const browser = new BrowserService({ allowedHosts: [target.host, `127.0.0.1:${proxy.port}`] });
+  const network: FetchNetworkOptions = { proxy: { type: 'http', host: '127.0.0.1', port: proxy.port, username: 'pager', password: 'pager-pass' }, userAgent: 'FeedLanternPager/1', referer: 'https://ref.pager.test/', headers: [{ name: 'X-Pager', value: 'pager-token' }] };
+  const rules = { item: 'article', title: 'h2', link: 'a' };
+  const pagination = { mode: 'next' as const, nextSelector: 'a.next', maxPages: 3, delayMs: 2000 };
+  try {
+    let report: { stop: string; pages: Array<{ page: number }> } | undefined;
+    const items = await browser.scrape({ url: `http://${target.host}/list?page=1`, waitMs: 0, rules, pagination, network, onReport: value => { report = value; } });
+    assert.deepEqual(items.map(item => item.title), ['Item 1-1', 'Item 1-2', 'Item 1-3', 'Item 2-1', 'Item 2-2', 'Item 2-3']);
+    assert.equal(report?.pages.length, 2);
+    const pages = target.requests.filter(r => r.path.startsWith('/list'));
+    assert.deepEqual(pages.map(r => r.path), ['/list?page=1', '/list?page=2']);
+    for (const request of pages) {
+      assert.equal(request.headers['user-agent'], 'FeedLanternPager/1');
+      assert.equal(request.headers['x-pager'], 'pager-token');
+    }
+    // Page 1 carries the profile's Referer; page 2 is reached from page 1.
+    assert.equal(pages[0].headers.referer, 'https://ref.pager.test/');
+    assert.equal(pages[1].headers.referer, `http://${target.host}/list?page=1`);
+    assert.equal(proxy.log.filter(entry => entry.ok).length, target.requests.length, '每一页都经过订阅的代理');
+
+    // A "next page" pointing at a private address is still blocked, and never reaches the proxy.
+    const before = proxy.log.length;
+    let blocked: { stop: string } | undefined;
+    const kept = await browser.scrape({ url: `http://${target.host}/internal?page=1`, waitMs: 0, rules, pagination, network, onReport: value => { blocked = value; } });
+    assert.equal(kept.length, 3);
+    assert.equal(blocked?.stop, 'blocked');
+    assert.ok(proxy.log.slice(before).every(entry => entry.target === target.host));
+  } finally {
+    await browser.dispose();
+    await proxy.close(); await target.close();
+  }
+});

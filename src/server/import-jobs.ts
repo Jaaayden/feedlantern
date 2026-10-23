@@ -1,7 +1,10 @@
 import type { SourceResult } from './rss-source.js';
 import { siteKey } from './task-pool.js';
 import { randomUUID } from 'node:crypto';
-import type { DetectionResult, Feed, FeedInput, ImportEntry, ImportJob } from '../shared/types.js';
+import type { DetectionResult, Feed, FeedInput, ImportEntry, ImportJob, TranslationMode } from '../shared/types.js';
+
+/** Jobs saved before 0.7 call the translation-only mode `chinese`. */
+const translationMode = (entry: Pick<ImportEntry, 'translationMode'>): TranslationMode => (entry.translationMode as string) === 'chinese' ? 'translated' : entry.translationMode ?? 'bilingual';
 import type { Store } from './store.js';
 import { AppError } from './auth.js';
 
@@ -35,7 +38,7 @@ export class ImportJobs {
   }
   stop() { this.stopped = true; }
   setConcurrency(value: number) { this.concurrency = value; }
-  create(entries: Array<Pick<ImportEntry, 'url' | 'credentialId' | 'networkProfileId' | 'intervalMinutes' | 'sourceType' | 'translationMode'>>, ownerId = 'admin', actorId = ownerId): ImportJob {
+  create(entries: Array<Pick<ImportEntry, 'url' | 'credentialId' | 'networkProfileId' | 'intervalMinutes' | 'sourceType' | 'translationMode' | 'targetLanguage' | 'translationProvider'>>, ownerId = 'admin', actorId = ownerId): ImportJob {
     if (this.store.listImportJobs().filter(j => j.entries.some(e => ['queued', 'running'].includes(e.state))).length >= 10) throw new AppError(429, '请等待现有批量任务完成');
     const job: ImportJob = { actorId, ownerId, id: randomUUID(), createdAt: new Date().toISOString(), entries: [] };
     const seen = new Set<string>();
@@ -89,7 +92,7 @@ export class ImportJobs {
       return this.complete(job, entry, input, items, startedAt, performance.now() - started);
     }, [siteKey(input.url)]);
   }
-  private existing(url: string, entry: Pick<ImportEntry, 'sourceType' | 'translationMode'>, ownerId = 'admin'): Feed | undefined { return this.store.listFeeds(ownerId).find(f => normalizeSource(f.url) === url && (f.sourceType ?? 'website') === (entry.sourceType ?? 'website') && (entry.sourceType !== 'rss' || (f.translationMode ?? 'bilingual') === (entry.translationMode ?? 'bilingual'))); }
+  private existing(url: string, entry: Pick<ImportEntry, 'sourceType' | 'translationMode' | 'targetLanguage'>, ownerId = 'admin'): Feed | undefined { return this.store.listFeeds(ownerId).find(f => normalizeSource(f.url) === url && (f.sourceType ?? 'website') === (entry.sourceType ?? 'website') && (entry.sourceType !== 'rss' || (f.translationMode ?? 'bilingual') === translationMode(entry) && (f.targetLanguage ?? 'zh-CN') === (entry.targetLanguage ?? 'zh-CN'))); }
   private complete(job: ImportJob, entry: ImportEntry, input: FeedInput, items: import('../shared/types.js').ExtractedItem[], startedAt: string, durationMs: number, rss?: SourceResult) {
     return this.store.transaction(() => {
       const existing = this.existing(entry.url, entry, job.ownerId);
@@ -165,7 +168,7 @@ export class ImportJobs {
               const rss = await this.loadRss(entry, this.signal(job));
               if (!stillActive()) { this.requeue(job.id, entry.id); return; }
               entry.title = rss.title;
-              this.complete(current, entry, { sourceType: 'rss', translationMode: entry.translationMode ?? 'bilingual', name: (rss.title.trim() || new URL(entry.url).host).slice(0, 200), url: entry.url, credentialId: null, networkProfileId: entry.networkProfileId ?? null, intervalMinutes: entry.intervalMinutes, waitMs: 0, rules: { item: '', title: '', link: '' } }, [], startedAt, performance.now() - started, rss);
+              this.complete(current, entry, { sourceType: 'rss', translationMode: translationMode(entry), targetLanguage: entry.targetLanguage ?? 'zh-CN', translationProvider: entry.translationProvider ?? null, name: (rss.title.trim() || new URL(entry.url).host).slice(0, 200), url: entry.url, credentialId: null, networkProfileId: entry.networkProfileId ?? null, intervalMinutes: entry.intervalMinutes, waitMs: 0, rules: { item: '', title: '', link: '' } }, [], startedAt, performance.now() - started, rss);
               this.wakeTranslation?.();
               return;
             }
