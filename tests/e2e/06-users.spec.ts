@@ -36,6 +36,9 @@ test('管理员创建、停用、启用和重置用户；普通用户独立使�
     await reader.reload();
     await expect(reader.getByText(`Reader feed ${username}`, { exact: true })).toBeVisible();
     await reader.getByRole('button', { name: '设置', exact: true }).click();
+    // Instance-wide groups are admin-only; an ordinary account starts at its notifications.
+    await expect(reader.getByRole('navigation', { name: '设置分组' }).getByRole('button', { name: '翻译服务' })).toHaveCount(0);
+    await reader.getByRole('navigation', { name: '设置分组' }).getByRole('button', { name: '账号与密码', exact: true }).click();
     await expect(reader.getByRole('heading', { name: '修改密码', exact: true })).toBeVisible();
     await expect(reader.getByRole('heading', { name: '备份', exact: true })).toHaveCount(0);
     expect((await reader.request.get('/api/settings')).status()).toBe(403);
@@ -83,7 +86,7 @@ test('管理员切换用户工作台、配置个人通知、改名和永久删�
     await expect(page.getByRole('menuitem', { name: new RegExp(names[1]) })).toBeVisible();
     await page.keyboard.press('Escape');
     await page.getByRole('button', { name: '设置', exact: true }).click();
-    await expect(page.getByRole('form', { name: '应用设置' })).toHaveCount(0);
+    await expect(page.getByRole('navigation', { name: '设置分组' }).getByRole('button', { name: '服务器与网络' })).toHaveCount(0);
     const notifications = page.getByRole('region', { name: '个人通知' }), bark = notifications.getByRole('form', { name: 'Bark 渠道' });
     await expect(notifications).toContainText(`接收账号：${names[0]}`);
     await bark.getByLabel('Bark 推送地址').fill('https://example.test/workspace-test-key');

@@ -64,7 +64,7 @@ test('访问令牌调用记录：展开查看、按状态筛选、失败高亮�
     expect((await script.get('/api/feeds/missing-feed')).status()).toBe(404);
   } finally { await script.dispose(); }
 
-  await page.goto('/#/settings');
+  await page.goto('/#/settings/tokens');
   const panel = page.getByRole('region', { name: '访问令牌' });
   const row = panel.getByRole('listitem', { name: `令牌 ${name}` });
   await expect(row).toContainText('24 小时 3 次');
@@ -102,7 +102,7 @@ test('访问令牌调用记录：展开查看、按状态筛选、失败高亮�
     const ownerSecret = (await ownerToken.json()).secret;
     expect((await owner.get('/api/feeds', { headers: { Authorization: `Bearer ${ownerSecret}` } })).status()).toBe(200);
   } finally { await owner.dispose(); }
-  await page.goto(`/#/u/${userId}/settings`);
+  await page.goto(`/#/u/${userId}/settings/tokens`);
   const theirs = page.getByRole('region', { name: '访问令牌' });
   await expect(theirs).toContainText(`${username} 的访问令牌和调用记录，只能查看`);
   await expect(theirs.getByRole('button', { name: '创建令牌' })).toHaveCount(0);

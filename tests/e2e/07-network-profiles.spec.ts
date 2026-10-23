@@ -15,6 +15,7 @@ test('网络配置：设置中管理、编辑器预览与后台刷新经代理�
   try {
     await page.goto('/');
     await page.getByRole('button', { name: '设置', exact: true }).click();
+    await page.getByRole('navigation', { name: '设置分组' }).getByRole('button', { name: '网络配置', exact: true }).click();
     const section = page.getByRole('region', { name: '网络配置' });
     await section.getByRole('button', { name: '添加网络配置' }).first().click();
     const dialog = page.getByRole('dialog', { name: '添加网络配置' });

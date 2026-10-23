@@ -669,14 +669,14 @@ section[aria-label="订阅集合"] > p.muted { padding: 30px; text-align: center
 .settings-form details { margin: 0; }
 .settings-form summary { font-size: 13px; font-weight: 600; color: var(--ink-2); cursor: pointer; }
 
-/* Wide-screen two-column layout for instance + notification settings */
+/* Wide-screen two-column layout for notification settings */
 @media (min-width: 1280px) {
-  .application-settings > fieldset, .personal-bark > fieldset {
+  .personal-bark > fieldset {
     grid-template-columns: 220px minmax(0, 1fr); column-gap: 32px; row-gap: 0;
   }
-  .application-settings > fieldset > legend, .personal-bark > fieldset > legend { grid-column: 1; grid-row: 1 / span 30; align-self: start; }
-  .application-settings > fieldset > :not(legend), .personal-bark > fieldset > :not(legend) { grid-column: 2; }
-  .application-settings > fieldset > :not(legend) ~ :not(legend), .personal-bark > fieldset > :not(legend) ~ :not(legend) { margin-top: 16px; }
+  .personal-bark > fieldset > legend { grid-column: 1; grid-row: 1 / span 30; align-self: start; }
+  .personal-bark > fieldset > :not(legend) { grid-column: 2; }
+  .personal-bark > fieldset > :not(legend) ~ :not(legend) { margin-top: 16px; }
 }
 
 .settings-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 380px); gap: 20px; align-items: start; }
@@ -1426,12 +1426,14 @@ button.card-error:hover { text-decoration: underline; text-underline-offset: 3px
 .crash .inline { justify-content: center; margin-top: 6px; }
 
 /* Long settings forms keep their save button in reach */
-.application-settings > .button.primary, .personal-bark > .button.primary {
+.personal-bark > .button.primary {
   position: sticky; bottom: 18px; z-index: 5;
   box-shadow: 0 12px 28px -10px rgba(10, 28, 21, .5), 0 0 0 6px var(--surface);
 }
+.application-settings > .settings-actions.is-dirty { position: sticky; bottom: 18px; z-index: 5; justify-self: start; margin: -6px; padding: 6px; border-radius: calc(var(--r-md) + 6px); background: var(--surface); }
+.application-settings > .settings-actions.is-dirty > .button.primary { box-shadow: 0 12px 28px -10px rgba(10, 28, 21, .5); }
 @media (max-width: 760px) {
-  .application-settings > .button.primary, .personal-bark > .button.primary { bottom: calc(86px + env(safe-area-inset-bottom)); }
+  .personal-bark > .button.primary, .application-settings > .settings-actions.is-dirty { bottom: calc(86px + env(safe-area-inset-bottom)); }
 }
 .duplicate-note { margin-bottom: 14px; }
 .cookie-help { margin: -6px 0 0; padding: 10px 14px; border-radius: var(--r-md); background: var(--surface-2); border: 1px solid var(--line); }
@@ -1714,3 +1716,31 @@ button.card-warning:hover { text-decoration: underline; text-underline-offset: 3
 .settings-diff { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: fixed; }
 .settings-diff th, .settings-diff td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line, rgba(127, 127, 127, 0.25)); overflow-wrap: anywhere; vertical-align: top; }
 .settings-diff th { color: var(--ink-2); font-weight: 600; }
+
+/* ---------- Settings pages & translation service cards ---------- */
+.settings-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.application-settings > .panel-heading .badge.warn { height: 22px; }
+.service-cards { gap: 12px; }
+.service-card { border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface-2); overflow: hidden; transition: border-color .15s, box-shadow .2s; }
+.service-card.is-default { border-color: var(--glow-line); box-shadow: 0 0 0 3px var(--glow-soft); }
+.service-card-head { display: flex; align-items: center; gap: 10px; padding: 4px 12px 4px 4px; }
+.service-card-toggle {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; padding: 10px 10px 10px 12px;
+  border: 0; border-radius: var(--r-md); background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.service-card-toggle:hover { background: var(--surface-hover); }
+.service-card-title { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.service-card-title strong { font-size: 14.5px; font-weight: 650; color: var(--ink); }
+.service-card-title small { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.service-card-badges { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.badge.default { background: var(--glow-soft); color: var(--accent-ink); border-color: var(--glow-line); }
+.service-card-toggle .chevron { flex: none; color: var(--faint); transition: transform .2s var(--ease); }
+.service-card-toggle[aria-expanded="true"] .chevron { transform: rotate(180deg); }
+.service-card-note { margin: -4px 16px 12px; font-size: 12.5px; color: var(--muted); }
+.service-card-body { display: grid; gap: 16px; padding: 16px 16px 18px; border-top: 1px solid var(--line); background: var(--surface); }
+.service-test { flex-wrap: wrap; }
+@media (max-width: 760px) {
+  .service-card-head { flex-wrap: wrap; padding: 4px 4px 10px; }
+  .service-card-head > .button { margin-left: 12px; }
+  .service-card-toggle { flex-basis: 100%; }
+}

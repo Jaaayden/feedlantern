@@ -181,7 +181,7 @@ export function ApplicationSettingsPanel({ group, revision, onDirty }: { group: 
       <p className="hint">容器端口映射、数据卷目录和浏览器安装位置由部署环境管理，不随应用配置更改。</p>
     </fieldset>}
     {error && <p className="error-note" role="alert">{error}</p>}{message && <p role="status">{message}</p>}
-    <div className="settings-actions">
+    <div className={`settings-actions${dirty ? ' is-dirty' : ''}`}>
       <button className="button primary" disabled={busy || !dirty}>{busy ? '正在保存…' : `保存${title}`}</button>
       {dirty && <button type="button" className="button" disabled={busy} onClick={() => { setValue(saved); setClearKey({ deepl: false, openai: false }); setMessage(''); setError(''); }}>放弃修改</button>}
     </div>

@@ -36,8 +36,8 @@ export function providerRate(settings: TranslationSettings, provider: Translatio
 
 /** Why a service cannot be used yet, or undefined when it is ready. */
 export function providerProblem(settings: TranslationSettings, provider: TranslationProviderId): string | undefined {
-  if (provider === 'deepl' && !settings.deepl.apiKey) return 'DeepL 尚未配置 API Key，请管理员在“设置 → 应用设置 → 翻译服务”中填写';
-  if (provider === 'openai' && (!settings.openai.baseUrl || !settings.openai.model)) return 'OpenAI 兼容接口尚未配置接口地址和模型，请管理员在“设置 → 应用设置 → 翻译服务”中填写';
+  if (provider === 'deepl' && !settings.deepl.apiKey) return 'DeepL 尚未配置 API Key，请管理员在“设置 → 翻译服务”中填写';
+  if (provider === 'openai' && (!settings.openai.baseUrl || !settings.openai.model)) return 'OpenAI 兼容接口尚未配置接口地址和模型，请管理员在“设置 → 翻译服务”中填写';
   return undefined;
 }
 
