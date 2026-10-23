@@ -15,9 +15,12 @@ export interface UpstreamProxy {
 
 /** Raised for every upstream proxy failure. Messages never contain credentials. */
 export class ProxyConnectError extends Error {
-  constructor(message: string) {
+  /** The proxy works, but could not reach this target address; another address may. */
+  readonly targetFailed: boolean;
+  constructor(message: string, targetFailed = false) {
     super(message);
     this.name = 'ProxyConnectError';
+    this.targetFailed = targetFailed;
   }
 }
 
@@ -115,7 +118,7 @@ async function httpConnect(socket: Socket, proxy: UpstreamProxy, authority: stri
       ? `代理服务器 ${label} 要求认证（HTTP 407），请在网络配置中填写代理用户名和密码`
       : `代理认证失败（HTTP 407），请检查网络配置中的代理用户名和密码`);
   }
-  if (!status.startsWith('2')) throw new ProxyConnectError(`代理服务器 ${label} 拒绝连接目标（HTTP ${status}）`);
+  if (!status.startsWith('2')) throw new ProxyConnectError(`代理服务器 ${label} 拒绝连接目标（HTTP ${status}）`, true);
 }
 
 async function socksConnect(socket: Socket, proxy: UpstreamProxy, address: string, port: number, label: string): Promise<void> {
@@ -146,7 +149,26 @@ async function socksConnect(socket: Socket, proxy: UpstreamProxy, address: strin
     return data.length >= length ? length : undefined;
   }).catch(() => { throw invalid(); });
   if (reply[0] !== 5) throw invalid();
-  if (reply[1] !== 0) throw new ProxyConnectError(`SOCKS5 代理 ${label} 无法连接目标：${socksReplies[reply[1]] ?? `错误码 ${reply[1]}`}`);
+  // 1 (general failure) and 2 (ruleset) are about the proxy; the rest are about this address.
+  if (reply[1] !== 0) throw new ProxyConnectError(`SOCKS5 代理 ${label} 无法连接目标：${socksReplies[reply[1]] ?? `错误码 ${reply[1]}`}`, reply[1] >= 3);
+}
+
+/**
+ * Tries each checked address of a target in order, like a browser does when
+ * a host has both IPv6 and IPv4 addresses. Only a failure to reach that
+ * address moves on; proxy errors (unreachable, login) are reported at once.
+ */
+export async function openTunnelToAny(proxy: UpstreamProxy, proxyAddress: string, addresses: readonly string[], port: number, signal?: AbortSignal): Promise<Socket> {
+  let last: unknown;
+  for (const address of addresses) {
+    try {
+      return await openTunnel(proxy, proxyAddress, address, port, signal);
+    } catch (error) {
+      last = error;
+      if (!(error instanceof ProxyConnectError) || !error.targetFailed) throw error;
+    }
+  }
+  throw last ?? new ProxyConnectError(`代理服务器 ${proxyLabel(proxy)} 无法连接目标`, true);
 }
 
 /**

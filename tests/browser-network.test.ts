@@ -59,8 +59,9 @@ test('Chromium 每个上下文独立使用自己的代理、UA、Referer 和请�
     }
     // Every request of a profile went through that profile's proxy, with its
     // own login, and nothing else did.
-    assert.equal(proxyA.log.length, byProfile('a').length + thirdBy('a').length);
-    assert.equal(proxyB.log.length, byProfile('b').length + thirdBy('b').length);
+    // Failed attempts (localhost's ::1 on Linux, where the targets listen on IPv4 only) are retried on IPv4.
+    assert.equal(proxyA.log.filter(entry => entry.ok).length, byProfile('a').length + thirdBy('a').length);
+    assert.equal(proxyB.log.filter(entry => entry.ok).length, byProfile('b').length + thirdBy('b').length);
     assert.ok(proxyA.log.every(entry => entry.auth === `Basic ${Buffer.from('user-a:pass-a').toString('base64')}`));
     assert.ok(proxyB.log.every(entry => entry.user === 'user-b'));
 

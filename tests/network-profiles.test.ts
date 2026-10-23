@@ -112,7 +112,9 @@ test('SOCKS5 代理带认证抓取 RSS；重定向到其他网站时不再携带
     const network = { proxy: { type: 'socks5' as const, host: '127.0.0.1', port: upstream.port, username: 'bob', password: 'pw' }, headers: [{ name: 'X-Secret', value: 'only-first' }] };
     const result = await fetchSource(`http://${first.host}/`, policy, { network });
     assert.equal(result.title, 'Proxy feed');
-    assert.deepEqual(upstream.log.map(entry => [entry.target, entry.user]), [[first.host, 'bob'], [`127.0.0.1:${other.port}`, 'bob']]);
+    // localhost may resolve to ::1 first (Linux); that attempt fails and the IPv4 address is used.
+    assert.deepEqual(upstream.log.filter(entry => entry.ok).map(entry => [entry.target, entry.user]), [[first.host, 'bob'], [`127.0.0.1:${other.port}`, 'bob']]);
+    assert.ok(upstream.log.every(entry => entry.user === 'bob' && /^(127\.0\.0\.1|\[::1\]):\d+$/.test(entry.target)));
     assert.equal(first.requests[0].headers['x-secret'], 'only-first');
     assert.equal(other.requests[0].headers['x-secret'], undefined);
     assert.equal(other.requests[0].host, `localhost:${other.port}`);
@@ -202,3 +204,31 @@ test('被策略拦截的目标仍以断开连接失败，不会变成可打开�
     assert.equal(upstream.connections, 0);
   } finally { await restricted.close(); await upstream.close(); }
 });
+
+/** Resolves dual.test to IPv6 loopback first, then IPv4, on every platform. */
+class DualStackPolicy extends NetworkPolicy {
+  override async resolveForConnection(raw: string) {
+    const url = new URL(raw);
+    if (url.hostname !== 'dual.test') return super.resolveForConnection(raw);
+    return { url, address: '::1', addresses: ['::1', '127.0.0.1'] };
+  }
+}
+
+for (const kind of ['http', 'socks5'] as const) {
+  test(`${kind} 代理：目标有 IPv6 和 IPv4 地址时，IPv6 不通就改用 IPv4；代理本身的故障不重试`, async () => {
+    const target = await startTarget((_request, response) => { response.writeHead(200, { 'content-type': 'application/rss+xml' }); response.end(rssBody); });
+    const upstream = kind === 'http' ? await startHttpProxy({ username: 'u', password: 'p' }) : await startSocksProxy({ username: 'u', password: 'p' });
+    try {
+      const policy = new DualStackPolicy({ allowedHosts: [`127.0.0.1:${upstream.port}`] });
+      const proxy = { type: kind, host: '127.0.0.1', port: upstream.port, username: 'u', password: 'p' };
+      // The target listens on IPv4 only, so the IPv6 attempt is refused by the target.
+      const result = await fetchSource(`http://dual.test:${target.port}/feed.xml`, policy, { network: { proxy } });
+      assert.equal(result.title, 'Proxy feed');
+      assert.deepEqual(upstream.log.map(entry => [entry.target, entry.ok]), [[`[::1]:${target.port}`, false], [`127.0.0.1:${target.port}`, true]]);
+      assert.equal(target.requests[0].host, `dual.test:${target.port}`);
+      const before = upstream.log.length;
+      await assert.rejects(fetchSource(`http://dual.test:${target.port}/feed.xml`, policy, { network: { proxy: { ...proxy, password: 'wrong' } } }), /认证失败/);
+      assert.equal(upstream.log.length - before, 1, '认证失败不应换地址重试');
+    } finally { await upstream.close(); await target.close(); }
+  });
+}

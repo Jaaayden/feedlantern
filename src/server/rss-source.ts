@@ -7,7 +7,7 @@ import { XMLParser, XMLValidator } from 'fast-xml-parser';
 import sanitizeHtml from 'sanitize-html';
 import { NetworkPolicy } from './network.js';
 import { scopedHeaders, type FetchNetworkOptions } from './fetch-options.js';
-import { openTunnel } from './upstream-proxy.js';
+import { openTunnelToAny } from './upstream-proxy.js';
 
 export interface SourceItem { key: string; title: string; link: string; html: string; publishedAt?: string }
 export interface SourceResult { title: string; items: SourceItem[]; etag?: string; modified?: string; unchanged?: boolean }
@@ -78,14 +78,16 @@ interface RawResponse { status: number; location?: string; body: string; etag?: 
  * One HTTP request to the checked address, directly or through the feed's
  * upstream proxy. The proxy address passes the same policy as targets.
  */
-async function requestOnce(url: URL, address: string, policy: NetworkPolicy, headers: Record<string, string>, signal: AbortSignal, network?: FetchNetworkOptions, maxBytes = 5_000_000): Promise<RawResponse> {
+async function requestOnce(url: URL, addresses: readonly string[], policy: NetworkPolicy, headers: Record<string, string>, signal: AbortSignal, network?: FetchNetworkOptions, maxBytes = 5_000_000): Promise<RawResponse> {
   const port = url.port ? Number(url.port) : url.protocol === 'https:' ? 443 : 80;
   let tunnel: Socket | undefined;
   if (network?.proxy) {
     const proxyAddress = await policy.resolveProxy(network.proxy);
     signal.throwIfAborted();
-    tunnel = await openTunnel(network.proxy, proxyAddress, address, port, signal);
+    tunnel = await openTunnelToAny(network.proxy, proxyAddress, addresses, port, signal);
   }
+  // A direct connection keeps the previous behaviour: the first checked address.
+  const address = addresses[0];
   const hostname = url.hostname.replace(/^\[|\]$/g, '');
   return new Promise<RawResponse>((resolve, reject) => {
     const connection = tunnel
@@ -133,10 +135,10 @@ export async function fetchSource(raw: string, policy: NetworkPolicy, options: S
   const signal = AbortSignal.any([AbortSignal.timeout(20_000), ...(options.signal ? [options.signal] : [])]);
   let target = raw;
   for (let redirects = 0; redirects <= 5; redirects++) {
-    const { url, address } = await abortable(policy.resolveForConnection(target), signal);
+    const { url, address, addresses = [address] } = await abortable(policy.resolveForConnection(target), signal);
     signal.throwIfAborted();
     const headers = { ...requestHeaders(target, raw, options.network, 'application/rss+xml, application/atom+xml, application/xml, text/xml'), ...(options.etag ? { 'if-none-match': options.etag } : {}), ...(options.modified ? { 'if-modified-since': options.modified } : {}) };
-    const response = await requestOnce(url, address, policy, headers, signal, options.network);
+    const response = await requestOnce(url, addresses, policy, headers, signal, options.network);
     if ([301, 302, 303, 307, 308].includes(response.status) && response.location) { target = new URL(response.location, target).href; continue; }
     if (response.status === 304) return { title: '', items: [], unchanged: true };
     if (response.status !== 200) throw Error(`RSS 获取失败（HTTP ${response.status}）`);
@@ -148,8 +150,8 @@ export async function fetchSource(raw: string, policy: NetworkPolicy, options: S
 /** One GET with a network profile applied, for the profile's connection test. Redirects are not followed. */
 export async function probeTarget(raw: string, policy: NetworkPolicy, network: FetchNetworkOptions | undefined, signal?: AbortSignal): Promise<{ status: number }> {
   const combined = AbortSignal.any([AbortSignal.timeout(20_000), ...(signal ? [signal] : [])]);
-  const { url, address } = await abortable(policy.resolveForConnection(raw), combined);
-  const response = await requestOnce(url, address, policy, requestHeaders(raw, raw, network, 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'), combined, network, 1_000_000).catch(error => {
+  const { url, address, addresses = [address] } = await abortable(policy.resolveForConnection(raw), combined);
+  const response = await requestOnce(url, addresses, policy, requestHeaders(raw, raw, network, 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'), combined, network, 1_000_000).catch(error => {
     if (error instanceof Error && /超过 5 MB/.test(error.message)) return { status: 200, body: '' } as RawResponse;
     throw error;
   });

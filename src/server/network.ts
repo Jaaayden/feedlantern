@@ -11,7 +11,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import ipaddr from 'ipaddr.js';
 import type { BrowserContext } from 'playwright';
 import { headerScopeMatches, type CustomHeader } from './fetch-options.js';
-import { formatHost, openTunnel, ProxyConnectError, proxyLabel, type UpstreamProxy } from './upstream-proxy.js';
+import { formatHost, openTunnelToAny, ProxyConnectError, proxyLabel, type UpstreamProxy } from './upstream-proxy.js';
 
 export interface NetworkPolicyOptions {
   /** Opt in for hosts using a local fake-IP DNS proxy. Results remain checked. */
@@ -222,14 +222,14 @@ export class NetworkPolicy {
   }
 
   /** Resolve and return the exact address used by the restricted proxy. */
-  async resolveForConnection(rawUrl: string): Promise<{ url: URL; address: string }> {
+  async resolveForConnection(rawUrl: string): Promise<{ url: URL; address: string; addresses?: string[] }> {
     const url = parseUrl(rawUrl);
     const explicit = isExplicitlyAllowed(url, this.allowedHosts);
     if (!explicit) await this.assertAllowed(rawUrl);
-    const addresses = await this.lookupCached(url.hostname);
-    const address = addresses.find(item => explicit || !isPrivateOrSpecialAddress(item));
-    if (!address) throw new NetworkPolicyError(`目标主机没有可连接的公网地址：${url.hostname}`, rawUrl);
-    return { url, address };
+    const addresses = (await this.lookupCached(url.hostname)).filter(item => explicit || !isPrivateOrSpecialAddress(item));
+    if (!addresses.length) throw new NetworkPolicyError(`目标主机没有可连接的公网地址：${url.hostname}`, rawUrl);
+    // `addresses` are all checked; tunnels through a profile proxy try each in turn.
+    return { url, address: addresses[0], addresses };
   }
 
   /**
@@ -379,11 +379,11 @@ export async function createRestrictedForwardProxy(
     return actual.length === expectedAuth.length && timingSafeEqual(actual, expectedAuth);
   };
   /** A socket to the checked target address, direct or through the upstream proxy. */
-  const dial = async (address: string, port: number): Promise<Socket> => {
+  const dial = async (addresses: readonly string[], port: number): Promise<Socket> => {
     if (!upstream) throw new Error('no upstream');
     try {
       const proxyAddress = await policy.resolveProxy(upstream);
-      return await openTunnel(upstream, proxyAddress, address, port);
+      return await openTunnelToAny(upstream, proxyAddress, addresses, port);
     } catch (error) {
       if (error instanceof ProxyConnectError || error instanceof NetworkPolicyError) lastError = error.message;
       throw error;
@@ -420,7 +420,7 @@ export async function createRestrictedForwardProxy(
       delete headers['keep-alive'];
       delete headers['upgrade'];
       headers.host = target.host;
-      const tunnel = upstream ? await dial(connection.address, port) : undefined;
+      const tunnel = upstream ? await dial(connection.addresses ?? [connection.address], port) : undefined;
       if (incoming.destroyed || outgoing.destroyed) { tunnel?.destroy(); return; }
       const upstreamRequest = httpRequest({
         protocol: 'http:',
@@ -508,7 +508,7 @@ export async function createRestrictedForwardProxy(
       if (!validPort(port)) throw new NetworkPolicyError('CONNECT 目标端口无效');
       if (client.destroyed) return;
       if (upstream) {
-        const tunnel = await dial(connection.address, port);
+        const tunnel = await dial(connection.addresses ?? [connection.address], port);
         sockets.add(tunnel);
         remote = tunnel;
         if (closed || client.destroyed) return closeBoth();

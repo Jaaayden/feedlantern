@@ -2,7 +2,9 @@
 import { createServer as createHttpServer, type IncomingHttpHeaders, type RequestListener, type Server } from 'node:http';
 import { createServer as createNetServer, connect as netConnect, type AddressInfo, type Socket } from 'node:net';
 
-export interface ProxyLogEntry { target: string; auth?: string; user?: string }
+/** One CONNECT request; `ok` once the proxy reached the target, false when it could not. */
+export interface ProxyLogEntry { target: string; auth?: string; user?: string; ok?: boolean }
+const LOOPBACK = new Set(['127.0.0.1', '::1']);
 export interface TestProxy { port: number; url: string; log: ProxyLogEntry[]; connections: number; close(): Promise<void> }
 
 function track(server: { on(event: 'connection', listener: (socket: Socket) => void): unknown }) {
@@ -20,21 +22,30 @@ export async function startHttpProxy(login?: { username: string; password: strin
   server.on('connection', () => { proxy.connections++; });
   server.on('connect', (request, client: Socket, head) => {
     const auth = request.headers['proxy-authorization'];
-    proxy.log.push({ target: request.url ?? '', ...(auth ? { auth } : {}) });
+    const entry: ProxyLogEntry = { target: request.url ?? '', ...(auth ? { auth } : {}) };
+    proxy.log.push(entry);
+    client.on('error', () => client.destroy());
     if (expected && auth !== expected) {
       client.end('HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm="test"\r\nContent-Length: 0\r\n\r\n');
       return;
     }
-    const [host, port] = (request.url ?? '').split(/:(?=\d+$)/);
-    if (host !== '127.0.0.1') { client.end('HTTP/1.1 403 Forbidden\r\n\r\n'); return; }
-    const upstream = netConnect(Number(port), host, () => {
+    // host:port, or [v6]:port.
+    const match = /^(?:\[([^\]]+)\]|([^:]+)):(\d+)$/.exec(request.url ?? '');
+    const host = match?.[1] ?? match?.[2] ?? '';
+    if (!LOOPBACK.has(host)) { entry.ok = false; client.end('HTTP/1.1 403 Forbidden\r\n\r\n'); return; }
+    const upstream = netConnect(Number(match![3]), host, () => {
+      entry.ok = true;
       client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
       if (head.length) upstream.write(head);
       client.pipe(upstream); upstream.pipe(client);
     });
     sockets.add(upstream);
-    upstream.on('error', () => client.destroy());
-    client.on('error', () => upstream.destroy());
+    upstream.on('error', () => {
+      if (entry.ok) { client.destroy(); return; }
+      entry.ok = false;
+      client.end('HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n');
+    });
+    client.on('close', () => upstream.destroy());
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   proxy.port = (server.address() as AddressInfo).port;
@@ -73,22 +84,35 @@ export async function startSocksProxy(login?: { username: string; password: stri
         client.write(Buffer.from([1, 0]));
         stage = 'request';
       }
-      if (stage === 'request' && buffer.length >= 10 && buffer[3] === 1) {
-        const address = [...buffer.subarray(4, 8)].join('.');
-        const port = buffer.readUInt16BE(8);
-        const rest = buffer.subarray(10);
+      if (stage === 'request' && buffer.length >= 5) {
+        // ATYP 1 = IPv4, 3 = domain name, 4 = IPv6.
+        const type = buffer[3];
+        const length = type === 1 ? 10 : type === 4 ? 22 : type === 3 ? 7 + buffer[4] : -1;
+        if (length < 0) { client.end(Buffer.from([5, 8, 0, 1, 0, 0, 0, 0, 0, 0])); return; }
+        if (buffer.length < length) return;
+        const address = type === 1 ? [...buffer.subarray(4, 8)].join('.')
+          : type === 4 ? Array.from({ length: 8 }, (_, i) => buffer.readUInt16BE(4 + i * 2).toString(16)).join(':').replace(/^0:0:0:0:0:0:0:1$/, '::1')
+          : buffer.subarray(5, 5 + buffer[4]).toString();
+        const port = buffer.readUInt16BE(length - 2);
+        const rest = buffer.subarray(length);
         stage = 'open';
         client.off('data', onData);
-        proxy.log.push({ target: `${address}:${port}`, ...(user ? { user } : {}) });
-        const upstream = netConnect(port, address, () => {
+        const entry: ProxyLogEntry = { target: `${type === 4 ? `[${address}]` : address}:${port}`, ...(user ? { user } : {}) };
+        proxy.log.push(entry);
+        const host = address === 'localhost' ? '127.0.0.1' : address;
+        if (!LOOPBACK.has(host)) { entry.ok = false; client.end(Buffer.from([5, 2, 0, 1, 0, 0, 0, 0, 0, 0])); return; }
+        const upstream = netConnect(port, host, () => {
+          entry.ok = true;
           client.write(Buffer.from([5, 0, 0, 1, 127, 0, 0, 1, 0, 0]));
           if (rest.length) upstream.write(rest);
           client.pipe(upstream); upstream.pipe(client);
         });
-        upstream.on('error', () => { client.end(Buffer.from([5, 5, 0, 1, 0, 0, 0, 0, 0, 0])); });
+        upstream.on('error', () => {
+          if (entry.ok) { client.destroy(); return; }
+          entry.ok = false;
+          client.end(Buffer.from([5, 5, 0, 1, 0, 0, 0, 0, 0, 0]));
+        });
         client.on('close', () => upstream.destroy());
-      } else if (stage === 'request' && buffer.length >= 4 && buffer[3] !== 1) {
-        client.end(Buffer.from([5, 8, 0, 1, 0, 0, 0, 0, 0, 0]));
       }
     });
   });
