@@ -9,6 +9,7 @@ import { escapeXml, sanitizeDescription } from './rss.js';
 import { TRANSLATION_CACHE_LIMIT } from './backups.js';
 import { NetworkPolicy } from './network.js';
 import { TranslationError, deeplEndpoints, deeplEngine, keepWhitespace, openaiEngine, providerProblem, providerRate, retryAfterMs, type TranslationEngine, type TranslationSettings } from './translation-providers.js';
+import { storedItemLimit } from './feed-output.js';
 
 export const TRANSLATION_EVENTS_PER_FEED = 200;
 import { defaultApplicationSettings, isTargetLanguage, isTranslationProvider, type Feed, type FeedItem, type TargetLanguage, type TranslationProviderId, type TranslationRate } from '../shared/types.js';
@@ -141,7 +142,7 @@ export class RssTranslations {
         ON CONFLICT(item_id) DO UPDATE SET revision=excluded.revision,body_json=excluded.body_json,status='pending',attempts=0,next_at=0,error=NULL`)
         .run(id, feed.id, randomUUID(), JSON.stringify({ html: item.html }));
     }
-    this.db.prepare('DELETE FROM feed_items WHERE feed_id=? AND id NOT IN (SELECT id FROM feed_items WHERE feed_id=? ORDER BY first_seen_at DESC,rowid ASC LIMIT 100)').run(feed.id, feed.id);
+    this.db.prepare('DELETE FROM feed_items WHERE feed_id=? AND id NOT IN (SELECT id FROM feed_items WHERE feed_id=? ORDER BY first_seen_at DESC,rowid ASC LIMIT ?)').run(feed.id, feed.id, storedItemLimit(feed));
     return { itemCount: items.length, newItemCount };
   }
   decorate(feed: Feed, items: FeedItem[]): FeedItem[] {

@@ -1,7 +1,8 @@
 import { targetLanguages, translationEnabled } from '../shared/types.js';
 import { safeHtml } from './rss-source.js';
 import { createHash } from 'node:crypto';
-import type { Feed, FeedItem } from '../shared/types.js';
+import { classifyItems } from './feed-output.js';
+import type { Feed, FeedFormat, FeedItem } from '../shared/types.js';
 
 export function escapeXml(value: string): string {
   return value
@@ -46,9 +47,27 @@ function fixedDate(value: string | undefined, fallback: string): string {
   return Number.isNaN(parsed.getTime()) ? new Date(0).toUTCString() : parsed.toUTCString();
 }
 
-/** Management can show drafts; public RSS only contains complete translations. */
+/**
+ * Management can show drafts; public feeds only contain complete
+ * translations that pass the item filter, up to the feed's output limit.
+ */
 export function publishedItems(feed: Feed, items: FeedItem[]): FeedItem[] {
-  return (translationEnabled(feed) ? items.filter(item => item.translationStatus === 'success' && typeof item.contentHtml === 'string') : items).slice(0, 100);
+  const { statuses } = classifyItems(feed, items);
+  return items.filter((_, index) => statuses[index] === 'published');
+}
+
+function isoDate(value: string | undefined, fallback: string): string {
+  const parsed = value ? new Date(value) : new Date(fallback);
+  return Number.isNaN(parsed.getTime()) ? new Date(0).toISOString() : parsed.toISOString();
+}
+
+/** The HTML body every format publishes for an item. */
+function itemHtml(feed: Feed, item: FeedItem): string {
+  return translationEnabled(feed) && item.contentHtml !== undefined ? safeHtml(item.contentHtml, item.link) : feed.sourceType === 'rss' ? safeHtml(item.description ?? '', item.link) : sanitizeDescription(item.description, feed.url, item.image);
+}
+
+function feedHost(feed: Feed): string {
+  try { return new URL(feed.url).host; } catch { return feed.url; }
 }
 
 function channelDescription(feed: Feed): string {
@@ -65,15 +84,19 @@ function thumbnail(item: FeedItem, feed: Feed): string {
   return url ? `<media:thumbnail url="${escapeAttribute(url)}"/>` : '';
 }
 
-/** RSS `language` code of a translated feed's output; formats other than RSS should use the same value. */
+/** RSS `language` code of a translated feed's output (lower case, e.g. `zh-cn`). */
 export function feedLanguage(feed: Pick<Feed, 'targetLanguage'>): string {
   return targetLanguages[feed.targetLanguage ?? 'zh-CN'].rss;
+}
+/** BCP 47 tag of a translated feed's output, for Atom `xml:lang` and JSON Feed `language`. */
+export function feedLanguageTag(feed: Pick<Feed, 'targetLanguage'>): string {
+  return feed.targetLanguage ?? 'zh-CN';
 }
 
 export function renderRss(feed: Feed, items: FeedItem[], feedUrl: string): string {
   const buildDate = fixedDate(feed.lastSuccessAt ?? feed.createdAt, feed.createdAt);
   const renderedItems = publishedItems(feed, items).map((item) => {
-    const description = translationEnabled(feed) && item.contentHtml !== undefined ? safeHtml(item.contentHtml, item.link) : feed.sourceType === 'rss' ? safeHtml(item.description ?? '', item.link) : sanitizeDescription(item.description, feed.url, item.image);
+    const description = itemHtml(feed, item);
     // RSS readers interpret the XML-decoded description as HTML. Preserve the
     // HTML escaping through XML decoding, even when there is no image.
     const descriptionXml = cdata(description);
@@ -107,8 +130,70 @@ export function renderRss(feed: Feed, items: FeedItem[], feedUrl: string): strin
   ].join('');
 }
 
-export function rssEtag(feed: Feed, items: FeedItem[]): string {
+/** Atom 1.0 (RFC 4287) with the same items as the RSS output. */
+export function renderAtom(feed: Feed, items: FeedItem[], feedUrl: string): string {
+  const entries = publishedItems(feed, items).map(item => {
+    const link = validHttpUrl(item.link);
+    return [
+      '<entry>',
+      `<id>${escapeXml(`urn:feedlantern:item:${item.id}`)}</id>`,
+      `<title type="text">${escapeXml(item.title)}</title>`,
+      link ? `<link rel="alternate" type="text/html" href="${escapeAttribute(link)}"/>` : '',
+      `<updated>${isoDate(item.publishedAt, item.firstSeenAt)}</updated>`,
+      item.publishedAt ? `<published>${isoDate(item.publishedAt, item.firstSeenAt)}</published>` : '',
+      `<content type="html">${escapeXml(itemHtml(feed, item))}</content>`,
+      thumbnail(item, feed),
+      '</entry>',
+    ].join('');
+  }).join('');
+  const site = validHttpUrl(feed.url);
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    `<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/"${translationEnabled(feed) ? ` xml:lang="${feedLanguageTag(feed)}"` : ''}>`,
+    `<id>${escapeXml(`urn:feedlantern:feed:${feed.id}`)}</id>`,
+    `<title type="text">${escapeXml(feed.name)}</title>`,
+    `<subtitle type="text">${escapeXml(channelDescription(feed))}</subtitle>`,
+    `<updated>${isoDate(feed.lastSuccessAt ?? feed.createdAt, feed.createdAt)}</updated>`,
+    `<link rel="self" type="application/atom+xml" href="${escapeAttribute(feedUrl)}"/>`,
+    site ? `<link rel="alternate" type="text/html" href="${escapeAttribute(site)}"/>` : '',
+    `<author><name>${escapeXml(feedHost(feed))}</name></author>`,
+    '<generator>FeedLantern</generator>',
+    entries,
+    '</feed>',
+  ].join('');
+}
+
+/** JSON Feed 1.1 (https://jsonfeed.org/version/1.1) with the same items as the RSS output. */
+export function renderJsonFeed(feed: Feed, items: FeedItem[], feedUrl: string): string {
+  const site = validHttpUrl(feed.url);
+  const document = {
+    version: 'https://jsonfeed.org/version/1.1',
+    title: feed.name,
+    ...(site ? { home_page_url: site } : {}),
+    feed_url: feedUrl,
+    description: channelDescription(feed),
+    ...(translationEnabled(feed) ? { language: feedLanguageTag(feed) } : {}),
+    authors: [{ name: feedHost(feed) }],
+    items: publishedItems(feed, items).map(item => {
+      const link = validHttpUrl(item.link);
+      const image = item.image ? validHttpUrl(item.image, feed.url) : null;
+      return {
+        id: item.id,
+        ...(link ? { url: link } : {}),
+        title: item.title,
+        content_html: itemHtml(feed, item),
+        ...(item.publishedAt ? { date_published: isoDate(item.publishedAt, item.firstSeenAt) } : {}),
+        ...(image ? { image } : {}),
+      };
+    }),
+  };
+  // Escape characters that matter if a browser ever treats the body as HTML or script.
+  return JSON.stringify(document).replace(/[<>&\u2028\u2029]/g, char => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`);
+}
+
+export function rssEtag(feed: Feed, items: FeedItem[], format: FeedFormat = 'rss'): string {
   const material = JSON.stringify({
+    ...(format === 'rss' ? {} : { format }),
     id: feed.id,
     name: feed.name,
     channelTitle: feed.name,

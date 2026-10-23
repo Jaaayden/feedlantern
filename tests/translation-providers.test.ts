@@ -11,7 +11,7 @@ import { NetworkPolicy } from '../src/server/network.js';
 import { TranslationWorker } from '../src/server/rss-translation.js';
 import { TranslationError, deeplEngine, openaiEngine, parseSegments, openaiSystemPrompt } from '../src/server/translation-providers.js';
 import { Store, createApp, type BrowserServiceLike } from '../src/server/app.js';
-import { renderRss } from '../src/server/rss.js';
+import { renderAtom, renderJsonFeed, renderRss } from '../src/server/rss.js';
 import { defaultApplicationSettings } from '../src/shared/types.js';
 
 const input = { name: 'RSS', url: 'https://example.test/rss', sourceType: 'rss' as const, translationMode: 'bilingual' as const, rules: { item: '', title: '', link: '' }, credentialId: null, intervalMinutes: 30, waitMs: 0 };
@@ -173,6 +173,9 @@ test('worker translates with the feed service and language; caches never cross s
     assert.equal(store.translations.cached('Hello', 'google-browser:v2:ja'), undefined);
     const xml = renderRss(store.getFeed(openai.id)!, store.getItems(openai.id), 'https://e.test/x.xml');
     assert.match(xml, /<language>ja<\/language>/); assert.match(xml, /<title>译:Hello<\/title>/);
+    assert.match(renderAtom(store.getFeed(openai.id)!, store.getItems(openai.id), 'https://e.test/x.atom'), /xml:lang="ja"/);
+    assert.equal(JSON.parse(renderJsonFeed(store.getFeed(openai.id)!, store.getItems(openai.id), 'https://e.test/x.json')).language, 'ja');
+    assert.match(renderAtom(store.getFeed(google.id)!, store.getItems(google.id), 'https://e.test/y.atom'), /xml:lang="zh-CN"/);
     assert.match(renderRss(store.getFeed(google.id)!, store.getItems(google.id), 'https://e.test/y.xml'), /<language>zh-cn<\/language>/);
 
     // Switching language re-translates through the same service, keeping item identity.

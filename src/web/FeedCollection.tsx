@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { translationEnabled, translationLabel, type AuthState, type BulkFeedSettingsInput, type Feed, type TargetLanguage, type TranslationProviderId } from '../shared/types';
+import { OUTPUT_LIMIT, translationEnabled, translationLabel, type AuthState, type BulkFeedSettingsInput, type Feed, type TargetLanguage, type TranslationProviderId } from '../shared/types';
 import { LanguageOptions, ProviderOptions, useTranslationProviders } from './TranslationFields';
 import { api } from './api';
 import { Copy, FileDown, LayoutGrid, List, Settings2, X } from 'lucide-react';
@@ -40,6 +40,7 @@ export function FeedCollection({ auth, feeds, query, status, onStatus, detail, s
   const [language, setLanguage] = useState<TargetLanguage | ''>('');
   const [provider, setProvider] = useState<TranslationProviderId | 'default' | ''>('');
   const providers = useTranslationProviders();
+  const [outputLimit, setOutputLimit] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   useEffect(() => { if (auth.role === 'admin') { void api.settings.get().then(s => setView(s.feedView)).catch(e => setError(e.message)); } else { try { setView(localStorage.getItem(`feedlantern:view:${auth.userId}`) === 'cards' ? 'cards' : 'list'); } catch {} } }, [auth.userId, auth.role]);
@@ -86,6 +87,7 @@ export function FeedCollection({ auth, feeds, query, status, onStatus, detail, s
     if (language) patch.targetLanguage = language;
     if (provider) patch.translationProvider = provider === 'default' ? null : provider;
     if (interval.trim()) patch.intervalMinutes = Number(interval);
+    if (outputLimit.trim()) patch.outputLimit = Number(outputLimit);
     if (!Object.keys(patch).length) return;
     void operate('settings', selected, patch);
   }
@@ -96,7 +98,7 @@ export function FeedCollection({ auth, feeds, query, status, onStatus, detail, s
     <div className="collection-toolbar collection-filters"><div className="inline filter-group"><label>来源 <select aria-label="筛选订阅来源" value={sourceFilter} onChange={e => setSourceFilter(e.target.value)}><option value="all">全部来源</option><option value="website">网页抓取</option><option value="rss">RSS 来源</option></select></label><label>输出 <select aria-label="筛选订阅输出" value={outputFilter} onChange={e => setOutputFilter(e.target.value)}><option value="all">全部输出</option><option value="translated">翻译订阅</option><option value="original">原文订阅</option></select></label><label>状态 <select aria-label="筛选订阅状态" value={statusFilter} onChange={e => onStatus(e.target.value as StatusFilter)}><option value="all">全部状态</option><option value="attention">需要检查</option></select></label><label>排序 <select aria-label="排序订阅" value={sort} onChange={e => changeSort(e.target.value as SortKey)}>{(Object.keys(sortLabels) as SortKey[]).map(key => <option key={key} value={key}>{sortLabels[key]}</option>)}</select></label></div>
       <div className="inline"><button className="button small" aria-pressed={view === 'list'} onClick={() => void changeView('list')}><List size={14} />列表</button><button className="button small" aria-pressed={view === 'cards'} onClick={() => void changeView('cards')}><LayoutGrid size={14} />卡片</button></div>
     </div>
-    {selected.length > 0 && <div className="collection-toolbar"><span>已选择 {selected.length} 项</span><div className="detail-actions"><button className="button small" disabled={busy} onClick={() => { setMode(''); setInterval(''); setLanguage(''); setProvider(''); setEditing(true); setError(''); }}>批量修改设置</button>{[['copy', '复制 RSS 地址'], ['pause', '暂停'], ['resume', '恢复'], ['refresh', '立即刷新']].map(([action, label]) => <button className="button small" key={action} disabled={busy} onClick={() => void operate(action)}>{label}</button>)}<button className="button small" disabled={busy} onClick={() => void exportOpml(selected)}>导出 OPML</button><button className="button small" disabled={busy} onClick={() => void operate('delete')}>删除</button></div><button className="icon-button bulk-clear" aria-label="取消选择" disabled={busy} onClick={() => { setSelected([]); setEditing(false); }}><X size={16} /></button></div>}
+    {selected.length > 0 && <div className="collection-toolbar"><span>已选择 {selected.length} 项</span><div className="detail-actions"><button className="button small" disabled={busy} onClick={() => { setMode(''); setInterval(''); setOutputLimit(''); setLanguage(''); setProvider(''); setEditing(true); setError(''); }}>批量修改设置</button>{[['copy', '复制 RSS 地址'], ['pause', '暂停'], ['resume', '恢复'], ['refresh', '立即刷新']].map(([action, label]) => <button className="button small" key={action} disabled={busy} onClick={() => void operate(action)}>{label}</button>)}<button className="button small" disabled={busy} onClick={() => void exportOpml(selected)}>导出 OPML</button><button className="button small" disabled={busy} onClick={() => void operate('delete')}>删除</button></div><button className="icon-button bulk-clear" aria-label="取消选择" disabled={busy} onClick={() => { setSelected([]); setEditing(false); }}><X size={16} /></button></div>}
     {editing && selected.length > 0 && <form className="panel settings-form" aria-label="批量修改订阅设置" onSubmit={saveSettings}>
       <h3>修改选中的 {selected.length} 个订阅</h3>
       <p className="hint">只应用填写的设置，其他设置保持原值。</p>
@@ -105,7 +107,8 @@ export function FeedCollection({ auth, feeds, query, status, onStatus, detail, s
         <label className="field"><span>翻译目标语言</span><select value={language} onChange={e => setLanguage(e.target.value as typeof language)}><option value="">保持原值</option><LanguageOptions /></select></label>
         <label className="field"><span>翻译服务</span><select value={provider} onChange={e => setProvider(e.target.value as typeof provider)}><option value="">保持原值</option><ProviderOptions info={providers} followValue="default" /></select></label>
         <label className="field"><span>刷新间隔（分钟）</span><input type="number" min={5} max={1440} step={1} placeholder="留空保持原值" value={interval} onChange={e => setInterval(e.target.value)} /></label>
-        <div className="detail-actions"><button className="button" type="submit" disabled={!mode && !interval.trim() && !language && !provider}>应用到所选订阅</button><button className="button secondary" type="button" onClick={() => setEditing(false)}>取消</button></div>
+        <label className="field"><span>输出条数</span><input type="number" min={OUTPUT_LIMIT.min} max={OUTPUT_LIMIT.max} step={1} placeholder="留空保持原值" value={outputLimit} onChange={e => setOutputLimit(e.target.value)} /></label>
+        <div className="detail-actions"><button className="button" type="submit" disabled={!mode && !interval.trim() && !outputLimit.trim() && !language && !provider}>应用到所选订阅</button><button className="button secondary" type="button" onClick={() => setEditing(false)}>取消</button></div>
       </fieldset>
     </form>}
     {error && <div className="error-note" role="alert">{error}</div>}

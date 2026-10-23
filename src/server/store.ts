@@ -3,14 +3,17 @@ import { isTargetLanguage, isTranslationProvider, translationEnabled } from '../
 import { RssTranslations } from './rss-translation.js';
 import { TRANSLATION_CACHE_LIMIT, type Tables } from './backups.js';
 import { FetchHistory } from './fetch-history.js';
+import { ApiTokens } from './api-tokens.js';
 import { AppError } from './auth.js';
 import { applicationSettingsSchema } from './settings.js';
-import { defaultApplicationSettings, type ApplicationSettings } from '../shared/types.js';
+import { clampOutputLimit, parseItemFilter, storedItemLimit } from './feed-output.js';
+import { defaultApplicationSettings, defaultNotificationChannels, type ApplicationSettings, type NotificationChannelSettings } from '../shared/types.js';
+import { activeChannels, notificationChannelsSchema, storedNotificationSchema, type ChannelConfigs, type NotificationTarget } from './notify.js';
 import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import type { CredentialSummary, ExtractedItem, Feed, FeedInput, FeedSettingsInput, FeedItem, ImportJob, RuleOrigins, SelectionRules } from '../shared/types.js';
+import type { CredentialSummary, ExtractedItem, Feed, FeedInput, FeedSettingsInput, FeedItem, ImportJob, ItemFilter, RuleOrigins, SelectionRules } from '../shared/types.js';
 import type { ServerConfig } from './config.js';
 
 export interface CredentialValue {
@@ -124,7 +127,13 @@ function mergeRuleOrigins(current: RuleOrigins | undefined, next: RuleOrigins | 
   return { ...(current ?? {}), ...next };
 }
 
+/** A stored filter that no longer validates is dropped rather than breaking the feed. */
+function storedItemFilter(value: unknown): ItemFilter | undefined {
+  try { return parseItemFilter(parseJson<unknown>(value, null)) ?? undefined; } catch { return undefined; }
+}
+
 function rowToFeed(row: Record<string, unknown>): Feed {
+  const itemFilter = storedItemFilter(row.item_filter_json);
   return {
     id: String(row.id),
     ownerId: String(row.owner_id),
@@ -148,6 +157,8 @@ function rowToFeed(row: Record<string, unknown>): Feed {
     nextFetchAt: String(row.next_fetch_at),
     lastError: row.last_error ? String(row.last_error) : null,
     itemCount: Number(row.item_count ?? 0),
+    ...(itemFilter ? { itemFilter } : {}),
+    outputLimit: clampOutputLimit(row.output_limit === undefined || row.output_limit === null ? undefined : Number(row.output_limit)),
   };
 }
 
@@ -167,6 +178,7 @@ function rowToItem(row: Record<string, unknown>): FeedItem {
 export class Store {
   readonly history: FetchHistory;
   readonly translations: RssTranslations;
+  readonly tokens: ApiTokens;
   readonly dataDir: string;
   readonly dbPath: string;
   readonly masterKeyPath: string;
@@ -292,6 +304,30 @@ export class Store {
       DROP INDEX IF EXISTS users_single_admin;
       CREATE TABLE user_notifications (user_id TEXT PRIMARY KEY, value TEXT NOT NULL);
       PRAGMA user_version=8; COMMIT;`);
+    if (version < 9) {
+      // Per-feed output settings. Columns are added only when missing, so a
+      // database rebuilt from an older layout still upgrades cleanly.
+      const columns = new Set(this.db.prepare('PRAGMA table_info(feeds)').all().map(row => String(row.name)));
+      this.db.exec(`BEGIN;
+        ${columns.has('item_filter_json') ? '' : 'ALTER TABLE feeds ADD COLUMN item_filter_json TEXT;'}
+        ${columns.has('output_limit') ? '' : 'ALTER TABLE feeds ADD COLUMN output_limit INTEGER NOT NULL DEFAULT 100;'}
+        PRAGMA user_version=9; COMMIT;`);
+    }
+    this.translations = new RssTranslations(this.db, id => this.userSignal(id));
+    this.history = new FetchHistory(this.db, () => this.getSettings(), id => {
+      const { policy, configs } = this.notificationTarget(id);
+      return { policy, channels: Object.keys(configs) as (keyof ChannelConfigs)[] };
+    });
+    // Alerts raised before notification channels existed were Bark-only.
+    if (version < 10) { this.db.exec('BEGIN'); this.history.migrateLegacyDeliveries(); this.db.exec('PRAGMA user_version=10; COMMIT'); }
+    // Personal access tokens: only a SHA-256 digest of the secret is stored.
+    if (version < 11) this.db.exec(`BEGIN;
+      CREATE TABLE IF NOT EXISTS api_tokens (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, prefix TEXT NOT NULL, scope TEXT NOT NULL CHECK(scope IN ('read','write')),
+        created_at TEXT NOT NULL, expires_at TEXT, last_used_at TEXT);
+      CREATE INDEX IF NOT EXISTS api_tokens_user ON api_tokens(user_id);
+      PRAGMA user_version=11; COMMIT;`);
+    this.tokens = new ApiTokens(this.db);
     // Migration numbers are reserved per feature branch, so this one checks its
     // own column instead of trusting the order in which branches were merged.
     const feedColumns = new Set(this.db.prepare('PRAGMA table_info(feeds)').all().map(column => String(column.name)));
@@ -303,8 +339,6 @@ export class Store {
         UPDATE feeds SET translation_mode='translated' WHERE translation_mode='chinese';
         PRAGMA user_version=${Math.max(13, current)}; COMMIT;`);
     }
-    this.translations = new RssTranslations(this.db, id => this.userSignal(id));
-    this.history = new FetchHistory(this.db, () => this.getSettings(), id => this.getBarkForFeed(id));
     this.migrateBark();
     this.ensureSetupToken();
   }
@@ -409,6 +443,7 @@ export class Store {
 
   private revokeUser(id: string): void {
     this.db.prepare('DELETE FROM sessions WHERE user_id=?').run(id);
+    this.tokens.revokeUser(id);
     this.userControllers.get(id)?.abort(); this.userControllers.delete(id);
     for (const feed of this.listFeeds(id)) this.translations.invalidate(feed.id);
     this.translations.cancelActor(id);
@@ -491,6 +526,7 @@ export class Store {
         this.userControllers.get(id)?.abort();
         this.userControllers.delete(id);
         this.db.prepare('DELETE FROM sessions WHERE user_id=?').run(id);
+        this.tokens.revokeUser(id);
         for (const feed of this.listFeeds(id)) this.translations.invalidate(feed.id);
       } else {
         this.db.prepare('UPDATE feeds SET next_fetch_at=? WHERE owner_id=? AND enabled=1').run(nowIso(), id);
@@ -731,6 +767,10 @@ export class Store {
       ? feed.nextFetchAt : new Date(Date.now() + interval * 60_000).toISOString();
     this.db.prepare('UPDATE feeds SET name = ?, channel_title = ?, interval_minutes = ?, next_fetch_at = ? WHERE id = ?')
       .run(title, title, interval, nextFetchAt, id);
+    // Output settings only change what is published. Lowering the limit keeps
+    // stored items until the next fetch trims them (see storedItemLimit).
+    if (input.itemFilter !== undefined) this.db.prepare('UPDATE feeds SET item_filter_json = ? WHERE id = ?').run(input.itemFilter ? JSON.stringify(input.itemFilter) : null, id);
+    if (input.outputLimit !== undefined) this.db.prepare('UPDATE feeds SET output_limit = ? WHERE id = ?').run(clampOutputLimit(input.outputLimit), id);
     this.translations.syncWebsite(this.getFeed(id)!);
     return this.getFeed(id);
   }
@@ -758,7 +798,8 @@ export class Store {
     for (const controller of this.userControllers.values()) controller.abort();
     this.userControllers.clear();
     this.transaction(() => {
-      for (const table of ['sessions', 'import_jobs', 'translations', 'rss_sources', 'translation_cache', 'feed_items', 'feeds', 'credentials', 'user_notifications', 'users', 'settings']) this.db.exec(`DELETE FROM ${table}`);
+      // Like sessions, access tokens are not part of a backup; a restore revokes them all.
+      for (const table of ['sessions', 'api_tokens', 'import_jobs', 'translations', 'rss_sources', 'translation_cache', 'feed_items', 'feeds', 'credentials', 'user_notifications', 'users', 'settings']) this.db.exec(`DELETE FROM ${table}`);
       for (const table of ['users', 'user_notifications', 'credentials', 'feeds', 'feed_items', 'settings', 'rss_sources', 'translations', 'translation_cache'] as const) {
         for (const value of tables[table] ?? []) {
           const row: Record<string, string | number | null> = { ...value };
@@ -802,24 +843,56 @@ export class Store {
     this.db.prepare("UPDATE settings SET value=? WHERE key='application'").run(encrypt(this.masterKey, JSON.stringify(value)));
   }
 
-  getBark(userId: string): ApplicationSettings['bark'] {
+  /** One account's Bark settings, shared alert policy and other channels (stored encrypted together). */
+  getNotifications(userId: string): { bark: ApplicationSettings['bark']; channels: NotificationChannelSettings } {
     const row = this.db.prepare('SELECT value FROM user_notifications WHERE user_id=?').get(userId);
-    return row ? applicationSettingsSchema.shape.bark.parse(JSON.parse(decrypt(this.masterKey, String(row.value)))) : structuredClone(defaultApplicationSettings.bark);
+    if (!row) return { bark: structuredClone(defaultApplicationSettings.bark), channels: structuredClone(defaultNotificationChannels) };
+    const { channels, ...bark } = storedNotificationSchema.parse(JSON.parse(decrypt(this.masterKey, String(row.value))));
+    return { bark, channels: notificationChannelsSchema.parse(channels ?? {}) };
+  }
+  getBark(userId: string): ApplicationSettings['bark'] { return this.getNotifications(userId).bark; }
+  private feedOwner(id: string): string | undefined {
+    const row = this.db.prepare('SELECT owner_id FROM feeds WHERE id=?').get(id);
+    return row ? String(row.owner_id) : undefined;
   }
   getBarkForFeed(id: string): ApplicationSettings['bark'] {
-    const row = this.db.prepare('SELECT owner_id FROM feeds WHERE id=?').get(id);
-    return row ? this.getBark(String(row.owner_id)) : structuredClone(defaultApplicationSettings.bark);
+    const owner = this.feedOwner(id);
+    return owner ? this.getBark(owner) : structuredClone(defaultApplicationSettings.bark);
   }
-  private writeBark(userId: string, value: ApplicationSettings['bark']): void {
+  /** Alert policy and enabled, complete channels of a feed's owner. */
+  notificationTarget(feedId: string): NotificationTarget {
+    const owner = this.feedOwner(feedId);
+    const { bark, channels } = owner ? this.getNotifications(owner) : { bark: structuredClone(defaultApplicationSettings.bark), channels: structuredClone(defaultNotificationChannels) };
+    const { enabled: _enabled, url: _url, ...policy } = bark;
+    return { policy, configs: activeChannels(bark, channels) };
+  }
+  private writeNotifications(userId: string, bark: ApplicationSettings['bark'], channels: NotificationChannelSettings): void {
+    const value = storedNotificationSchema.parse({ ...bark, channels });
     this.db.prepare('INSERT INTO user_notifications(user_id,value) VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET value=excluded.value').run(userId, encrypt(this.masterKey, JSON.stringify(value)));
   }
-  setBark(userId: string, patch: Partial<ApplicationSettings['bark']>): ApplicationSettings['bark'] {
-    const previous = this.getBark(userId);
-    const value = applicationSettingsSchema.shape.bark.parse({ ...previous, ...patch, ...(patch.url === '' ? { enabled: false } : {}) });
+  private writeBark(userId: string, value: ApplicationSettings['bark']): void {
+    this.writeNotifications(userId, value, this.getNotifications(userId).channels);
+  }
+  /**
+   * Saves validated notification settings. Changing where alerts go (enabling,
+   * disabling or re-targeting any channel) cancels this account's pending alerts,
+   * as changing the Bark address always did; other accounts are unaffected.
+   */
+  setNotifications(userId: string, next: { bark: ApplicationSettings['bark']; channels: NotificationChannelSettings }): void {
+    const previous = this.getNotifications(userId);
+    const destinations = (value: typeof next) => JSON.stringify(activeChannels(value.bark, value.channels));
     this.transaction(() => {
-      this.writeBark(userId, value);
-      if (previous.url !== value.url || previous.enabled !== value.enabled) this.history.resetNotifications(userId);
+      this.writeNotifications(userId, next.bark, next.channels);
+      if (destinations(previous) !== destinations(next)) this.history.resetNotifications(userId);
     });
+  }
+  setNotificationChannels(userId: string, channels: NotificationChannelSettings): void {
+    this.setNotifications(userId, { bark: this.getBark(userId), channels });
+  }
+  setBark(userId: string, patch: Partial<ApplicationSettings['bark']>): ApplicationSettings['bark'] {
+    const previous = this.getNotifications(userId);
+    const value = applicationSettingsSchema.shape.bark.parse({ ...previous.bark, ...patch, ...(patch.url === '' ? { enabled: false } : {}) });
+    this.setNotifications(userId, { bark: value, channels: previous.channels });
     return value;
   }
 
@@ -907,11 +980,17 @@ export class Store {
     return expected.length === actual.length && timingSafeEqual(expected, actual);
   }
 
-  getItems(id: string, limit = 200): FeedItem[] {
+  /** Newest first. Without a limit, every item the feed currently stores. */
+  getItems(id: string, limit?: number): FeedItem[] {
+    if (limit === undefined) limit = Math.max(this.countItems(id), 1);
     const rows = this.db.prepare('SELECT id, title, link, description, image, published_at, published_at_source, first_seen_at FROM feed_items WHERE feed_id = ? ORDER BY first_seen_at DESC, rowid ASC LIMIT ?').all(id, limit) as Array<Record<string, unknown>>;
     const items = rows.map(rowToItem);
     const feed = this.getFeed(id);
     return feed && translationEnabled(feed) ? this.translations.decorate(feed, items) : items;
+  }
+
+  private countItems(id: string): number {
+    return Number((this.db.prepare('SELECT COUNT(*) AS c FROM feed_items WHERE feed_id = ?').get(id) as { c: number }).c);
   }
 
   upsertItems(feed: Feed, extracted: ExtractedItem[], counts?: { itemCount: number; newItemCount: number }): FeedItem[] {
@@ -941,7 +1020,8 @@ export class Store {
           inserted++;
         }
       }
-      this.db.prepare(`DELETE FROM feed_items WHERE feed_id = ? AND id NOT IN (SELECT id FROM feed_items WHERE feed_id = ? ORDER BY first_seen_at DESC, rowid ASC LIMIT 200)`).run(feed.id, feed.id);
+      const keep = storedItemLimit(this.getFeed(feed.id) ?? feed);
+      this.db.prepare(`DELETE FROM feed_items WHERE feed_id = ? AND id NOT IN (SELECT id FROM feed_items WHERE feed_id = ? ORDER BY first_seen_at DESC, rowid ASC LIMIT ?)`).run(feed.id, feed.id, keep);
       this.translations.syncWebsite(this.getFeed(feed.id)!);
       this.db.exec('RELEASE items');
     } catch (error) {
@@ -949,7 +1029,7 @@ export class Store {
       throw error;
     }
     if (counts) { counts.itemCount = unique.size; counts.newItemCount = inserted; }
-    return this.getItems(feed.id, 200);
+    return this.getItems(feed.id);
   }
 
   markFetchStart(id: string, nextFetchAt: string): void {

@@ -25,24 +25,27 @@ export const translationSettingsSchema = z.object({
     systemPrompt: z.string().max(4000).default(''),
   }).strict().transform(withoutFlag).default(defaults.openai),
 }).strict();
+/** Bark fields plus the alert policy (threshold, retries, cooldown) that every channel shares. */
+export const barkObjectSchema = z.object({
+  enabled: z.boolean(),
+  url: z.string().max(2048).transform((value, ctx) => {
+    try { return validateBarkUrl(value) ?? ''; }
+    catch { ctx.addIssue({ code: 'custom', message: 'Bark 地址必须是包含设备密钥的 HTTPS 地址' }); return z.NEVER; }
+  }),
+  failureThreshold: z.number().int().min(1).max(1000).default(defaultApplicationSettings.bark.failureThreshold),
+  timeoutSeconds: z.number().int().min(1).max(60),
+  maxAttempts: z.number().int().min(1).max(5),
+  retryDelaySeconds: z.number().int().min(1).max(3600),
+  laterRetryDelaySeconds: z.number().int().min(1).max(3600),
+  cooldownMinutes: z.number().int().min(1).max(1440),
+}).strict();
+const barkSchema = barkObjectSchema.refine(value => !value.enabled || !!value.url, '启用 Bark 时请填写推送地址');
 
 export const applicationSettingsSchema = z.object({
   translation: translationSettingsSchema.default(defaults),
   feedView: z.enum(['list', 'cards']),
   logRetentionDays: z.number().int().min(1).max(365),
-  bark: z.object({
-    enabled: z.boolean(),
-    url: z.string().max(2048).transform((value, ctx) => {
-      try { return validateBarkUrl(value) ?? ''; }
-      catch { ctx.addIssue({ code: 'custom', message: 'Bark 地址必须是包含设备密钥的 HTTPS 地址' }); return z.NEVER; }
-    }),
-    failureThreshold: z.number().int().min(1).max(1000).default(defaultApplicationSettings.bark.failureThreshold),
-    timeoutSeconds: z.number().int().min(1).max(60),
-    maxAttempts: z.number().int().min(1).max(5),
-    retryDelaySeconds: z.number().int().min(1).max(3600),
-    laterRetryDelaySeconds: z.number().int().min(1).max(3600),
-    cooldownMinutes: z.number().int().min(1).max(1440),
-  }).strict().refine(value => !value.enabled || !!value.url, '启用 Bark 时请填写推送地址'),
+  bark: barkSchema,
   server: z.object({
     backgroundConcurrency: z.number().int().min(1).max(4),
     allowedHosts: z.array(z.string().max(300).refine(value => {

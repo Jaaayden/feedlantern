@@ -32,7 +32,9 @@ test('新管理 API 权限、名称缓存、批量结果、配置合并及完整
     const bulk = await app.inject({ method: 'POST', url: '/api/feeds/bulk', headers, payload: { ids: [feed.id, 'missing'], action: 'pause' } });
     assert.deepEqual(bulk.json().results.map((r: { ok: boolean }) => r.ok), [true, false]);
     const config = (await app.inject({ url: '/api/backups/config', headers })).json();
-    assert.ok(!JSON.stringify(config).includes('token'));
+    // Feeds never carry their RSS token; notification channels (with their own `token` fields) are exported on purpose.
+    assert.ok(!JSON.stringify(config.feeds).includes('token'));
+    assert.ok(!JSON.stringify(config).includes(path.split('/').at(-1)!.replace(/\.xml$/, '')));
     const imported = await app.inject({ method: 'POST', url: '/api/backups/config', headers, payload: { archive: config, confirm: true } });
     assert.deepEqual(imported.json(), { created: 0, skipped: 1 });
     const archive = await app.inject({ method: 'POST', url: '/api/backups/export', headers, payload: { currentPassword: 'test-password', password: 'long-backup-password' } });

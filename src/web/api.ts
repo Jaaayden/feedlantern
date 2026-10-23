@@ -1,7 +1,11 @@
 import type { TranslationProgressData } from './TranslationProgress';
 import type {
+  ApiTokenScope,
+  ApiTokenSummary,
   UserSummary,
-  BarkSummary,
+  NotificationChannel,
+  NotificationSummary,
+  NotificationUpdate,
   AuthState,
   ApplicationSettings,
   ImportJob,
@@ -15,6 +19,8 @@ import type {
   FeedSettingsInput,
   BulkFeedSettingsInput,
   FeedItem,
+  ItemFilter,
+  ItemOutputStatus,
   PickRequest,
   PickResult,
   ScreenFrame,
@@ -24,6 +30,9 @@ import type {
   TranslationProviderId,
   TranslationProvidersInfo,
 } from '../shared/types';
+
+/** Why each stored item is or is not published, keyed by item id. */
+export interface OutputPreview { outputStatus: Record<string, ItemOutputStatus>; filterTimedOut?: boolean }
 
 export class ApiError extends Error {
   status: number;
@@ -62,7 +71,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   const generation = sessionGeneration;
   const headers = new Headers(options.headers);
   headers.set('X-FeedLantern', '1');
-  if (workspaceUser && !/^\/api\/(auth|users|backups|settings)(?:\/|$)/.test(path)) headers.set('X-FeedLantern-User', workspaceUser);
+  if (workspaceUser && !/^\/api\/(auth|users|backups|settings|tokens)(?:\/|$)/.test(path)) headers.set('X-FeedLantern-User', workspaceUser);
   if (csrfToken) headers.set('X-CSRF-Token', csrfToken);
   if (options.body !== undefined) headers.set('Content-Type', 'application/json');
 
@@ -94,6 +103,11 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 }
 
 export const api = {
+  tokens: {
+    list: () => request<ApiTokenSummary[]>('/api/tokens'),
+    create: (body: { name: string; scope: ApiTokenScope; expiresInDays: number | null }) => request<{ token: ApiTokenSummary; secret: string }>('/api/tokens', { method: 'POST', body }),
+    revoke: (id: string) => request<{ ok: boolean }>(`/api/tokens/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  },
   backups: {
     export: (currentPassword: string, password: string) => request<unknown>('/api/backups/export', { method: 'POST', body: { currentPassword, password } }),
     restore: (body: unknown, preview: boolean) => request<Record<string, unknown>>(`/api/backups/${preview ? 'preview' : 'restore'}`, { method: 'POST', body }),
@@ -107,9 +121,10 @@ export const api = {
     confirm: (id: string, entryId: string, input: FeedInput) => request<{ feed: Feed; feedUrl: string }>(`/api/import-jobs/${id}/confirm`, { method: 'POST', body: { entryId, input } }),
   },
   notifications: {
-    get: () => request<BarkSummary>('/api/notifications/bark'),
-    save: (body: Partial<ApplicationSettings['bark']>) => request<BarkSummary>('/api/notifications/bark', { method: 'PUT', body }),
-    test: (body: Partial<ApplicationSettings['bark']>) => request<{ ok: boolean }>('/api/notifications/bark/test', { method: 'POST', body }),
+    get: () => request<NotificationSummary>('/api/notifications'),
+    save: (body: NotificationUpdate) => request<NotificationSummary>('/api/notifications', { method: 'PUT', body }),
+    /** Sends a test through one channel using the saved settings overridden by `fields`; nothing is saved. */
+    test: (channel: NotificationChannel, fields: Record<string, unknown>) => request<{ ok: boolean }>('/api/notifications/test', { method: 'POST', body: { ...fields, channel } }),
   },
   users: {
     update: (id: string, body: Partial<Pick<UserSummary, 'username' | 'enabled' | 'role'>>) => request<UserSummary>(`/api/users/${encodeURIComponent(id)}`, { method: 'PATCH', body }),
@@ -188,7 +203,9 @@ export const api = {
     list: () => request<Feed[]>('/api/feeds'),
     create: (body: FeedInput) => request<{ feed: Feed; feedUrl: string }>('/api/feeds', { method: 'POST', body }),
     detail: (id: string) =>
-      request<{ feed: Feed; items: FeedItem[]; feedUrl: string }>(`/api/feeds/${encodeURIComponent(id)}`),
+      request<{ feed: Feed; items: FeedItem[]; feedUrl: string } & OutputPreview>(`/api/feeds/${encodeURIComponent(id)}`),
+    outputPreview: (id: string, body: { itemFilter: ItemFilter | null; outputLimit: number }) =>
+      request<OutputPreview>(`/api/feeds/${encodeURIComponent(id)}/output-preview`, { method: 'POST', body }),
     update: (id: string, body: FeedInput) =>
       request<{ feed: Feed; feedUrl: string }>(`/api/feeds/${encodeURIComponent(id)}`, { method: 'PUT', body }),
     refresh: (id: string) => request<void>(`/api/feeds/${encodeURIComponent(id)}/refresh`, { method: 'POST', body: {} }),
