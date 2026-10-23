@@ -74,7 +74,7 @@ export interface NotificationChannelSettings {
 }
 export const defaultNotificationChannels: NotificationChannelSettings = {
   webhook: { enabled: false, url: '', secret: '', headers: [] },
-  ntfy: { enabled: false, server: 'https://ntfy.sh', topic: '', token: '' },
+  ntfy: { enabled: false, server: 'https://ntfy.sh/', topic: '', token: '' },
   telegram: { enabled: false, botToken: '', chatId: '' },
 };
 /** Threshold, retry and cooldown settings shared by every channel of one account. */
