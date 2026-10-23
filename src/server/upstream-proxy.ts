@@ -140,8 +140,11 @@ async function socksConnect(socket: Socket, proxy: UpstreamProxy, address: strin
     if (result[1] !== 0) throw new ProxyConnectError('SOCKS5 代理认证失败，请检查网络配置中的代理用户名和密码');
   }
   const family = isIP(address);
-  const host = Buffer.from(ipaddr.parse(address).toByteArray());
-  socket.write(Buffer.concat([Buffer.from([5, 1, 0, family === 4 ? 1 : 4]), host, Buffer.from([port >> 8, port & 0xff])]));
+  // A host name (atyp 3) is only used for the fixed DNS-over-HTTPS resolver (see openResolverTunnel).
+  const target = family
+    ? Buffer.concat([Buffer.from([family === 4 ? 1 : 4]), Buffer.from(ipaddr.parse(address).toByteArray())])
+    : Buffer.concat([Buffer.from([3, Buffer.byteLength(address)]), Buffer.from(address)]);
+  socket.write(Buffer.concat([Buffer.from([5, 1, 0]), target, Buffer.from([port >> 8, port & 0xff])]));
   const reply = await readHandshake(socket, data => {
     if (data.length < 5) return undefined;
     const length = data[3] === 1 ? 10 : data[3] === 4 ? 22 : data[3] === 3 ? 7 + data[4] : -1;
@@ -179,6 +182,21 @@ export async function openTunnelToAny(proxy: UpstreamProxy, proxyAddress: string
  * a different (for example internal) address.
  */
 export function openTunnel(proxy: UpstreamProxy, proxyAddress: string, address: string, port: number, signal?: AbortSignal): Promise<Socket> {
+  if (!isIP(address)) return Promise.reject(new ProxyConnectError('代理隧道的目标必须是已检查的 IP 地址'));
+  return tunnel(proxy, proxyAddress, address, port, signal);
+}
+
+/**
+ * A tunnel to the DNS-over-HTTPS resolver itself, given to the proxy by host
+ * name. This is the one exception to "targets are always checked IPs": the
+ * resolver is a fixed public endpoint, never a user's target, and resolving
+ * it locally is exactly what fails when only the proxy can reach the network.
+ */
+export function openResolverTunnel(proxy: UpstreamProxy, proxyAddress: string, host: string, port: number, signal?: AbortSignal): Promise<Socket> {
+  return tunnel(proxy, proxyAddress, host, port, signal);
+}
+
+function tunnel(proxy: UpstreamProxy, proxyAddress: string, address: string, port: number, signal?: AbortSignal): Promise<Socket> {
   const label = proxyLabel(proxy);
   return new Promise<Socket>((resolve, reject) => {
     let settled = false;

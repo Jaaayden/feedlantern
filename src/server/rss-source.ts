@@ -142,7 +142,9 @@ function requestHeaders(target: string, raw: string, network: FetchNetworkOption
  * Pin each connection to the policy-checked IP, including every redirect.
  * A timeout names the host that did not answer; a caller abort is passed on.
  */
-export async function fetchSource(raw: string, policy: NetworkPolicy, options: SourceOptions = {}): Promise<SourceResult> {
+export async function fetchSource(raw: string, base: NetworkPolicy, options: SourceOptions = {}): Promise<SourceResult> {
+  // Through a profile proxy, DNS over HTTPS goes through that proxy too.
+  const policy = base.forProxy(options.network?.proxy);
   let target = raw;
   return withFetchTimeout(options.timeoutSeconds ?? SOURCE_TIMEOUT_SECONDS, options.signal, () => hostOf(target), !!options.network?.proxy, async signal => {
     for (let redirects = 0; redirects <= 5; redirects++) {
@@ -160,7 +162,8 @@ export async function fetchSource(raw: string, policy: NetworkPolicy, options: S
 }
 
 /** One GET with a network profile applied, for the profile's connection test. Redirects are not followed. */
-export async function probeTarget(raw: string, policy: NetworkPolicy, network: FetchNetworkOptions | undefined, signal?: AbortSignal): Promise<{ status: number }> {
+export async function probeTarget(raw: string, base: NetworkPolicy, network: FetchNetworkOptions | undefined, signal?: AbortSignal): Promise<{ status: number }> {
+  const policy = base.forProxy(network?.proxy);
   return withFetchTimeout(SOURCE_TIMEOUT_SECONDS, signal, () => hostOf(raw), !!network?.proxy, async combined => {
     const { url, address, addresses = [address] } = await abortable(policy.resolveForConnection(raw), combined);
     const response = await requestOnce(url, addresses, policy, requestHeaders(raw, raw, network, 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'), combined, network, 1_000_000).catch(error => {
