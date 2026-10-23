@@ -33,7 +33,7 @@ test('合并按发布时间（缺失时用首次发现时间）倒序，去重�
 });
 
 test('翻译成员只贡献已完成翻译的条目，与该订阅自己的 RSS 一致', () => {
-  const translated: Feed = { ...base, sourceType: 'rss', translationMode: 'chinese' };
+  const translated: Feed = { ...base, sourceType: 'rss', translationMode: 'translated' };
   const merged = mergeBundleItems([{ feed: translated, items: [
     item('done', 'https://x.test/done', '2026-01-02T00:00:00.000Z', undefined, { translationStatus: 'success', contentHtml: '<p>完成</p>' }),
     item('pending', 'https://x.test/pending', '2026-01-03T00:00:00.000Z', undefined, { translationStatus: 'pending', contentHtml: '<p>等待</p>' }),
@@ -201,5 +201,62 @@ test('配置导出导入包含聚合订阅，成员指向新建或已有的订�
     assert.deepEqual(again.bundles, { created: 0, skipped: 1 });
     const bad = (await app.inject({ method: 'POST', url: '/api/backups/config', headers, payload: { archive: { ...config, bundles: [{ name: 'x', feeds: [99] }] } } }));
     assert.equal(bad.statusCode, 400);
+  } finally { await app.close(); store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('成员的条目过滤和输出条数先生效；语言一致时声明语言，不一致时省略', () => {
+  const filtered: Feed = { ...base, itemFilter: { include: [], exclude: ['skip'], regex: false }, outputLimit: 10 };
+  const items = Array.from({ length: 12 }, (_, n) => item(`a${n}`, `https://x.test/${n}`, `2026-01-${String(n + 1).padStart(2, '0')}T00:00:00.000Z`, undefined, n === 11 ? { title: 'skip me' } : {}));
+  items.reverse(); // stored newest first, like the database
+  const merged = mergeBundleItems([{ feed: filtered, items }], 100);
+  assert.equal(merged.length, 10, 'the member’s own output limit applies before merging');
+  assert.ok(!merged.some(entry => entry.item.title === 'skip me'), 'the member’s filter applies');
+
+  const ja = (id: string): Feed => ({ ...base, id, sourceType: 'rss', translationMode: 'translated', targetLanguage: 'ja' });
+  const language = (feeds: Feed[]) => new XMLParser().parse(renderBundleRss(bundle, feeds.map(feed => ({ feed, items: [] })), 'https://rss.test/b.xml', 'https://rss.test/')).rss.channel.language;
+  assert.equal(language([ja('feed_a'), ja('feed_b')]), 'ja');
+  assert.equal(language([ja('feed_a'), { ...ja('feed_b'), targetLanguage: 'en' }]), undefined);
+  assert.equal(language([ja('feed_a'), base]), undefined, 'an untranslated member has no known language');
+  assert.equal(language([]), undefined);
+});
+
+test('聚合的 Atom 与 JSON Feed 地址共用密钥，内容与来源一致；访问令牌遵守权限和工作台隔离', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fl-bundles-formats-')), store = new Store(dir);
+  store.createAdmin('admin', 'admin-password');
+  const user = store.createUser('reader', 'reader-password'), other = store.createUser('other', 'other-password');
+  const one = store.createFeed(input('One', 'https://a.test/list'), user.id);
+  store.upsertItems(one.feed, [{ title: 'Hello', link: 'https://a.test/hello', publishedAt: '2026-01-01T00:00:00.000Z' }]);
+  const app = await createApp({ store, dataDir: dir, startScheduler: false, browserService });
+  const bearer = (secret: string) => ({ authorization: `Bearer ${secret}` });
+  try {
+    const read = store.tokens.create(user.id, { name: 'read', scope: 'read', expiresAt: null }).secret;
+    const write = store.tokens.create(user.id, { name: 'write', scope: 'write', expiresAt: null }).secret;
+    const foreign = store.tokens.create(other.id, { name: 'other', scope: 'write', expiresAt: null }).secret;
+    assert.equal((await app.inject({ method: 'POST', url: '/api/bundles', headers: bearer(read), payload: { name: 'x', feedIds: [] } })).statusCode, 403, 'read tokens cannot write');
+    const created = await app.inject({ method: 'POST', url: '/api/bundles', headers: bearer(write), payload: { name: '令牌聚合', feedIds: [one.feed.id] } });
+    assert.equal(created.statusCode, 200);
+    const { bundle, bundleUrl } = created.json();
+    assert.equal((await app.inject({ url: '/api/bundles', headers: bearer(read) })).json().length, 1);
+    assert.equal((await app.inject({ url: `/api/bundles/${bundle.id}`, headers: bearer(foreign) })).statusCode, 404, 'another account’s token');
+    assert.equal((await app.inject({ url: '/api/bundles', headers: bearer(foreign) })).json().length, 0);
+    assert.equal((await app.inject({ url: '/api/bundles', headers: { ...bearer(foreign), 'x-feedlantern-user': user.id } })).statusCode, 403, 'only admins may switch workspaces');
+    assert.equal((await app.inject({ method: 'POST', url: '/api/bundles', headers: bearer(foreign), payload: { name: 'x', feedIds: [one.feed.id] } })).statusCode, 400);
+
+    const path = new URL(bundleUrl).pathname;
+    const atom = await app.inject({ url: path.replace(/\.xml$/, '.atom') });
+    assert.equal(atom.statusCode, 200);
+    assert.match(String(atom.headers['content-type']), /application\/atom\+xml/);
+    const feed = new XMLParser({ ignoreAttributes: false }).parse(atom.body).feed;
+    assert.equal(feed.title['#text'], '令牌聚合');
+    assert.equal(feed.entry.category['@_term'], 'One');
+    const json = await app.inject({ url: path.replace(/\.xml$/, '.json') });
+    assert.match(String(json.headers['content-type']), /application\/feed\+json/);
+    const document = JSON.parse(json.body);
+    assert.equal(document.items[0].title, 'Hello');
+    assert.deepEqual(document.items[0].tags, ['One']);
+    assert.notEqual(json.headers.etag, (await app.inject({ url: path })).headers.etag);
+
+    await app.inject({ method: 'POST', url: `/api/bundles/${bundle.id}/rotate-token`, headers: bearer(write), payload: {} });
+    for (const extension of ['.xml', '.atom', '.json']) assert.equal((await app.inject({ url: path.replace(/\.xml$/, extension) })).statusCode, 404);
   } finally { await app.close(); store.close(); rmSync(dir, { recursive: true, force: true }); }
 });

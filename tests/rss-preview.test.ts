@@ -57,7 +57,7 @@ test('RSS 频道包含 ttl、generator 和中文描述，合法图片输出 medi
   assert.equal(channel.item[0]['media:thumbnail']['@_url'], 'https://example.test/cover.png');
   assert.equal(channel.item[1]['media:thumbnail'], undefined);
   assert.equal(channel.language, undefined, 'original-language feeds do not claim a language');
-  const translated = new XMLParser().parse(renderRss({ ...feed, sourceType: 'rss', translationMode: 'chinese' }, [], 'https://feeds.test/feed.xml')).rss.channel;
+  const translated = new XMLParser().parse(renderRss({ ...feed, sourceType: 'rss', translationMode: 'translated' }, [], 'https://feeds.test/feed.xml')).rss.channel;
   assert.equal(translated.language, 'zh-cn');
 });
 

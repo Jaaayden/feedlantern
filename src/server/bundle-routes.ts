@@ -1,7 +1,7 @@
-import type { FastifyInstance, FastifyRequest } from 'fastify';
-import { BUNDLE_ITEM_LIMIT, BUNDLE_MAX_FEEDS, type Bundle, type BundleInput, type BundlePayload } from '../shared/types.js';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { BUNDLE_ITEM_LIMIT, BUNDLE_MAX_FEEDS, type Bundle, type BundleInput, type BundlePayload, type FeedFormat } from '../shared/types.js';
 import { AppError } from './auth.js';
-import { bundleEtag, renderBundleRss, type BundleMember } from './bundles.js';
+import { bundleEtag, renderBundleAtom, renderBundleJson, renderBundleRss, type BundleMember } from './bundles.js';
 import { etagMatches, renderBundlePreview, wantsHtmlPreview } from './rss-preview.js';
 import type { Store } from './store.js';
 import { asInteger, asNonEmptyString, asRecord } from './validation.js';
@@ -27,7 +27,7 @@ export function parseBundleInput(value: unknown, partial = false): Partial<Bundl
 export function bundleMembers(store: Store, bundle: Bundle): BundleMember[] {
   return bundle.feedIds.flatMap(id => {
     const feed = store.getFeed(id);
-    return feed ? [{ feed, items: store.getItems(id, 100) }] : [];
+    return feed ? [{ feed, items: store.getItems(id) }] : [];
   });
 }
 
@@ -70,21 +70,25 @@ export function registerBundleRoutes(app: FastifyInstance, store: Store, origin:
     return { ok: true };
   });
 
-  app.get('/bundles/:id/:token.xml', async (request, reply) => {
+  const publicBundle = (format: FeedFormat) => async (request: FastifyRequest, reply: FastifyReply) => {
     const params = request.params as { id: string; token: string };
-    const token = params.token.endsWith('.xml') ? params.token.slice(0, -4) : params.token;
+    const extension = format === 'rss' ? '.xml' : format === 'atom' ? '.atom' : '.json';
+    const token = params.token.endsWith(extension) ? params.token.slice(0, -extension.length) : params.token;
+    // One key guards every format, so rotating it revokes all three addresses.
     if (!store.bundles.checkToken(params.id, token)) throw new AppError(404, '聚合订阅不存在');
     const bundle = store.bundles.get(params.id)!;
     const members = bundleMembers(store, bundle);
-    const publicUrl = bundleUrl(bundle.id, token);
+    const publicUrl = `${origin()}/bundles/${encodeURIComponent(bundle.id)}/${encodeURIComponent(token)}${extension}`;
+    const siteUrl = `${origin()}/`;
     const query = request.query as Record<string, unknown> | undefined;
-    const preview = wantsHtmlPreview(request.headers, query);
-    const etag = preview ? bundleEtag(bundle, members).replace(/"$/, '-html"') : bundleEtag(bundle, members);
+    // Only the RSS address has the human-readable browser page.
+    const preview = format === 'rss' && wantsHtmlPreview(request.headers, query);
+    const etag = preview ? bundleEtag(bundle, members).replace(/"$/, '-html"') : bundleEtag(bundle, members, format);
     reply.header('Cache-Control', 'private, max-age=60');
     reply.header('Referrer-Policy', 'no-referrer');
     reply.header('X-Robots-Tag', 'noindex, nofollow');
     reply.header('X-Content-Type-Options', 'nosniff');
-    reply.header('Vary', 'Accept, Sec-Fetch-Dest, Sec-Fetch-Mode');
+    reply.header('Vary', format === 'rss' ? 'Accept, Sec-Fetch-Dest, Sec-Fetch-Mode' : 'Sec-Fetch-Dest');
     reply.header('ETag', etag);
     if (etagMatches(request.headers['if-none-match'], etag)) return reply.code(304).send();
     if (preview) {
@@ -93,9 +97,15 @@ export function registerBundleRoutes(app: FastifyInstance, store: Store, origin:
       reply.header('X-Frame-Options', 'DENY');
       return reply.type('text/html; charset=utf-8').send(page.html);
     }
-    const raw = typeof query?.format === 'string' && request.headers['sec-fetch-dest'] === 'document';
-    return reply.type(raw ? 'application/xml; charset=utf-8' : 'application/rss+xml; charset=utf-8').send(renderBundleRss(bundle, members, publicUrl, `${origin()}/`));
-  });
+    const document = request.headers['sec-fetch-dest'] === 'document';
+    if (format === 'json') return reply.type(document ? 'application/json; charset=utf-8' : 'application/feed+json; charset=utf-8').send(renderBundleJson(bundle, members, publicUrl, siteUrl));
+    if (format === 'atom') return reply.type(document ? 'application/xml; charset=utf-8' : 'application/atom+xml; charset=utf-8').send(renderBundleAtom(bundle, members, publicUrl, siteUrl));
+    const raw = typeof query?.format === 'string' && document;
+    return reply.type(raw ? 'application/xml; charset=utf-8' : 'application/rss+xml; charset=utf-8').send(renderBundleRss(bundle, members, publicUrl, siteUrl));
+  };
+  app.get('/bundles/:id/:token.xml', publicBundle('rss'));
+  app.get('/bundles/:id/:token.atom', publicBundle('atom'));
+  app.get('/bundles/:id/:token.json', publicBundle('json'));
 }
 
 /** Bundles in the lightweight config file refer to members by their index in the exported `feeds` list. */

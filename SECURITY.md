@@ -3,6 +3,7 @@
 FeedLantern is a self-hosted, multi-user service. The default listener is loopback-only.
 
 - Management APIs and browser previews require an authenticated session. Every resource belongs to one account; other accounts get a 404, and only administrators can manage users, global settings and full backups.
+- Personal access tokens (`fl_…`) act as their owner with the same workspace isolation, either read-only or read-write. They cannot export or restore backups, manage accounts or manage tokens. Only a SHA-256 digest is stored; a token is shown once, and is revoked when its owner is disabled, deleted or changes password. Treat tokens like passwords and revoke unused ones.
 - Feed URLs contain read-only secrets. Anyone holding a URL can read that feed. Rotate its token if the URL is shared unintentionally.
 - Imported cookies are login credentials. They are encrypted in the database; the local master key must be kept with the private data backup, outside source control.
 - Full backups are encrypted with a separate backup password and contain every user's data. Lightweight configuration exports contain the exporting administrator's Bark address in clear text; keep both private.

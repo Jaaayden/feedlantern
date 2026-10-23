@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { DomUtils, parseDocument } from 'htmlparser2';
-import { translationEnabled } from '../shared/types.js';
+import { translationEnabled, translationLabel } from '../shared/types.js';
 import type { Bundle, Feed, FeedItem } from '../shared/types.js';
 import type { BundleMember } from './bundles.js';
 import { mergeBundleItems } from './bundles.js';
@@ -72,8 +72,8 @@ export function renderRssPreview(feed: Feed, items: FeedItem[], feedUrl: string)
   const source = safeLink(feed.url);
   const updated = dateText(feed.lastSuccessAt);
   const kind = feed.sourceType === 'rss'
-    ? translationEnabled(feed) ? (feed.translationMode === 'chinese' ? 'RSS 中文翻译' : 'RSS 双语翻译') : 'RSS 转发'
-    : translationEnabled(feed) ? (feed.translationMode === 'chinese' ? '网页订阅 · 中文翻译' : '网页订阅 · 双语翻译') : '网页订阅';
+    ? translationEnabled(feed) ? `RSS ${translationLabel(feed)}` : 'RSS 转发'
+    : translationEnabled(feed) ? `网页订阅 · ${translationLabel(feed)}` : '网页订阅';
   const meta = `${escape(kind)}${source ? ` · 来自 <a href="${escape(source)}" rel="noreferrer noopener" target="_blank">${escape(host(source))}</a>` : ''} · 每 ${feed.intervalMinutes} 分钟检查更新${updated ? ` · 最近更新 <time datetime="${escape(new Date(feed.lastSuccessAt!).toISOString())}">${escape(updated)}</time>` : ''}`;
   return renderPreviewPage({
     name: feed.name, kicker: 'RSS 订阅', meta, feedUrl, rotateHint: '订阅设置', empty: '还没有内容。首次抓取或翻译完成后会出现在这里。',
