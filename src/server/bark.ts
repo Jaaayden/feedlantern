@@ -66,12 +66,13 @@ export class BarkWorker {
       if (!job) return;
       const options = this.personal ? this.history.barkOptions(job.feedId) : this.options();
       if (!options.enabled || !options.url) { if (this.personal) { this.history.cancelAlert(job.id); continue; } return; }
+      if (job.kind === 'health' && options.ruleHealthAlerts === false) { this.history.cancelAlert(job.id); continue; }
       if (job.attempts >= options.maxAttempts) { this.history.finishAttempt(job.id, false); continue; }
       if (!this.history.beginAttempt(job.id)) continue;
       this.activeId = job.id;
       this.controller = new AbortController();
       let ok = false;
-      try { await this.send(options.url, job.body, AbortSignal.any([this.controller.signal, AbortSignal.timeout(options.timeoutSeconds * 1000)]), job.kind === 'translation' ? '订阅灯：RSS 翻译失败' : undefined); ok = true; }
+      try { await this.send(options.url, job.body, AbortSignal.any([this.controller.signal, AbortSignal.timeout(options.timeoutSeconds * 1000)]), job.kind === 'translation' ? '订阅灯：RSS 翻译失败' : job.kind === 'health' ? '订阅灯：规则可能失效' : undefined); ok = true; }
       catch { /* Only a fixed, sanitized error is persisted. */ }
       finally { this.activeId = undefined; this.controller = undefined; }
       this.history.finishAttempt(job.id, ok);

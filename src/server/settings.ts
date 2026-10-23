@@ -23,6 +23,7 @@ export const applicationSettingsSchema = z.object({
     retryDelaySeconds: z.number().int().min(1).max(3600),
     laterRetryDelaySeconds: z.number().int().min(1).max(3600),
     cooldownMinutes: z.number().int().min(1).max(1440),
+    ruleHealthAlerts: z.boolean().default(defaultApplicationSettings.bark.ruleHealthAlerts),
   }).strict().refine(value => !value.enabled || !!value.url, '启用 Bark 时请填写推送地址'),
   server: z.object({
     backgroundConcurrency: z.number().int().min(1).max(4),

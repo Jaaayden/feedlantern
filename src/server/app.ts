@@ -54,6 +54,7 @@ import { renderRss, rssEtag } from './rss.js';
 import { etagMatches, renderRssPreview, wantsHtmlPreview } from './rss-preview.js';
 import { asInteger, describeError, asNonEmptyString, asOptionalString, asRecord, cookieMetadata, frameError, friendlyError, logHiddenError, parseCredentialInput, parseFeedInput, parseHttpUrl, parsePartialRules, parseRules } from './validation.js';
 import { Store, type CredentialValue } from './store.js';
+import { registerRuleHealthRoutes } from './rule-health-routes.js';
 
 export interface BrowserServiceLike {
   discover?(options: { url: string; signal?: AbortSignal; cookies?: Cookie[]; waitMs: number }): Promise<{ title: string; detection: DetectionResult }>;
@@ -244,9 +245,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         store.history.succeed(runId, feed.id, performance.now() - started, counts);
         return updated;
       });
+      let checked = result;
+      // Health statistics never change the fetch outcome or the stored items.
+      if (!rss) try { store.transaction(() => store.ruleHealth.record(feed, runId, items)); checked = store.getFeed(feed.id) ?? result; } catch (error) { logHiddenError(`订阅 ${feed.id} 规则健康度统计失败`, error, '规则健康度统计失败'); }
       bark.wake();
       translations.wake();
-      return result;
+      return checked;
     } catch (error) {
       if (!stillActive()) { store.history.interrupt(runId); return null; }
       const shown = friendlyError(error, '抓取失败，已保留已有条目');
@@ -914,6 +918,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       return { ok: true };
     });
   });
+  registerRuleHealthRoutes(app, { store, browser: () => browser, guard: feedsGuard, signal: operationSignal, enqueue: enqueueRefresh, keys: refreshKeys, cookies: credentialsForFeed, payload: feedPayload });
 
   const browserGuard = (request: FastifyRequest) => {
     resourceGuard(request);
@@ -1058,7 +1063,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
   const cleanup = setInterval(() => {
     for (const [id, owner] of browserOwners) if (Date.now() - owner.touchedAt > 10 * 60_000) browserOwners.delete(id);
-    try { store.purgeExpiredSessions(); store.history.prune(); store.translations.prune(); store.compact(); } catch { console.error('抓取日志清理失败，将自动重试'); }
+    try { store.purgeExpiredSessions(); store.history.prune(); store.ruleHealth.prune(); store.translations.prune(); store.compact(); } catch { console.error('抓取日志清理失败，将自动重试'); }
   }, 60 * 60_000);
   cleanup.unref();
   app.addHook('onReady', async () => { jobs.recover(); bark.start(); translations.start(); });

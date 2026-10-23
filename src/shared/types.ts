@@ -38,7 +38,16 @@ export interface Feed extends FeedInput {
   lastError: string | null;
   itemCount: number;
   translation?: { pending: number; success: number; failed: number };
+  /** Present while the latest successful fetches look like the rules stopped matching the page. */
+  ruleHealth?: RuleHealthWarning;
 }
+export type RuleHealthField = 'title' | 'link' | 'date' | 'image' | 'description';
+/** One reason a successful fetch looks broken, compared with the feed's recent median. */
+export interface RuleHealthReason { code: 'item-count' | 'field-rate' | 'duplicate-links' | 'same-link'; field?: RuleHealthField; baseline: number; current: number; message: string }
+export interface RuleHealthWarning { detectedAt: string; checkedAt: string; itemCount: number; baselineSamples: number; reasons: RuleHealthReason[] }
+/** Re-detection on the feed's page: what the saved rules extract now, beside fresh candidates. */
+export interface RuleRedetectResult { current: RulePreview; detection: DetectionResult }
+export interface RulePreview { count: number; items: ExtractedItem[]; error?: string }
 export interface ExtractedItem {
   contentHtml?: string;
   translationStatus?: 'pending' | 'success' | 'failed';
@@ -60,6 +69,8 @@ export interface FetchLog {
   startedAt: string; finishedAt: string | null; durationMs: number | null;
   itemCount: number | null; newItemCount: number | null; error: string | null;
   notification: { status: AlertStatus; error: string | null } | null;
+  /** Rules-health warning recorded on an otherwise successful fetch. */
+  warning?: string | null;
 }
 export interface FetchLogPage { logs: FetchLog[]; nextCursor: string | null; retentionDays: number }
 export interface ApplicationSettings {
@@ -69,6 +80,8 @@ export interface ApplicationSettings {
   bark: {
     enabled: boolean; url: string; failureThreshold: number; timeoutSeconds: number; maxAttempts: number;
     retryDelaySeconds: number; laterRetryDelaySeconds: number; cooldownMinutes: number;
+    /** Also notify when a feed's rules may have stopped matching (deduplicated apart from failures). */
+    ruleHealthAlerts: boolean;
   };
   server: {
     backgroundConcurrency: number; allowedHosts: string[]; dnsOverHttps: boolean;
@@ -79,7 +92,7 @@ export interface ApplicationSettings {
 export const defaultApplicationSettings: ApplicationSettings = {
   translation: { concurrency: 6, requestIntervalMs: 100 },
   feedView: 'list', logRetentionDays: 30,
-  bark: { enabled: false, url: '', failureThreshold: 10, timeoutSeconds: 10, maxAttempts: 3, retryDelaySeconds: 60, laterRetryDelaySeconds: 300, cooldownMinutes: 30 },
+  bark: { enabled: false, url: '', failureThreshold: 10, timeoutSeconds: 10, maxAttempts: 3, retryDelaySeconds: 60, laterRetryDelaySeconds: 300, cooldownMinutes: 30, ruleHealthAlerts: true },
   server: { backgroundConcurrency: 1, allowedHosts: [], dnsOverHttps: false, trustedProxies: [], publicOrigin: 'http://127.0.0.1:4321', cookieSecure: false, sessionTtlDays: 30, host: '127.0.0.1', port: 4321 },
 };
 export interface CredentialSummary { id: string; name: string; url: string; format: 'header' | 'json'; domains: string[]; count: number; updatedAt: string; expiresAt: string | null }
@@ -141,6 +154,9 @@ export interface AuthState { userId?: string; role?: "admin" | "user"; setupRequ
 // POST /api/browser/:id/preview {rules:SelectionRules} -> {items:ExtractedItem[]}
 // POST /api/browser/:id/detect {} -> DetectionResult
 // DELETE /api/browser/:id -> {ok:true}
+// POST /api/feeds/:id/health/redetect {} -> RuleRedetectResult (website feeds; saved rules are not changed)
+// POST /api/feeds/:id/health/preview {rules:SelectionRules} -> RulePreview
+// POST /api/feeds/:id/health/ignore {} -> {feed,feedUrl} (clears the warning, current result becomes the new baseline)
 
 export interface ImportEntry {
   sourceType?: 'website' | 'rss'; translationMode?: 'original' | 'chinese' | 'bilingual';

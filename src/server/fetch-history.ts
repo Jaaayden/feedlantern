@@ -115,6 +115,7 @@ export class FetchHistory {
       itemCount: row.item_count as number | null, newItemCount: row.new_item_count as number | null, error: row.error as string | null,
       notification: row.alert_status ? { status: row.alert_status as AlertStatus, error: row.alert_error as string | null }
         : row.notification_disabled ? { status: 'disabled', error: null } : null,
+      ...(row.warning ? { warning: String(row.warning) } : {}),
     }));
     return { logs, nextCursor: rows.length > limit ? String(logs.at(-1)!.id) : null, retentionDays: this.settings().logRetentionDays };
   }

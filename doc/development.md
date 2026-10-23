@@ -28,6 +28,8 @@ React/Vite 前端；Fastify API；SQLite Store；Playwright BrowserService；共
 
 SQLite `PRAGMA user_version` 记录迁移：版本 1 增加频道名称与设置表，版本 2 增加持久化任务，版本 3 将频道名称与管理名称统一（保留已设置的频道名称）。已有 v0.1.0 数据在首次启动时迁移，旧名称填入频道名称。更改迁移前必须考虑已有数据库和备份格式兼容。
 
+迁移版本 15 新增规则健康统计：`feed_health`（每个订阅当前的预警和最近一次推送时间）与 `feed_health_samples`（每次成功抓取的条目数、不重复链接数和各字段有效率），并为 `fetch_logs` 增加 `warning` 列。它们和抓取日志一样属于诊断数据，不进入完整备份；删除订阅时级联删除。判断逻辑在 `src/server/rule-health.ts`（`measureItems` / `evaluateHealth`，阈值集中在 `RULE_HEALTH`），在抓取事务提交之后单独执行，出错只写服务端日志，不影响抓取结果和条目存储。样本按“网址 + 规则”的签名区分，修改规则或网址后旧样本作废。
+
 多用户迁移版本为 7：统一 `users` 表替代 `admin`，会话引用用户 ID，订阅、凭据和批量任务记录 `owner_id`。原数据迁移到稳定 ID `admin`，旧会话清空。HTTP 层所有资源入口检查归属，批量操作逐项校验；队列执行时重新检查。用户停用递增 `generation`、撤销会话及发出取消信号，后台结果只有代次仍一致时可落库；翻译同时使用任务 revision。
 
 Store 的无 owner 参数列表方法保留给整站后台调度和备份使用，HTTP 工作台必须传入认证的用户 ID。客户端提交的 ownerId 不决定归属。普通用户不读取全局设置，列表偏好存储在浏览器中。
@@ -54,6 +56,9 @@ Store 的无 owner 参数列表方法保留给整站后台调度和备份使用�
 | `/api/backups/preview`、`restore` | 预览/覆盖恢复；初始化场景使用 setupToken |
 | `GET/POST /api/backups/config` | 轻量配置导出/预览与确认导入 |
 | `/feeds/:id/:token.xml` | 无管理员登录的密钥授权 RSS 2.0 |
+| `POST /api/feeds/:id/health/redetect` | 网页订阅：后台按当前规则抽取并运行自动识别，返回 `{current:{count,items,error?}, detection}`（每个候选最多 5 条预览），不保存规则 |
+| `POST /api/feeds/:id/health/preview` | `{rules}`，在订阅网页上预览字段组合，返回 `{count,items,error?}` |
+| `POST /api/feeds/:id/health/ignore` | 清除“规则可能失效”并以最新样本作为新基线，返回 `{feed,feedUrl}` |
 
 `ScreenFrame` 是从页面顶部截取的第一段截图（JPEG 质量 75，data URL，每段最高 8000 像素）。`height` 为已截取的高度，`documentHeight` 为可截取的总高度（最高 48000 像素；网页更长时 `truncated: true`），`viewportHeight` 为远端视口高度。`POST /api/browser/:id/segment {top}` 截取下一段，`top` 必须等于已截取的高度，否则拒绝，避免重复或跳段；返回 `{top, height, image, documentHeight, map}`。`map` 是元素地图：`boxes` 每 5 个数一组（x、y、宽、高、最近的上层元素序号，根为 -1），坐标相对整页顶部，另含 `labels`、`links`（仅 http/https）和 `innerScroll`。地图是累计的：后续分段只追加新元素，已有序号不变。编辑器据此在本地完成悬停高亮、↑/↓ 调整范围和滚动。
 
@@ -116,6 +121,7 @@ SQLite 版本 8 移除单管理员索引并增加加密 `user_notifications`。�
 | 翻译进度事件 | 每个订阅最新 200 条，且不超过 7 天；界面只读最近 100 条 | `RssTranslations.prune` |
 | 翻译片段缓存 | 最近使用的 20000 条（`TRANSLATION_CACHE_LIMIT`，备份格式共用同一上限） | `RssTranslations.prune` |
 | 抓取日志 | 按「日志保留天数」，默认 30 天 | `FetchHistory.prune` |
+| 规则健康样本 | 每个订阅最近 10 条正常样本和 10 条可疑样本，并按「日志保留天数」清理 | `RuleHealth.record` / `RuleHealth.prune` |
 | 登录会话 | 过期后每小时清理 | `Store.purgeExpiredSessions` |
 
 清理每小时运行一次。新建的数据库使用 `auto_vacuum=INCREMENTAL`，清理后 `Store.compact()` 把空闲页逐步还给磁盘；更早创建的数据库用 `scripts/compact-db.ts` 一次性转换并压缩，用法见[升级维护](maintenance.md#数据库体积)。完整备份导出时翻译缓存也只取最近使用的 20000 条，因此缓存在两次清理之间短暂超限不会让导出失败。

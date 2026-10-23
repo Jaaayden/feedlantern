@@ -22,9 +22,9 @@ export function BarkPanel({ username, enabled }: { username: string; enabled: bo
     catch (e) { setError(e instanceof Error ? e.message : '发送失败'); } finally { setBusy(false); }
   }
   if (!value) return <section className="panel settings-form">{error || '正在加载个人通知…'}</section>;
-  const number = (key: keyof Omit<ApplicationSettings['bark'], 'url' | 'enabled'>, label: string, min: number, max: number) => <label className="field"><span>{label}</span><input type="number" required min={min} max={max} value={value[key]} onChange={e => setValue({ ...value, [key]: Number(e.target.value) })} /></label>;
+  const number = (key: keyof Omit<ApplicationSettings['bark'], 'url' | 'enabled' | 'ruleHealthAlerts'>, label: string, min: number, max: number) => <label className="field"><span>{label}</span><input type="number" required min={min} max={max} value={value[key]} onChange={e => setValue({ ...value, [key]: Number(e.target.value) })} /></label>;
   return <form className="panel settings-form personal-bark" aria-label="个人 Bark 通知" onSubmit={save}>
-    <h2>个人 Bark 通知</h2><p className="muted">接收账号：{username}。只接收此账号订阅的抓取和翻译故障通知。</p>
+    <h2>个人 Bark 通知</h2><p className="muted">接收账号：{username}。只接收此账号订阅的抓取、翻译故障和规则失效预警。</p>
     <fieldset disabled={busy}><legend>Bark 故障通知</legend>
       <label className="inline"><input type="checkbox" checked={value.enabled} onChange={e => setValue({ ...value, enabled: e.target.checked })} />启用 Bark 告警</label>
       <label className="field"><span>Bark 推送地址</span><input type="password" autoComplete="off" value={url ?? ''} placeholder={value.configured ? '已配置，留空保持原地址' : 'https://api.day.app/设备密钥/'} onChange={e => setUrl(e.target.value || undefined)} /></label>
@@ -32,6 +32,8 @@ export function BarkPanel({ username, enabled }: { username: string; enabled: bo
       <div className="inline"><button type="button" className="button small" onClick={() => { setUrl(''); setValue({ ...value, enabled: false }); }}>清除地址</button><button type="button" className="button small" disabled={!enabled || !(url || url === undefined && value.configured)} onClick={() => void test()}>向 {username} 发送测试通知</button></div>
       {url === '' && <p className="hint">保存后将清除地址并关闭通知。</p>}
       {number('failureThreshold', '连续抓取失败告警阈值（次）', 1, 1000)}
+      <label className="inline"><input type="checkbox" checked={value.ruleHealthAlerts !== false} onChange={e => setValue({ ...value, ruleHealthAlerts: e.target.checked })} />规则可能失效时通知</label>
+      <p className="hint">抓取成功但条目数骤降、字段大面积缺失或链接全部相同时提醒，每次出现只通知一次，与抓取失败告警分开计算。</p>
       <div className="form-row">{number('timeoutSeconds', '推送超时（秒）', 1, 60)}{number('maxAttempts', '最多发送次数', 1, 5)}</div>
       <div className="form-row">{number('retryDelaySeconds', '首次重试间隔（秒）', 1, 3600)}{number('laterRetryDelaySeconds', '后续重试间隔（秒）', 1, 3600)}</div>
       {number('cooldownMinutes', '发送失败后冷却（分钟）', 1, 1440)}

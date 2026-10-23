@@ -3,6 +3,7 @@ import { translationEnabled } from '../shared/types.js';
 import { RssTranslations } from './rss-translation.js';
 import { TRANSLATION_CACHE_LIMIT, type Tables } from './backups.js';
 import { FetchHistory } from './fetch-history.js';
+import { RuleHealth } from './rule-health.js';
 import { AppError } from './auth.js';
 import { applicationSettingsSchema } from './settings.js';
 import { defaultApplicationSettings, type ApplicationSettings } from '../shared/types.js';
@@ -164,6 +165,7 @@ function rowToItem(row: Record<string, unknown>): FeedItem {
 
 export class Store {
   readonly history: FetchHistory;
+  readonly ruleHealth: RuleHealth;
   readonly translations: RssTranslations;
   readonly dataDir: string;
   readonly dbPath: string;
@@ -290,8 +292,20 @@ export class Store {
       DROP INDEX IF EXISTS users_single_admin;
       CREATE TABLE user_notifications (user_id TEXT PRIMARY KEY, value TEXT NOT NULL);
       PRAGMA user_version=8; COMMIT;`);
+    // Rule health statistics (derived diagnostics, not part of backups).
+    if (version < 15) this.db.exec(`BEGIN;
+      CREATE TABLE IF NOT EXISTS feed_health (feed_id TEXT PRIMARY KEY REFERENCES feeds(id) ON DELETE CASCADE,
+        signature TEXT NOT NULL, warning_json TEXT, alerted_at INTEGER);
+      CREATE TABLE IF NOT EXISTS feed_health_samples (id INTEGER PRIMARY KEY AUTOINCREMENT,
+        feed_id TEXT NOT NULL REFERENCES feeds(id) ON DELETE CASCADE, signature TEXT NOT NULL, recorded_at TEXT NOT NULL,
+        item_count INTEGER NOT NULL, distinct_links INTEGER NOT NULL, title_rate REAL NOT NULL, link_rate REAL NOT NULL,
+        date_rate REAL NOT NULL, image_rate REAL NOT NULL, description_rate REAL NOT NULL, flagged INTEGER NOT NULL DEFAULT 0);
+      CREATE INDEX IF NOT EXISTS feed_health_samples_feed ON feed_health_samples(feed_id, flagged, id DESC);
+      CREATE INDEX IF NOT EXISTS feed_health_samples_retention ON feed_health_samples(recorded_at);
+      PRAGMA user_version=15; COMMIT;`);
     this.translations = new RssTranslations(this.db, id => this.userSignal(id));
     this.history = new FetchHistory(this.db, () => this.getSettings(), id => this.getBarkForFeed(id));
+    this.ruleHealth = new RuleHealth(this.db, () => this.getSettings(), id => this.getBarkForFeed(id));
     this.migrateBark();
     this.ensureSetupToken();
   }
@@ -688,6 +702,7 @@ export class Store {
     this.db.prepare(`UPDATE feeds SET name = ?, channel_title = ?, url = ?, rules_json = ?, rule_origins_json = ?, credential_id = ?, interval_minutes = ?, wait_ms = ?, wait_for_selector = ?, next_fetch_at = ?, last_error = NULL WHERE id = ?`)
       .run(input.name, input.name, input.url, JSON.stringify(input.rules), origins ? JSON.stringify(origins) : null, input.credentialId, input.intervalMinutes, input.waitMs, input.waitForSelector ?? null, nextFetchAt, id);
     this.translations.syncWebsite(this.getFeed(id)!);
+    this.ruleHealth.sync(this.getFeed(id)!);
     return this.getFeed(id);
   }
 
@@ -833,6 +848,8 @@ export class Store {
     if (!row) return null;
     const feed = rowToFeed(row);
     if (translationEnabled(feed)) feed.translation = this.translations.stats(feed.id);
+    const ruleHealth = this.ruleHealth.warning(feed.id);
+    if (ruleHealth) feed.ruleHealth = ruleHealth;
     return feed;
   }
 
@@ -841,6 +858,8 @@ export class Store {
     return rows.map(row => {
       const feed = rowToFeed(row);
       if (translationEnabled(feed)) feed.translation = this.translations.stats(feed.id);
+      const ruleHealth = this.ruleHealth.warning(feed.id);
+      if (ruleHealth) feed.ruleHealth = ruleHealth;
       return feed;
     });
   }
