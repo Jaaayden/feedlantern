@@ -22,6 +22,8 @@ export const FIXTURE_URLS = {
   ambiguous: `${fixtureBaseUrl}/ambiguous`,
   versioned: `${fixtureBaseUrl}/versioned`,
   redirect: `${fixtureBaseUrl}/redirect-malicious`,
+  paged: `${fixtureBaseUrl}/paged`,
+  pagedInternal: `${fixtureBaseUrl}/paged-internal`,
 };
 
 export const STATIC_RULES: SelectionRules = {

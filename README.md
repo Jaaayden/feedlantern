@@ -68,7 +68,7 @@ React + Vite 前端，Fastify API，SQLite 存储，Playwright 驱动 Chromium�
 
 ## 适用范围
 
-支持普通 DOM 列表、动态渲染页面和需要 Cookie 的页面。目前不支持：全文抓取、自动翻页、无限滚动的完整采集、iframe 内部点选、封闭 Shadow DOM、Canvas 内容，以及交互式登录和验证码。服务主机需要持续运行，定时更新才会继续。详见[使用指南](doc/user-guide.md#兼容范围)。
+支持普通 DOM 列表、动态渲染页面和需要 Cookie 的页面。可按“下一页”链接或按钮、URL 页码模板或“加载更多”按钮采集多页（默认只抓一页，最多 10 页，页间有间隔）。目前不支持：全文抓取、无限滚动的完整采集、iframe 内部点选、封闭 Shadow DOM、Canvas 内容，以及交互式登录和验证码。服务主机需要持续运行，定时更新才会继续。详见[使用指南](doc/user-guide.md#兼容范围)。
 
 ## 文档
 

@@ -1489,3 +1489,21 @@ button.user-failing { padding: 0; border: 0; background: none; font: inherit; fo
 button.user-failing:hover { text-decoration: underline; text-underline-offset: 3px; }
 .link-button { padding: 0; border: 0; background: none; font: inherit; color: var(--accent-ink); font-weight: 600; cursor: pointer; }
 .link-button:hover { text-decoration: underline; }
+
+/* Multi-page collection settings in the feed editor. */
+.pagination-panel { margin-bottom: 18px; display: grid; gap: 12px; }
+.pagination-panel .panel-heading { margin-bottom: 0; }
+.pagination-panel > .hint { margin: 0; }
+.pagination-selector { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: end; }
+.pagination-template { grid-column: span 2; }
+.pagination-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-size: 13px; }
+.page-report { border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; font-size: 13.5px; }
+.page-report ol { margin: 0 0 6px; padding: 0; list-style: none; display: grid; gap: 4px; }
+.page-report li { display: flex; gap: 10px; }
+.page-report li.failed { color: var(--danger, #b42318); }
+.page-report p { margin: 0; }
+.fetch-log-note { margin: 4px 0 0; font-size: 13px; }
+@media (max-width: 640px) {
+  .pagination-selector { grid-template-columns: 1fr; }
+  .pagination-template { grid-column: auto; }
+}

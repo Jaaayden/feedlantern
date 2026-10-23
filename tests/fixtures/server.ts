@@ -284,6 +284,17 @@ const server = createServer(async (request, response) => {
       ${[1, 2, 3].map(n => `<a class="frow" href="/article/relative-${n}"><span class="fttl">相对时间文章 ${n}</span><span class="fmeta"><span>猎奇</span><span>NodeSeek</span> · 3分前</span></a>`).join('')}`);
     return;
   }
+  if (requestUrl.pathname === '/paged' || requestUrl.pathname === '/paged-internal') {
+    // Three list pages linked by rel="next"; the internal variant links page 2 to a private address.
+    const number = Math.min(3, Math.max(1, Number(requestUrl.searchParams.get('page') ?? 1) || 1));
+    const internal = requestUrl.pathname === '/paged-internal';
+    const articles = staticArticles.map((article, index) => ({ ...article, title: `Paged ${number}-${index + 1}`, slug: `paged-${number}-${index + 1}` }));
+    const next = internal ? 'http://10.255.255.1/internal-next' : number < 3 ? `/paged?page=${number + 1}` : '';
+    sendHtml(response, 200, page(`Fixture paged list ${number}`, `<h1>Fixture paged list ${number}</h1>
+      <section class="article-list" data-fixture-list="paged">${articles.map((article) => articleCard(article)).join('')}</section>
+      ${next ? `<nav aria-label="Pagination"><a class="next-page" rel="next" href="${next}">Next page</a></nav>` : ''}`));
+    return;
+  }
   if (requestUrl.pathname === '/ambiguous') {
     sendHtml(response, 200, ambiguousPage());
     return;

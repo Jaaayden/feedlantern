@@ -68,7 +68,7 @@ function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 function message(error: unknown): string {
   const text = error instanceof Error ? error.message : String(error);
-  return text.split('\n')[0].slice(0, 200);
+  return text.split('\n')[0].replace(/^打开页面失败：/, '').slice(0, 200);
 }
 
 /**
