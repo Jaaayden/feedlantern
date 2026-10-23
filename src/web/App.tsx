@@ -13,6 +13,7 @@ import { BatchView } from './BatchView';
 import { FeedCollection } from './FeedCollection';
 import { AddToBundle, BundleEditor, BundleSection } from './Bundles';
 import { FetchLogs } from './FetchLogs';
+import { PaginationPanel, paginationProblem } from './PaginationPanel';
 import { RuleHealthNotice, needsAttention } from './RuleHealth';
 import { PageScreen, linkModifier, loadedHeight, type ScreenChoice, type SegmentState } from './PageScreen';
 import { levelsBetween, liftNode } from '../shared/element-map';
@@ -30,7 +31,7 @@ import { api, onUnauthorized, setCsrfToken, setWorkspaceUser } from './api';
 import type { TargetLanguage, TranslationMode, TranslationProviderId } from '../shared/types';
 import type { CredentialPayload, OutputPreview } from './api';
 import type { BundlePayload } from '../shared/types';
-import type { AuthState, CredentialSummary, DetectionCandidate, DetectionResult, ExtractedItem, Feed, FeedInput, FeedItem, FieldName, PickResult, Rect, RuleOrigins, ScreenFrame, SelectionRules } from '../shared/types';
+import type { AuthState, CredentialSummary, DetectionCandidate, DetectionResult, ExtractedItem, Feed, FeedInput, FeedItem, FieldName, PaginationReport, PaginationRules, PickResult, Rect, RuleOrigins, ScreenFrame, SelectionRules } from '../shared/types';
 
 type Notify = (message: string) => void;
 const fieldLabels: Record<'item' | FieldName, string> = { item: '条目容器', title: '标题', link: '链接', description: '摘要', image: '图片', date: '日期' };
@@ -133,7 +134,12 @@ export function Editor({ initial, draft, existing = [], submitFeed, saved, cance
   // Loading of the next screenshot segment below what is shown.
   const [segmentState, setSegmentState] = useState<SegmentState>('idle');
   const segmentLoading = useRef(false);
-  const [target, setTarget] = useState<'item' | FieldName>('item');
+  const [target, setTarget] = useState<'item' | FieldName | 'next'>('item');
+  const [pagination, setPagination] = useState<PaginationRules | null>(initial?.pagination ?? draft?.pagination ?? null);
+  const [pageReport, setPageReport] = useState<PaginationReport | null>(null);
+  const pickNext = pagination?.mode === 'next' || pagination?.mode === 'loadMore';
+  const nextLabel = pagination?.mode === 'loadMore' ? '“加载更多”按钮' : '下一页链接或按钮';
+  const targetLabel = target === 'next' ? nextLabel : fieldLabels[target];
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
   const [note, setNote] = useState('');
@@ -163,6 +169,19 @@ export function Editor({ initial, draft, existing = [], submitFeed, saved, cance
     return () => window.removeEventListener('beforeunload', warn);
   }, [frame]);
 
+  // A multi-page result belongs to the rules and pagination it was made with.
+  useEffect(() => { setPageReport(null); }, [rulesSignature(rules), JSON.stringify(pagination)]);
+  useEffect(() => { if (target === 'next' && !pickNext) setTarget('item'); }, [target, pickNext]);
+  async function testPages() {
+    if (!frame || !pagination || busy) return;
+    const seq = ++previewSeq.current;
+    const signature = rulesSignature(rules);
+    setBusy(`正在试抓最多 ${pagination.maxPages} 页，每页之间等待约 ${Math.round(pagination.delayMs / 1000)} 秒`); setError('');
+    try {
+      const result = await api.browser.paginate(frame.sessionId, rules, pagination);
+      if (seq === previewSeq.current) { setItems(result.items); setPreviewSignature(signature); setPageReport(result.pagination ?? null); }
+    } catch (error) { if (seq === previewSeq.current) setError(messageOf(error)); } finally { setBusy(''); }
+  }
   async function preview(nextRules: SelectionRules, id = sessionRef.current) {
     const seq = ++previewSeq.current;
     const signature = rulesSignature(nextRules);
@@ -251,6 +270,14 @@ export function Editor({ initial, draft, existing = [], submitFeed, saved, cance
     setBusy('正在定位内容'); setError('');
     try {
       const at = choice.node !== undefined ? { node: choice.node, ...(choice.exact ? { exact: true } : {}) } : { x: choice.x, y: choice.y };
+      if (target === 'next') {
+        const picked = await api.browser.pick(frame.sessionId, { ...at, target });
+        setPagination(previous => previous && { ...previous, nextSelector: picked.selector });
+        setRects(picked.rects);
+        setLastPick(picked.node !== undefined ? { base: choice.base ?? picked.node, node: picked.node } : null);
+        setNote(`${nextLabel}匹配 ${picked.count} 项。${picked.count > 1 ? '翻页时只使用第一项。' : ''}${picked.warning ?? ''}`);
+        return;
+      }
       // Sending the current rules makes the server preview them in the same request.
       const picked = await api.browser.pick(frame.sessionId, { ...at, target, itemSelector: rules.item || undefined, rules });
       applyPick(picked, choice.base);
@@ -266,7 +293,7 @@ export function Editor({ initial, draft, existing = [], submitFeed, saved, cance
     if (picked.items) { setItems(picked.items); setPreviewSignature(rulesSignature(next)); }
     else { setItems([]); setPreviewSignature(''); }
     if (picked.previewError) setError(picked.previewError);
-    setNote(`${fieldLabels[target]}匹配 ${picked.count} 项。${picked.warning ?? ''}${picked.datePreview ? ` ${picked.datePreview.dateText} → ${dateLabel(picked.datePreview.publishedAt)}${picked.datePreview.publishedAtSource === 'relative' ? '（估算）' : ''}` : ''}`);
+    setNote(`${targetLabel}匹配 ${picked.count} 项。${picked.warning ?? ''}${picked.datePreview ? ` ${picked.datePreview.dateText} → ${dateLabel(picked.datePreview.publishedAt)}${picked.datePreview.publishedAtSource === 'relative' ? '（估算）' : ''}` : ''}`);
   }
   // Widen or narrow the last pick along the chain from the pointed element outwards.
   async function resize(delta: 1 | -1) {
@@ -314,12 +341,13 @@ export function Editor({ initial, draft, existing = [], submitFeed, saved, cance
   }
   async function save(event: FormEvent) {
     event.preventDefault();
+    if (paginationProblem(pagination)) { setNote(`多页采集设置未完成：${paginationProblem(pagination)}`); return; }
     if (navigated || !sourceUnchanged || !items.length || previewSignature !== rulesSignature(rules)) {
       if (sourceUnchanged && rulesSignature(rules) !== previewSignature) setNote('匹配规则正在重新预览，请稍候再保存。');
       return;
     }
     setBusy('正在保存订阅'); setError('');
-    try { const body: FeedInput = { name, url, credentialId: credentialId || null, rules, ruleOrigins: origins, intervalMinutes, waitMs, waitForSelector: waitForSelector || undefined }; const result = submitFeed ? await submitFeed(body) : initial ? await api.feeds.update(initial.id, body) : await api.feeds.create(body); saved(result.feed.id); }
+    try { const body: FeedInput = { name, url, credentialId: credentialId || null, rules, ruleOrigins: origins, intervalMinutes, waitMs, waitForSelector: waitForSelector || undefined, pagination }; const result = submitFeed ? await submitFeed(body) : initial ? await api.feeds.update(initial.id, body) : await api.feeds.create(body); saved(result.feed.id); }
     catch (error) { setError(messageOf(error)); } finally { setBusy(''); }
   }
   const chosen = detection?.candidates.find(item => item.id === candidateId);
@@ -332,13 +360,14 @@ export function Editor({ initial, draft, existing = [], submitFeed, saved, cance
     {frame && <><div className="result-toolbar"><div><span className={`badge ${chosen?.confidence === 'high' ? 'good' : ''}`}><Sparkles size={13} />{chosen?.confidence === 'high' ? '已自动匹配' : '匹配结果'}</span><span className="muted">{items.length} 条内容</span></div><div className="inline"><button type="button" className="button small" onClick={() => void rescan()} disabled={!!busy}><RefreshCw size={14} />重新识别</button><button type="button" className="button small" disabled={!!busy} onClick={() => setAdjusting(!adjusting)}><MousePointer2 size={14} />{adjusting ? '收起调整' : '调整匹配'}</button></div></div>{note && <div className="notice"><CircleHelp size={16} /><span>{note}</span></div>}{!sourceUnchanged && <div className="notice">网址或加载设置已变化，请重新打开网页后保存。</div>}
     {!!detection?.candidates.length && (detection.candidates.length > 1 || !candidateId) && <div className="candidate-grid">{detection.candidates.map(candidate => <button key={candidate.id} className={`candidate ${candidate.id === candidateId ? 'selected' : ''}`} disabled={!!busy} onClick={() => void applyCandidate(candidate)}><span className="inline"><Radio size={15} />{candidate.label}<span className="muted">{candidate.count} 条</span></span><strong>{candidate.items[0]?.title ?? '查看候选内容'}</strong><small>{candidate.confidence === 'high' ? '匹配明确' : '请检查样例'}</small></button>)}</div>}
     {adjusting && <section className="adjust-panel"><div className="adjust-heading"><h2>在网页上调整匹配</h2><div className="inline">{(frame.map ? frame.map.innerScroll : frame.height <= frame.viewportHeight) && <><button className="icon-button" aria-label="在网页内向上滚动" title="滚动网页内部的滚动区域" disabled={!!busy} onClick={() => void frameAction(() => api.browser.scroll(frame.sessionId, -500))}><ArrowUp size={17} /></button><button className="icon-button" aria-label="在网页内向下滚动" title="滚动网页内部的滚动区域" disabled={!!busy} onClick={() => void frameAction(() => api.browser.scroll(frame.sessionId, 500))}><ArrowDown size={17} /></button></>}<button className="icon-button" aria-label="更新网页画面" title="重新截取网页画面" disabled={!!busy} onClick={() => void frameAction(() => api.browser.frame(frame.sessionId))}><RefreshCw size={16} /></button></div></div>
-      <div className="field-tabs">{keys.map(key => <button className={target === key ? 'selected' : ''} key={key} onClick={() => { setTarget(key); setLastPick(null); }}>{fieldLabels[key]}{rules[key] && <Check size={12} />}</button>)}<span className="scope-controls"><button className="button small" disabled={!!busy || !lastPick} title="把刚才的选择扩大到外层元素（悬停时也可按 ↑）" onClick={() => void resize(1)}><ArrowUp size={14} />扩大</button><button className="button small" disabled={!!busy || !lastPick} title="把刚才的选择缩小到内层元素（悬停时也可按 ↓）" onClick={() => void resize(-1)}><ArrowDown size={14} />缩小</button></span></div>
-      <p className="hint">点击网页中的<strong>{fieldLabels[target]}</strong>。悬停时按 ↑ / ↓ 扩大或缩小范围；按住 {linkModifier} 点击链接可以跳转到该页。</p>
+      <div className="field-tabs">{keys.map(key => <button className={target === key ? 'selected' : ''} key={key} onClick={() => { setTarget(key); setLastPick(null); }}>{fieldLabels[key]}{rules[key] && <Check size={12} />}</button>)}{pickNext && <button className={target === 'next' ? 'selected' : ''} onClick={() => { setTarget('next'); setLastPick(null); }}>{pagination?.mode === 'loadMore' ? '加载更多' : '下一页'}{pagination?.nextSelector && <Check size={12} />}</button>}<span className="scope-controls"><button className="button small" disabled={!!busy || !lastPick} title="把刚才的选择扩大到外层元素（悬停时也可按 ↑）" onClick={() => void resize(1)}><ArrowUp size={14} />扩大</button><button className="button small" disabled={!!busy || !lastPick} title="把刚才的选择缩小到内层元素（悬停时也可按 ↓）" onClick={() => void resize(-1)}><ArrowDown size={14} />缩小</button></span></div>
+      <p className="hint">点击网页中的<strong>{targetLabel}</strong>。悬停时按 ↑ / ↓ 扩大或缩小范围；按住 {linkModifier} 点击链接可以跳转到该页。</p>
       {navigated && <div className="notice navigated-notice" role="status"><Globe2 size={16} /><span>画面已跳转到 <code>{frame.url}</code>。要订阅这一页，请把它设为源网址。</span><span className="inline"><button className="button small primary" disabled={!!busy} onClick={adoptCurrentPage}>以此页为源网址</button><button className="button small" disabled={!!busy} onClick={() => void open()}>返回源网址</button></span></div>}
       <div className="browser-bar"><span /><span /><span /><code>{frame.url}</code>{busy && <small className="browser-busy"><LoaderCircle size={13} className="spin" />{busy}</small>}</div>
       <PageScreen frame={frame} rects={rects} disabled={!!busy || segmentState === 'loading'} navigated={navigated} revealKey={[frame.image.length, frame.url, candidateId].join('|')} segmentState={segmentState} loadMore={() => void loadMore()} pick={choice => void pickAt(choice)} follow={(node, href) => void followLink(node, href)} />
       <details className="advanced"><summary>高级：编辑匹配规则<ChevronDown size={14} /></summary><div className="selector-grid">{keys.map(key => <Field key={key} label={`${fieldLabels[key]}选择器`} hint={origins[key] === 'manual' ? '手动配置 · 重新识别时保留' : '自动配置'}><input value={rules[key] ?? ''} onChange={e => changeRule(key, e.target.value)} placeholder={key === 'item' ? 'article' : key === 'title' || key === 'link' ? 'h2 a' : '可留空'} spellCheck={false} /></Field>)}</div>{chosen && <button type="button" className="button small" onClick={() => { if (confirm('使用此候选替换全部匹配规则，包括你手动修改的字段？')) void applyCandidate(chosen, true); }}>替换全部匹配</button>}</details></section>}
-    <div className="editor-results"><section className="panel"><div className="panel-heading"><h2>订阅预览</h2><span className="muted">与后台抓取使用相同规则</span></div><ItemPreview items={items} empty={detection?.candidates.length ? '选择候选列表，或调整匹配以查看内容' : '没有找到可靠列表，可以手动点选条目与字段'} /></section><form className="save-panel panel" onSubmit={save}><div className="panel-heading"><h2>保存订阅</h2><Rss size={18} /></div><Field label="订阅名称"><input required value={name} onChange={e => setName(e.target.value)} /></Field><Field label="刷新间隔（分钟）"><input type="number" required min={5} max={1440} value={intervalMinutes} onChange={e => setIntervalMinutes(Number(e.target.value))} /></Field><p className="hint">保存后会在后台定时更新。页面关闭不影响运行中的服务。</p><button className="button primary full" disabled={!!busy || navigated || !items.length || !sourceUnchanged || previewSignature !== rulesSignature(rules)}>{busy === '正在保存订阅' ? <Busy /> : <><Check size={16} />保存订阅</>}</button></form></div></>}
+    <PaginationPanel value={pagination} onChange={setPagination} disabled={!!busy} report={pageReport} onTest={() => void testPages()} onPick={() => { setAdjusting(true); setTarget('next'); setLastPick(null); setNote(`在下方网页中点击${nextLabel}。`); }} />
+    <div className="editor-results"><section className="panel"><div className="panel-heading"><h2>订阅预览</h2><span className="muted">与后台抓取使用相同规则</span></div><ItemPreview items={items} empty={detection?.candidates.length ? '选择候选列表，或调整匹配以查看内容' : '没有找到可靠列表，可以手动点选条目与字段'} /></section><form className="save-panel panel" onSubmit={save}><div className="panel-heading"><h2>保存订阅</h2><Rss size={18} /></div><Field label="订阅名称"><input required value={name} onChange={e => setName(e.target.value)} /></Field><Field label="刷新间隔（分钟）"><input type="number" required min={5} max={1440} value={intervalMinutes} onChange={e => setIntervalMinutes(Number(e.target.value))} /></Field><p className="hint">保存后会在后台定时更新。页面关闭不影响运行中的服务。</p><button className="button primary full" disabled={!!busy || navigated || !items.length || !sourceUnchanged || previewSignature !== rulesSignature(rules) || !!paginationProblem(pagination)}>{busy === '正在保存订阅' ? <Busy /> : <><Check size={16} />保存订阅</>}</button></form></div></>}
   </>;
 }
 

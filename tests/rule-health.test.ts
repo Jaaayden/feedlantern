@@ -160,7 +160,8 @@ test('样本数量有上限并随日志保留期清理', () => {
     // Without history an active warning is kept rather than treated as healthy.
     fetch(before());
     assert.ok(store.getFeed(feed.id)!.ruleHealth);
-    assert.equal(Number(db.prepare('PRAGMA user_version').get()!.user_version), 15);
+    // Later migrations (e.g. 16) may raise the version further.
+    assert.ok(Number(db.prepare('PRAGMA user_version').get()!.user_version) >= 15);
     db.close();
   } finally { close(); }
 });

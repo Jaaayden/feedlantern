@@ -24,6 +24,8 @@ import type {
   FeedItem,
   ItemFilter,
   ItemOutputStatus,
+  PaginationReport,
+  PaginationRules,
   PickRequest,
   PickResult,
   ScreenFrame,
@@ -248,6 +250,9 @@ export const api = {
       request<DetectionResult>(`/api/browser/${encodeURIComponent(id)}/detect`, { method: 'POST', body: {} }),
     preview: (id: string, rules: FeedInput['rules']) =>
       request<{ items: ExtractedItem[] }>(`/api/browser/${encodeURIComponent(id)}/preview`, { method: 'POST', body: { rules } }),
+    /** Collect pages 1…N like a background refresh (slow: waits between pages). */
+    paginate: (id: string, rules: FeedInput['rules'], pagination: PaginationRules) =>
+      request<{ items: ExtractedItem[]; pagination?: PaginationReport }>(`/api/browser/${encodeURIComponent(id)}/preview`, { method: 'POST', body: { rules, pagination } }),
     close: (id: string) => request<{ ok: true }>(`/api/browser/${encodeURIComponent(id)}`, { method: 'DELETE', keepalive: true }),
   },
 };

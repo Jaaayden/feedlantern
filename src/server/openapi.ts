@@ -69,7 +69,17 @@ const schemas: Record<string, Schema> = {
     name: str({ minLength: 1 }), url: str({ format: 'uri' }), rules: ref('SelectionRules'),
     ruleOrigins: { type: 'object', additionalProperties: str({ enum: ['auto', 'manual'] }) },
     credentialId: nullable(str()), intervalMinutes: int({ minimum: 5, maximum: 1440 }), waitMs: int({ minimum: 0, maximum: 10000 }), waitForSelector: str(),
+    pagination: nullable(ref('PaginationRules')),
   }, ['name', 'url', 'rules', 'credentialId', 'intervalMinutes', 'waitMs']),
+  PaginationRules: object({
+    mode: str({ enum: ['next', 'template', 'loadMore'], description: 'next：点击“下一页”链接或按钮；template：按 URL 模板代入页码；loadMore：点击“加载更多”按钮' }),
+    maxPages: int({ minimum: 1, maximum: 10, default: 3, description: '包含第 1 页（源网址）' }), delayMs: int({ minimum: 2000, maximum: 30000, default: 3000, description: '每页之间的间隔，另加最多 20% 随机抖动' }),
+    nextSelector: str({ description: 'next / loadMore 必填' }), urlTemplate: str({ description: 'template 必填，须包含 {n}' }), start: int({ minimum: 0, default: 2, description: '第 2 页代入的 {n}' }), step: int({ minimum: 1, default: 1 }),
+  }, ['mode'], { description: '多页采集设置。FeedInput 中省略表示保留已保存的设置，null 表示只抓源网址这一页' }),
+  PaginationReport: object({
+    pages: array(object({ page: int(), url: str(), count: int(), added: int(), error: str() }, ['page', 'url', 'count', 'added'])),
+    stoppedAt: int(), stop: str({ enum: ['single', 'max', 'end', 'repeat', 'known', 'empty', 'failed', 'blocked', 'budget', 'limit'] }), message: str({ description: '在哪一页、因为什么原因停止' }),
+  }, ['pages', 'stoppedAt', 'stop', 'message']),
   ItemFilter: object({ include: array(str({ maxLength: 200 }), { maxItems: 30 }), exclude: array(str({ maxLength: 200 }), { maxItems: 30 }), regex: bool }, ['include', 'exclude', 'regex'], { description: '条目过滤：排除优先，include 非空时必须命中其一；只影响输出' }),
   FeedSettingsInput: object({ translationMode, targetLanguage, translationProvider, channelTitle: str({ minLength: 1, maxLength: 200 }), intervalMinutes: int({ minimum: 5, maximum: 1440 }), itemFilter: nullable(ref('ItemFilter')), outputLimit: int({ minimum: 10, maximum: 500 }) }, [], { description: '至少提供一个字段；itemFilter 为 null 时删除过滤' }),
   OutputStatus: object({ outputStatus: { type: 'object', additionalProperties: str({ enum: ['published', 'untranslated', 'excluded', 'not-included', 'over-limit'] }), description: '条目 ID → 是否输出及原因' }, filterTimedOut: bool }, ['outputStatus']),
@@ -133,7 +143,7 @@ const schemas: Record<string, Schema> = {
   }, ['sessionId', 'image', 'width', 'height', 'url', 'title']),
   SegmentResult: object({ top: int(), height: int(), image: str(), documentHeight: int(), map: ref('ElementMap'), truncated: bool }, ['top', 'height', 'image', 'documentHeight', 'map']),
   PickRequest: object({
-    target: str({ enum: ['item', 'title', 'link', 'description', 'image', 'date'] }), node: int(), x: { type: 'number' }, y: { type: 'number' },
+    target: str({ enum: ['item', 'title', 'link', 'description', 'image', 'date', 'next'], description: 'next：点选“下一页”或“加载更多”，不预览规则' }), node: int(), x: { type: 'number' }, y: { type: 'number' },
     exact: bool, itemSelector: str(), ancestorLevel: int(), rules: { type: 'object' },
   }, ['target']),
   PickResult: object({ selector: str(), rects: array({ type: 'object' }), count: int(), sampleText: str(), warning: str(), node: int(), items: array(ref('ExtractedItem')), previewError: str() }, ['selector', 'rects', 'count', 'sampleText']),
@@ -238,7 +248,7 @@ const operations: Operation[] = [
   { method: 'POST', path: '/api/browser/:id/pick', tag: 'browser', summary: '点选元素生成选择器', workspace: true, body: ref('PickRequest'), response: ref('PickResult') },
   { method: 'POST', path: '/api/browser/:id/segment', tag: 'browser', summary: '截取下一段画面', workspace: true, body: object({ top: int({ minimum: 1 }) }, ['top']), response: ref('SegmentResult') },
   { method: 'POST', path: '/api/browser/:id/follow', tag: 'browser', summary: '打开元素上的链接', workspace: true, body: object({ node: int({ minimum: 0 }) }, ['node']), response: ref('ScreenFrame') },
-  { method: 'POST', path: '/api/browser/:id/preview', tag: 'browser', summary: '按规则预览条目', workspace: true, body: object({ rules: ref('SelectionRules') }, ['rules']), response: object({ items: array(ref('ExtractedItem')) }) },
+  { method: 'POST', path: '/api/browser/:id/preview', tag: 'browser', summary: '按规则预览条目', description: '带 pagination 且 maxPages 大于 1 时，按与后台刷新相同的逻辑试抓多页（在会话的另一个标签中进行，较慢），并返回 pagination 报告；仍是 POST，因此需要 write 令牌。', workspace: true, body: object({ rules: ref('SelectionRules'), pagination: nullable(ref('PaginationRules')) }, ['rules']), response: object({ items: array(ref('ExtractedItem')), pagination: ref('PaginationReport') }, ['items']) },
   { method: 'POST', path: '/api/browser/:id/detect', tag: 'browser', summary: '自动识别列表', workspace: true, response: ref('DetectionResult') },
 ];
 

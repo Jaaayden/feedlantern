@@ -7,6 +7,8 @@ import type {
   ExtractedItem,
   FieldName,
   PickRequest,
+  PaginationReport,
+  PaginationRules,
   PickResult,
   Rect,
   ScreenFrame,
@@ -17,6 +19,7 @@ import { cookiesForUrl, toPlaywrightCookies } from './cookies';
 import { hitTest, linkFor } from '../shared/element-map';
 import { redactForLog } from './log';
 import { extractPage } from './extraction';
+import { collectPages, PAGINATION_BUDGET_MS, type CollectResult } from './pagination';
 import { prepareScrollContent } from './page-preparation';
 import {
   allowedHostListFromEnv,
@@ -42,6 +45,8 @@ const MAX_MAP_NODES = 6_000; // per segment
 const DOCUMENT_HEIGHT_SCRIPT = 'Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0)';
 const SCREENSHOT_QUALITY = 75;
 const BROWSER_OPERATION_TIMEOUT_MS = 60_000;
+// A multi-page run stops itself at its budget; this backstop only catches a hang.
+const PAGINATED_OPERATION_TIMEOUT_MS = PAGINATION_BUDGET_MS + 90_000;
 
 export interface BrowserOpenOptions {
   signal?: AbortSignal;
@@ -53,6 +58,15 @@ export interface BrowserOpenOptions {
 
 export interface BrowserScrapeOptions extends BrowserOpenOptions {
   rules: SelectionRules;
+  pagination?: PaginationRules | null;
+  /** Links the feed already stored; a page of only those ends a multi-page run. */
+  isKnown?: (link: string) => boolean;
+  /** Receives which pages were fetched and why collection stopped, and the items of page 1. */
+  onReport?: (report: PaginationReport, firstPage: ExtractedItem[]) => void;
+}
+
+function paginated(pagination?: PaginationRules | null): pagination is PaginationRules {
+  return !!pagination && pagination.maxPages > 1;
 }
 
 export interface BrowserServiceOptions {
@@ -90,6 +104,11 @@ interface BrowserSession {
   map?: ElementMap;
   /** Captured height so far: the first segment plus any later ones. */
   frameHeight?: number;
+  /** The page opened at first, for a multi-page preview in a separate tab. */
+  sourceUrl: string;
+  waitForSelector?: string;
+  /** Set while the session itself opens a tab, so the popup guard keeps it. */
+  openingTab: boolean;
 }
 
 interface RawPickResult {
@@ -213,6 +232,7 @@ const PICK_SCRIPT = String.raw`(request, mapKey) => {
       description: 'p,[class*="summary"],[class*="description"],[class*="excerpt"]',
       image: 'img,source',
       date: 'time,[datetime],[class*="date"],[class*="time"]',
+      next: 'a[href],button,[role="button"],input[type="submit"],input[type="button"]',
     };
     const meaningful = target.closest(selectors[request.target] || 'a,h1,h2,h3,h4,h5,h6,time,img,source,p,article,li');
     if (meaningful) target = meaningful;
@@ -227,7 +247,9 @@ const PICK_SCRIPT = String.raw`(request, mapKey) => {
     } catch { /* invalid selector is reported below */ }
   }
   const root = item ? item.element : null;
-  const selector = request.target === 'item' ? item.selector : root ? pathSelector(target, root) : globalSelector(target);
+  // A rel="next" link is the most stable way to find the next page again.
+  const relNext = request.target === 'next' && target.matches('a[rel~="next"]') && queryAll(document, 'a[rel~="next"]').length === 1;
+  const selector = request.target === 'item' ? item.selector : relNext ? 'a[rel~="next"]' : root ? pathSelector(target, root) : globalSelector(target);
   if (!selector) return { selector: '', rects: [], count: 0, sampleText: '', warning: '无法生成稳定 selector' };
   const roots = root ? queryAll(document, request.itemSelector || item.selector) : [document.documentElement];
   const matches = [];
@@ -246,7 +268,7 @@ const PICK_SCRIPT = String.raw`(request, mapKey) => {
     rects: rects,
     count: matches.length,
     sampleText: clean((matches[0] || target).textContent).slice(0, 500),
-    ...(!root && request.target !== 'item' ? { warning: '未提供 itemSelector，字段 selector 按整页生成' } : {}),
+    ...(!root && request.target !== 'item' && request.target !== 'next' ? { warning: '未提供 itemSelector，字段 selector 按整页生成' } : {}),
   };
 }`;
 
@@ -449,10 +471,10 @@ export class BrowserService {
     }
   }
 
-  private async preparePage(page: Page, options: BrowserOpenOptions, rejectHttpErrors = false): Promise<void> {
+  private async preparePage(page: Page, options: BrowserOpenOptions, rejectHttpErrors = false, referer?: string): Promise<void> {
     const waitMs = boundedWait(options.waitMs);
     try {
-      const response = await page.goto(options.url, { waitUntil: 'domcontentloaded', timeout: NAVIGATION_TIMEOUT_MS });
+      const response = await page.goto(options.url, { waitUntil: 'domcontentloaded', timeout: NAVIGATION_TIMEOUT_MS, ...(referer ? { referer } : {}) });
       if (rejectHttpErrors && response && response.status() >= 400) {
         const hint = response.status() === 401 || response.status() === 403 ? '，请检查 Cookie 或访问权限' : '';
         throw new BrowserServiceError(`目标网页返回 HTTP ${response.status()}${hint}`);
@@ -501,7 +523,7 @@ export class BrowserService {
     return session;
   }
 
-  private async withSession<T>(id: string, operation: (session: BrowserSession) => Promise<T>): Promise<T> {
+  private async withSession<T>(id: string, operation: (session: BrowserSession) => Promise<T>, timeoutMs = BROWSER_OPERATION_TIMEOUT_MS): Promise<T> {
     const session = this.getSession(id);
     if (session.busy) throw new BrowserBusyError();
     session.busy = true;
@@ -513,7 +535,7 @@ export class BrowserService {
         timedOut = true;
         this.invalidateSession(session);
         reject(new BrowserServiceError('浏览器操作超时，页面会话已关闭，请重新打开'));
-      }, BROWSER_OPERATION_TIMEOUT_MS);
+      }, timeoutMs);
       timeout.unref?.();
     });
     try {
@@ -618,15 +640,23 @@ export class BrowserService {
       context = await this.createContext(options.cookies, options.url);
       options.signal?.throwIfAborted();
       page = await context.newPage();
+      const tabs = { opening: false };
       // Keep the visual editor focused on one page. Popups are deliberately
       // closed because a separate page would bypass the REST session model.
+      // Only a tab the session opens itself (multi-page preview) is kept.
       context.on('page', popup => {
-        if (popup !== page) void popup.close().catch(() => undefined);
+        if (popup === page) return;
+        if (tabs.opening) { tabs.opening = false; return; }
+        void popup.close().catch(() => undefined);
       });
       await this.preparePage(page, options);
       const pointer = { x: VIEWPORT.width / 2, y: VIEWPORT.height / 2 };
       await page.mouse.move(pointer.x, pointer.y);
-      const session: BrowserSession = { id, context, page, busy: false, lastUsedAt: Date.now(), pointer, waitMs: boundedWait(options.waitMs), mapKey: `__feedlantern_${randomUUID().replace(/-/g, '')}` };
+      const session: BrowserSession = {
+        id, context, page, busy: false, lastUsedAt: Date.now(), pointer, waitMs: boundedWait(options.waitMs), mapKey: `__feedlantern_${randomUUID().replace(/-/g, '')}`,
+        sourceUrl: options.url, waitForSelector: options.waitForSelector,
+        get openingTab() { return tabs.opening; }, set openingTab(value: boolean) { tabs.opening = value; },
+      };
       this.sessions.set(id, session);
       this.scheduleIdle(session);
       return await this.frame(session);
@@ -718,7 +748,7 @@ export class BrowserService {
         if (error instanceof BrowserServiceError) throw error;
         throw normalizeSelectorError(error, '分析选取元素失败');
       }
-      if (rules) {
+      if (rules && request.target !== 'next') {
         const next = { ...rules, [request.target]: result.selector };
         if (next.item && next.title && next.link) {
           try {
@@ -754,15 +784,59 @@ export class BrowserService {
     });
   }
 
+  /**
+   * Preview a multi-page collection: page 1 is reopened in a separate tab of
+   * this session (same context, cookies and network policy) and collected
+   * exactly like a background refresh, so the editor's own page stays put.
+   */
+  async paginate(id: string, rules: SelectionRules, pagination: PaginationRules): Promise<CollectResult> {
+    return this.withSession(id, async session => {
+      session.openingTab = true;
+      let tab: Page | undefined;
+      try {
+        tab = await session.context.newPage();
+        session.openingTab = false;
+        const options = { url: session.sourceUrl, waitMs: session.waitMs, waitForSelector: session.waitForSelector };
+        await this.preparePage(tab, options, true);
+        return await this.collect(tab, { ...options, rules, pagination });
+      } catch (error) {
+        throw error instanceof BrowserServiceError ? error : cleanError(error, '预览翻页失败');
+      } finally {
+        session.openingTab = false;
+        await tab?.close().catch(() => undefined);
+      }
+    }, paginated(pagination) ? PAGINATED_OPERATION_TIMEOUT_MS : BROWSER_OPERATION_TIMEOUT_MS);
+  }
+
+  /** Page 1 is open in `page`; collect it and any further pages in the same tab. */
+  private collect(page: Page, options: BrowserScrapeOptions): Promise<CollectResult> {
+    const policy = new NetworkPolicy(this.networkOptions);
+    return collectPages(page, {
+      rules: options.rules,
+      pagination: options.pagination,
+      isKnown: options.isKnown,
+      signal: options.signal,
+      assertAllowed: url => policy.assertAllowed(url),
+      load: (url, referer) => this.preparePage(page, { url, waitMs: options.waitMs, waitForSelector: options.waitForSelector }, true, referer),
+      settle: async () => {
+        const waitMs = boundedWait(options.waitMs);
+        if (waitMs > 0) await page.waitForTimeout(waitMs);
+        await prepareScrollContent(page);
+      },
+    });
+  }
+
   async discover(options: BrowserOpenOptions): Promise<{ title: string; detection: DetectionResult }> {
     return this.background(options, async page => ({ title: await page.title(), detection: await (await import('./detection.js')).detectPage(page) }));
   }
 
   async scrape(options: BrowserScrapeOptions): Promise<ExtractedItem[]> {
-    return this.background(options, page => extractPage(page, options.rules));
+    const result = await this.background(options, page => this.collect(page, options), paginated(options.pagination) ? PAGINATED_OPERATION_TIMEOUT_MS : BROWSER_OPERATION_TIMEOUT_MS);
+    options.onReport?.(result.report, result.firstPage);
+    return result.items;
   }
 
-  private async background<T>(options: BrowserOpenOptions, extract: (page: Page) => Promise<T>): Promise<T> {
+  private async background<T>(options: BrowserOpenOptions, extract: (page: Page) => Promise<T>, timeoutMs = BROWSER_OPERATION_TIMEOUT_MS): Promise<T> {
     if (this.scrapeSessions >= this.backgroundConcurrency) throw new BrowserBusyError('已有抓取任务正在运行');
     this.scrapeSessions += 1;
     let context: BrowserContext | undefined;
@@ -778,7 +852,7 @@ export class BrowserService {
         timeout = setTimeout(() => {
           void context?.close().catch(() => undefined);
           reject(new BrowserServiceError('后台抓取超时，浏览器会话已关闭'));
-        }, BROWSER_OPERATION_TIMEOUT_MS);
+        }, timeoutMs);
         timeout.unref?.();
       });
       try {

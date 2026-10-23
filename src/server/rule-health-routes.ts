@@ -37,6 +37,8 @@ export function registerRuleHealthRoutes(app: FastifyInstance, context: RuleHeal
     if (feed.sourceType === 'rss') throw new AppError(400, 'RSS 来源订阅没有匹配规则');
     return feed;
   };
+  // Both captures read page 1 only, also for multi-page feeds: rule health is
+  // measured on page 1, and automatic detection only ever looks at one page.
   const preview = async (feed: Feed, rules: SelectionRules, signal: AbortSignal): Promise<RulePreview> => {
     try {
       const items = await context.browser().scrape({ url: feed.url, signal, cookies: context.cookies(feed), waitMs: feed.waitMs, waitForSelector: feed.waitForSelector, rules });

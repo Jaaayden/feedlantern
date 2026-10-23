@@ -3,6 +3,7 @@ import { isTargetLanguage, isTranslationProvider, translationEnabled } from '../
 import { RssTranslations } from './rss-translation.js';
 import { TRANSLATION_CACHE_LIMIT, type Tables } from './backups.js';
 import { FetchHistory } from './fetch-history.js';
+import { normalizeLink } from './links.js';
 import { RuleHealth } from './rule-health.js';
 import { BUNDLE_SCHEMA, BundleStore } from './bundle-store.js';
 import { ApiTokens } from './api-tokens.js';
@@ -15,7 +16,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSy
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import type { CredentialSummary, ExtractedItem, Feed, FeedInput, FeedSettingsInput, FeedItem, ImportJob, ItemFilter, RuleOrigins, SelectionRules } from '../shared/types.js';
+import type { CredentialSummary, ExtractedItem, Feed, FeedInput, FeedSettingsInput, FeedItem, ImportJob, ItemFilter, PaginationRules, RuleOrigins, SelectionRules } from '../shared/types.js';
 import type { ServerConfig } from './config.js';
 
 export interface CredentialValue {
@@ -106,19 +107,6 @@ function decrypt(masterKey: Buffer, encoded: string): string {
   return Buffer.concat([decipher.update(Buffer.from(ciphertextEncoded, 'base64url')), decipher.final()]).toString('utf8');
 }
 
-function normalizeLink(link: string, baseUrl?: string): string {
-  const raw = link.trim();
-  try {
-    const parsed = new URL(raw, baseUrl);
-    parsed.hash = '';
-    parsed.hostname = parsed.hostname.toLowerCase();
-    if ((parsed.protocol === 'http:' && parsed.port === '80') || (parsed.protocol === 'https:' && parsed.port === '443')) parsed.port = '';
-    return parsed.toString();
-  } catch {
-    return raw.replace(/#.*$/, '');
-  }
-}
-
 function mergeRuleOrigins(current: RuleOrigins | undefined, next: RuleOrigins | undefined): RuleOrigins | undefined {
   // An omitted origins object means that an older client did not make an
   // explicit choice, so retain the saved provenance. When it is present, the
@@ -152,6 +140,7 @@ function rowToFeed(row: Record<string, unknown>): Feed {
     intervalMinutes: Number(row.interval_minutes),
     waitMs: Number(row.wait_ms),
     waitForSelector: row.wait_for_selector ? String(row.wait_for_selector) : undefined,
+    ...(row.pagination_json ? { pagination: parseJson<PaginationRules | undefined>(row.pagination_json, undefined) } : {}),
     enabled: Boolean(row.enabled),
     createdAt: String(row.created_at),
     lastFetchedAt: row.last_fetched_at ? String(row.last_fetched_at) : null,
@@ -364,6 +353,12 @@ export class Store {
         CREATE INDEX IF NOT EXISTS feed_health_samples_feed ON feed_health_samples(feed_id, flagged, id DESC);
         CREATE INDEX IF NOT EXISTS feed_health_samples_retention ON feed_health_samples(recorded_at);
         PRAGMA user_version=${Math.max(15, current)}; COMMIT;`);
+    }
+    // Multi-page collection settings (JSON, NULL = source page only). 16 is
+    // reserved for this migration; like 13–15 it checks for its own column.
+    if (!this.db.prepare('PRAGMA table_info(feeds)').all().some(column => column.name === 'pagination_json')) {
+      const current = Number((this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
+      this.db.exec(`BEGIN; ALTER TABLE feeds ADD COLUMN pagination_json TEXT; PRAGMA user_version=${Math.max(16, current)}; COMMIT;`);
     }
     this.ruleHealth = new RuleHealth(this.db, () => this.getSettings(), this.history);
     this.migrateBark();
@@ -746,6 +741,7 @@ export class Store {
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL, NULL, ?, NULL, 0, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(id, input.name, input.url, JSON.stringify(input.rules), input.ruleOrigins ? JSON.stringify(input.ruleOrigins) : null, input.credentialId, input.intervalMinutes, input.waitMs, input.waitForSelector ?? null, timestamp, nextFetchAt, encrypt(this.masterKey, token), hashToken(token),
         input.name, input.sourceType ?? 'website', input.translationMode ?? (input.sourceType === 'rss' ? 'bilingual' : 'original'), ownerId, input.targetLanguage ?? 'zh-CN', input.translationProvider ?? null);
+    if (input.pagination) this.db.prepare('UPDATE feeds SET pagination_json=? WHERE id=?').run(JSON.stringify(input.pagination), id);
     return { feed: this.getFeed(id)!, token };
   }
 
@@ -761,6 +757,9 @@ export class Store {
     this.db.prepare('UPDATE feeds SET source_type=?,translation_mode=? WHERE id=?').run(input.sourceType ?? 'website', input.translationMode ?? existing.translationMode ?? 'bilingual', id);
     this.setTranslationTarget(existing, input);
     const origins = mergeRuleOrigins(existing.ruleOrigins, input.ruleOrigins);
+    // An input without the field (older client) keeps the saved pagination.
+    if (input.pagination !== undefined) this.db.prepare('UPDATE feeds SET pagination_json=? WHERE id=?').run(input.pagination && input.sourceType !== 'rss' ? JSON.stringify(input.pagination) : null, id);
+    else if (input.sourceType === 'rss') this.db.prepare('UPDATE feeds SET pagination_json=NULL WHERE id=?').run(id);
     const nextFetchAt = new Date(Date.now() + input.intervalMinutes * 60_000).toISOString();
     this.db.prepare(`UPDATE feeds SET name = ?, channel_title = ?, url = ?, rules_json = ?, rule_origins_json = ?, credential_id = ?, interval_minutes = ?, wait_ms = ?, wait_for_selector = ?, next_fetch_at = ?, last_error = NULL WHERE id = ?`)
       .run(input.name, input.name, input.url, JSON.stringify(input.rules), origins ? JSON.stringify(origins) : null, input.credentialId, input.intervalMinutes, input.waitMs, input.waitForSelector ?? null, nextFetchAt, id);
@@ -1024,6 +1023,12 @@ export class Store {
     const items = rows.map(rowToItem);
     const feed = this.getFeed(id);
     return feed && translationEnabled(feed) ? this.translations.decorate(feed, items) : items;
+  }
+
+  /** Whether a link is already stored for the feed (same normalization as upsertItems). */
+  knownLinks(feed: Feed): (link: string) => boolean {
+    const keys = new Set((this.db.prepare('SELECT normalized_key FROM feed_items WHERE feed_id = ?').all(feed.id) as Array<{ normalized_key: string }>).map(row => row.normalized_key));
+    return link => keys.has(hashToken(normalizeLink(link, feed.url)));
   }
 
   private countItems(id: string): number {

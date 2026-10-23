@@ -69,6 +69,7 @@ export function FetchLogs({ id, revision }: { id: string; revision: number }) {
       </div>
       <p className="muted">耗时：{log.durationMs === null ? log.status === 'running' ? '执行中' : '未知' : `${(log.durationMs / 1000).toFixed(2)} 秒`}
         {log.itemCount !== null && ` · 有效 ${log.itemCount} 条 · 新增 ${log.newItemCount} 条`}</p>
+      {log.note && <p className="fetch-log-note muted">翻页：{log.note}</p>}
       {log.error && <p className="card-error">{log.error}</p>}
       {log.warning && <p className="card-warning">{log.warning}</p>}
       {log.notification && <p className="fetch-log-notification">通知：{notificationText(log.notification)}</p>}

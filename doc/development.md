@@ -32,6 +32,8 @@ SQLite `PRAGMA user_version` 记录迁移：版本 1 增加频道名称与设置
 
 迁移版本 15 新增规则健康统计：`feed_health`（每个订阅当前的预警和最近一次推送时间）与 `feed_health_samples`（每次成功抓取的条目数、不重复链接数和各字段有效率），并为 `fetch_logs` 增加 `warning` 列。它们和抓取日志一样属于诊断数据，不进入完整备份；删除订阅时级联删除。判断逻辑在 `src/server/rule-health.ts`（`measureItems` / `evaluateHealth`，阈值集中在 `RULE_HEALTH`），在抓取事务提交之后单独执行，出错只写服务端日志，不影响抓取结果和条目存储。样本按“网址 + 规则”的签名区分，修改规则或网址后旧样本作废。
 
+迁移版本 16 为 `feeds` 增加 `pagination_json`（多页采集设置，NULL 表示只抓源网址这一页）；和 13–15 一样按列是否存在判断，并写入 `max(16, 当前版本)`，重复运行或从任意版本升级都安全。`fetch_logs` 的 `pages`、`note` 列和该表的其他列一样，由 `FetchHistory` 按列存在与否补齐。
+
 多用户迁移版本为 7：统一 `users` 表替代 `admin`，会话引用用户 ID，订阅、凭据和批量任务记录 `owner_id`。原数据迁移到稳定 ID `admin`，旧会话清空。HTTP 层所有资源入口检查归属，批量操作逐项校验；队列执行时重新检查。用户停用递增 `generation`、撤销会话及发出取消信号，后台结果只有代次仍一致时可落库；翻译同时使用任务 revision。
 
 聚合订阅迁移版本为 14（按 `bundles` 表是否存在判断，与合并顺序无关）：新增 `bundles`（所有者、名称、条数上限、加密密钥与哈希）和 `bundle_feeds`（成员与顺序）。`bundle_feeds.feed_id` 外键 `ON DELETE CASCADE`，删除订阅自动移出所有聚合；删除用户同时删除其聚合。存取在 `src/server/bundle-store.ts`，合并与 RSS 输出在 `src/server/bundles.ts`：每个成员先经 `publishedItems`（与单个订阅 RSS 相同的条目选择），再合并去重；条目复用 `renderRssItem`、`renderAtomEntry`、`jsonFeedItem`，聚合只追加来源（RSS/Atom 的 category、JSON Feed 的 tags）。聚合只读已存条目，不进入抓取任务池。
@@ -83,6 +85,8 @@ RSS、Atom、JSON Feed、浏览器预览页和管理端都通过 `src/server/fee
 `ScreenFrame` 是从页面顶部截取的第一段截图（JPEG 质量 75，data URL，每段最高 8000 像素）。`height` 为已截取的高度，`documentHeight` 为可截取的总高度（最高 48000 像素；网页更长时 `truncated: true`），`viewportHeight` 为远端视口高度。`POST /api/browser/:id/segment {top}` 截取下一段，`top` 必须等于已截取的高度，否则拒绝，避免重复或跳段；返回 `{top, height, image, documentHeight, map}`。`map` 是元素地图：`boxes` 每 5 个数一组（x、y、宽、高、最近的上层元素序号，根为 -1），坐标相对整页顶部，另含 `labels`、`links`（仅 http/https）和 `innerScroll`。地图是累计的：后续分段只追加新元素，已有序号不变。编辑器据此在本地完成悬停高亮、↑/↓ 调整范围和滚动。
 
 `POST /api/browser/:id/pick` 优先接受元素序号 `{node, exact?}`，也接受整页坐标 `{x, y}`；`exact: true` 保留所选元素，不自动扩展到重复条目或字段元素。带上 `rules` 时，同一请求按新选择器预览并返回 `items`（失败时为 `previewError`）。`POST /api/browser/:id/follow {node}` 在当前会话打开该元素或其上层元素的链接（受同样的网络策略限制）并返回新的 `ScreenFrame`。高亮框、自动识别和日期选区的坐标均相对整页顶部。
+
+多页采集由 `src/server/pagination.ts` 的 `collectPages` 完成：第 1 页由调用方打开，之后在同一标签、同一浏览器上下文中按 `PaginationRules`（`next` / `template` / `loadMore`）逐页处理。后台刷新（`BrowserService.scrape`）、批量确认和编辑器预览都调用它；导航前先做 `NetworkPolicy.assertAllowed`，请求仍经过上下文路由和受限代理。总时长预算为 180 秒，硬超时为预算加 90 秒。`POST /api/browser/:id/preview` 带上 `pagination` 且最多页数大于 1 时，在会话的另一个标签重新打开源网址并试抓，返回 `{items, pagination: PaginationReport}`；`PickRequest.target` 可为 `next`，用于点选“下一页”或“加载更多”。后台刷新传入订阅已保存链接的判断函数，一页全是已见条目时停止；结果写入抓取日志的 `pages` 和 `note`，与规则健康的 `warning`、多渠道告警记录互不影响。规则健康只统计 `CollectResult.firstPage`（第 1 页抽取的条目），`/api/feeds/:id/health/*` 的对比和重新识别也只看第 1 页，因此健康签名不包含翻页设置，改动最多页数不需要重置基线。
 
 `POST /api/browser/:id/scroll` 接受 `{deltaY,x?,y?}`，坐标须同时提供并位于远端视口内；省略时使用视口中心。编辑器只在 `map.innerScroll` 为真时用它滚动页面内部的滚动区域。显式关闭编辑会话会取消进行中的操作并释放容量。
 
