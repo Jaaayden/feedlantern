@@ -642,6 +642,12 @@ function SettingsView({ auth, logout, notify, target, section, onSection, dirty 
   const [busy, setBusy] = useState(false);
   const sections = settingsSections(auth.role === 'admin', target);
   const active = sections.find(item => item.id === section) ?? sections[0];
+  const navRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    // On phones the navigation scrolls sideways: keep the current group in view.
+    const nav = navRef.current, button = nav?.querySelector<HTMLElement>('[aria-current="page"]');
+    if (nav && button && nav.scrollWidth > nav.clientWidth) nav.scrollTo({ left: button.offsetLeft - (nav.clientWidth - button.offsetWidth) / 2 });
+  }, [active.id]);
   useEffect(() => {
     // Leaving the page with unsaved settings asks first.
     const warn = (event: BeforeUnloadEvent) => { if (dirty.current) { event.preventDefault(); event.returnValue = ''; } };
@@ -660,7 +666,7 @@ function SettingsView({ auth, logout, notify, target, section, onSection, dirty 
   return <>
     <div className="page-heading"><div><span className="section-kicker">MAKE IT YOURS</span><h1>设置</h1><p>{auth.role === 'admin' && !target ? '管理整个实例的显示、翻译、网络，以及你的通知与账号。' : '管理通知、Cookie 凭据、网络配置、访问令牌与账号。'}</p></div></div>
     <div className="settings-layout">
-      <nav className="settings-nav" aria-label="设置分组">{sections.map(item => <button key={item.id} className={active.id === item.id ? 'selected' : ''} aria-current={active.id === item.id ? 'page' : undefined} onClick={() => jump(item.id)}><item.icon size={16} />{item.label}</button>)}</nav>
+      <nav className="settings-nav" aria-label="设置分组" ref={navRef}>{sections.map(item => <button key={item.id} className={active.id === item.id ? 'selected' : ''} aria-current={active.id === item.id ? 'page' : undefined} onClick={() => jump(item.id)}><item.icon size={16} />{item.label}</button>)}</nav>
       <div className="settings-sections">
         <div id={`settings-${active.id}`} className="settings-section" key={active.id}>
           {(active.id === 'display' || active.id === 'translation' || active.id === 'server') && <ApplicationSettingsPanel group={active.id} revision={settingsRevision} onDirty={markDirty} />}
