@@ -659,6 +659,13 @@ section[aria-label="订阅集合"] > p.muted { padding: 30px; text-align: center
 .settings-form > .button.primary, .settings-form > .inline, .settings-form > form > .button.primary { justify-self: start; }
 .settings-form form { display: grid; gap: 16px; }
 .settings-form > .detail-actions { gap: 8px; }
+.channel-list { display: grid; gap: 14px; }
+.settings-form .channel-card { gap: 12px; padding: 16px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); min-width: 0; }
+.channel-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.channel-heading h3 { font-size: 15px; }
+.channel-card > .hint { margin-top: -6px; }
+.channel-card textarea { resize: vertical; font-family: var(--font-mono); font-size: 12.5px; }
+.channel-card > p[role="status"] { padding: 10px 14px; border-radius: var(--r-md); background: var(--success-soft); color: var(--success); }
 .settings-form details { margin: 0; }
 .settings-form summary, .translation-progress summary { font-size: 13px; font-weight: 600; color: var(--ink-2); cursor: pointer; }
 
@@ -784,7 +791,7 @@ section[aria-label="订阅集合"] > p.muted { padding: 30px; text-align: center
 .fetch-log-heading > span:not(.badge) { color: var(--muted); font-weight: 500; }
 .fetch-log-heading .badge { margin-left: auto; }
 .fetch-log > p { font-size: 12.5px; }
-.fetch-log-notification { color: var(--muted); }
+.fetch-log-notification { color: var(--muted); overflow-wrap: anywhere; }
 .fetch-logs > .button { justify-self: center; }
 .translation-progress {
   display: grid; gap: 10px; padding: 16px 18px;
@@ -1490,6 +1497,21 @@ button.user-failing:hover { text-decoration: underline; text-underline-offset: 3
 .link-button { padding: 0; border: 0; background: none; font: inherit; color: var(--accent-ink); font-weight: 600; cursor: pointer; }
 .link-button:hover { text-decoration: underline; }
 
+/* Feed output: format switch, filters and what the output hides */
+.feed-address { display: grid; gap: 8px; }
+.feed-address-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 12px; }
+.feed-address-head > span { font-size: 13px; font-weight: 600; color: var(--ink-2); }
+.format-switch { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.format-switch .button[aria-pressed="true"] { background: var(--glow-soft); border-color: var(--glow-line); color: var(--accent-ink); }
+.output-settings { padding: 16px 0 4px; border-top: 1px solid var(--line); }
+.output-settings textarea { min-height: 76px; font-family: var(--font-mono); font-size: 12.5px; }
+.checkbox-field { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; color: var(--ink-2); }
+.checkbox-field > input { flex: none; margin-top: 3px; }
+.output-summary { font-size: 12.5px; color: var(--ink-2); }
+.output-summary.is-error { color: var(--danger); }
+.preview-item.is-hidden > :not(.preview-number) { opacity: .55; }
+.preview-item.is-hidden .output-badge { opacity: 1; }
+.output-badge { justify-self: start; height: 20px; margin-bottom: 4px; font-size: 11px; background: var(--warning-soft); color: var(--warning); border-color: transparent; }
 /* Personal access tokens */
 .api-token-form { display: grid; grid-template-columns: minmax(180px, 2fr) minmax(130px, 1fr) minmax(120px, 1fr) auto; gap: 12px; align-items: end; }
 .api-token-created { display: grid; gap: 10px; padding: 14px; border-radius: var(--r-md); background: var(--glow-soft); border: 1px solid var(--glow-line); color: var(--accent-ink); }

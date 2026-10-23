@@ -1,8 +1,9 @@
-import { defaultApplicationSettings, translationEnabled } from '../shared/types.js';
+import { defaultApplicationSettings, OUTPUT_LIMIT, translationEnabled } from '../shared/types.js';
 import { fetchSource, type SourceFetcher } from './rss-source.js';
-import { NetworkPolicy } from './network.js';
+import { NetworkPolicy, NetworkPolicyError } from './network.js';
 import { TranslationWorker, type Translator } from './rss-translation.js';
-import { BarkWorker, sendBark, type BarkSender } from './bark.js';
+import type { BarkSender } from './bark.js';
+import { NotificationWorker, alertTitle, channelsSummary, defaultSenders, ntfySchema, notificationChannelsSchema, telegramSchema, webhookSchema, type ChannelConfigs, type ChannelSender, type NotificationEvent, type NotificationSenders } from './notify.js';
 import { applicationSettingsSchema, settingsFromConfig, applyRuntimeSettings } from './settings.js';
 import { safeDiagnostic } from './fetch-history.js';
 import { TaskPool, siteKey } from './task-pool.js';
@@ -29,6 +30,9 @@ import type {
   FetchStatus,
   FeedInput,
   FeedSettingsInput,
+  FeedFormat,
+  FeedItem,
+  ItemOutputStatus,
   PickRequest,
   PickResult,
   ScreenFrame,
@@ -51,7 +55,8 @@ import {
   validateUsername,
 } from './auth.js';
 import { getConfig, ensureDataDir, hasDist, isAllowedOrigin, type ConfigInput, type ServerConfig } from './config.js';
-import { renderRss, rssEtag } from './rss.js';
+import { renderAtom, renderJsonFeed, renderRss, rssEtag } from './rss.js';
+import { classifyItems, ItemFilterError, parseItemFilter } from './feed-output.js';
 import { etagMatches, renderRssPreview, wantsHtmlPreview } from './rss-preview.js';
 import { asInteger, describeError, asNonEmptyString, asOptionalString, asRecord, cookieMetadata, frameError, friendlyError, logHiddenError, parseCredentialInput, parseFeedInput, parseHttpUrl, parsePartialRules, parseRules } from './validation.js';
 import { Store, type CredentialValue } from './store.js';
@@ -87,7 +92,10 @@ export interface CreateAppOptions extends ConfigInput {
   store?: Store;
   browserService?: BrowserServiceLike;
   startScheduler?: boolean;
+  /** Replaces the Bark sender (tests and the e2e backend). */
   barkSender?: BarkSender;
+  /** Replaces individual channel senders (tests and the e2e backend). */
+  notificationSenders?: Partial<NotificationSenders>;
   rssFetcher?: SourceFetcher;
   translator?: Translator;
   translationIntervalMs?: number;
@@ -125,7 +133,16 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   applyRuntimeSettings(config, store.getSettings());
   let browser = await makeBrowserService(config, options.browserService);
   store.history.recover();
-  const bark = new BarkWorker(store.history, () => store.getSettings().bark, options.barkSender, true);
+  const notifyPolicy = () => new NetworkPolicy({ allowedHosts: config.allowedHosts, dnsOverHttps: config.dnsOverHttps });
+  const panelUrl = (feedId: string | null, event: NotificationEvent) => feedId
+    ? `${config.publicOrigin}/#/feed/${encodeURIComponent(feedId)}${event === 'fetch.failed' ? '/logs' : ''}` : `${config.publicOrigin}/#/settings`;
+  const barkSender = options.barkSender;
+  const senders: NotificationSenders = {
+    ...defaultSenders,
+    ...(barkSender ? { bark: (channel, message, context) => barkSender(channel.url, message.body, context.signal, message.title) } satisfies Partial<NotificationSenders> : {}),
+    ...options.notificationSenders,
+  };
+  const notifier = new NotificationWorker(store.history, { target: id => store.notificationTarget(id), senders, network: notifyPolicy, panelUrl });
   const app = Fastify({ logger: false, bodyLimit: 2_500_000, trustProxy: address => {
     try {
       const peer = ipaddr.process(address);
@@ -193,7 +210,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       const feed = store.getFeed(feedId); if (!feed) return;
       if (error) store.history.translationFailed(feed, error);
       else store.history.translationRecovered(feedId);
-      bark.wake();
+      notifier.wake();
     } catch { console.error('翻译通知入队失败'); }
   });
   const getRss: SourceFetcher = options.rssFetcher ?? ((url, input) => fetchSource(url, new NetworkPolicy({ allowedHosts: config.allowedHosts, dnsOverHttps: config.dnsOverHttps }), input));
@@ -266,7 +283,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         store.history.succeed(runId, feed.id, performance.now() - started, counts);
         return updated;
       });
-      bark.wake();
+      notifier.wake();
       translations.wake();
       return result;
     } catch (error) {
@@ -278,7 +295,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         store.markFetchFailure(feed.id, message, nextFetchAt);
         store.history.fail(runId, feed, source, performance.now() - started, message, store.getSettings().bark.enabled);
       });
-      bark.wake();
+      notifier.wake();
       return store.getFeed(feed.id);
     }
   };
@@ -525,7 +542,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (body.enabled !== undefined && typeof body.enabled !== 'boolean') throw new AppError(400, '请指定账号启用状态');
     if (body.role !== undefined && !['admin','user'].includes(String(body.role))) throw new AppError(400, '角色无效');
     const user = store.updateUser(actor.userId, id, body);
-    await closeUserEditors(id); jobs.wake(); translations.wake(); bark.wake();
+    await closeUserEditors(id); jobs.wake(); translations.wake(); notifier.wake();
     if (user.enabled && options.startScheduler !== false) void refreshDue().catch(() => {});
     return user;
   });
@@ -535,14 +552,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (!store.getUser(id)) throw new AppError(404, '用户不存在');
     if (actor.userId === id) throw new AppError(403, '请使用修改自己的密码功能');
     if (!validatePassword(password)) throw new AppError(400, '密码长度必须为 8 到 1024 个字符');
-    store.changePassword(password, id); await closeUserEditors(id); jobs.wake(); bark.wake();
+    store.changePassword(password, id); await closeUserEditors(id); jobs.wake(); notifier.wake();
     return { ok: true };
   });
   app.get('/api/users/:id/deletion-preview', async request => { adminGuard(request); return store.deletionPreview(String(asRecord(request.params).id)); });
   app.delete('/api/users/:id', async request => {
     const actor = adminGuard(request), id = String(asRecord(request.params).id);
     store.deleteUser(actor.userId, id, asNonEmptyString(asRecord(request.body).username, '确认用户名', 100));
-    await closeUserEditors(id); jobs.wake(); bark.wake();
+    await closeUserEditors(id); jobs.wake(); notifier.wake();
     return { ok: true };
   });
   const barkSummary = (id: string) => {
@@ -555,20 +572,85 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (!result.success) throw new AppError(400, 'Bark 设置无效，请检查地址及数值范围');
     return result.data;
   };
+  const notificationSummary = (id: string) => {
+    const { bark: { enabled: _enabled, url: _url, ...policy }, channels } = store.getNotifications(id);
+    return { ...policy, channels: channelsSummary(store.getBark(id), channels) };
+  };
+  const issueMessage = (error: { issues: { message: string; code: string }[] }, fallback: string) => error.issues.find(issue => issue.code === 'custom')?.message ?? fallback;
+  const optionalObject = (value: unknown, label: string) => {
+    if (value === undefined) return undefined;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new AppError(400, `${label}格式无效`);
+    return value as Record<string, unknown>;
+  };
+  /**
+   * Merge a NotificationUpdate into saved settings. Omitted fields keep their
+   * value, so secrets never have to round-trip through the browser; clearing
+   * a required field turns that channel off, as clearing the Bark address does.
+   */
+  const parseNotifications = (id: string, input: unknown) => {
+    const body = asRecord(input);
+    const previous = store.getNotifications(id);
+    const patch = optionalObject(body.channels, '通知渠道') ?? {};
+    for (const key of Object.keys(patch)) if (!['bark', 'webhook', 'ntfy', 'telegram'].includes(key)) throw new AppError(400, '通知渠道无效');
+    const { channels: _channels, ...policyPatch } = body;
+    for (const key of Object.keys(policyPatch)) if (!['failureThreshold', 'timeoutSeconds', 'maxAttempts', 'retryDelaySeconds', 'laterRetryDelaySeconds', 'cooldownMinutes'].includes(key)) throw new AppError(400, '通知设置无效');
+    const barkPatch = optionalObject(patch.bark, 'Bark 设置') ?? {};
+    for (const key of Object.keys(barkPatch)) if (!['enabled', 'url'].includes(key)) throw new AppError(400, 'Bark 设置无效');
+    const bark = applicationSettingsSchema.shape.bark.safeParse({ ...previous.bark, ...policyPatch, ...barkPatch, ...(barkPatch.url === '' ? { enabled: false } : {}) });
+    if (!bark.success) throw new AppError(400, issueMessage(bark.error, '通知设置无效，请检查 Bark 地址及数值范围'));
+    const webhook = optionalObject(patch.webhook, 'Webhook 设置') ?? {}, ntfy = optionalObject(patch.ntfy, 'ntfy 设置') ?? {}, telegram = optionalObject(patch.telegram, 'Telegram 设置') ?? {};
+    const channels = notificationChannelsSchema.safeParse({
+      webhook: { ...previous.channels.webhook, ...webhook, ...(webhook.url === '' ? { enabled: false } : {}) },
+      ntfy: { ...previous.channels.ntfy, ...ntfy, ...(ntfy.topic === '' || ntfy.server === '' ? { enabled: false } : {}) },
+      telegram: { ...previous.channels.telegram, ...telegram, ...(telegram.botToken === '' || telegram.chatId === '' ? { enabled: false } : {}) },
+    });
+    if (!channels.success) throw new AppError(400, issueMessage(channels.error, '通知渠道设置无效'));
+    return { bark: bark.data, channels: channels.data };
+  };
+  const sendTest = async (channel: keyof ChannelConfigs, config: ChannelConfigs[keyof ChannelConfigs], timeoutSeconds: number, username: string, signal?: AbortSignal) => {
+    const send = senders[channel] as ChannelSender<typeof channel>;
+    const message = { event: 'test' as const, title: alertTitle('test'), body: `这是 ${username} 的 FeedLantern 测试通知。`, feedId: null, feedName: null, error: null, time: new Date().toISOString(), panelUrl: panelUrl(null, 'test') };
+    try {
+      await send(config as never, message, { signal: AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(timeoutSeconds * 1000)]), policy: notifyPolicy() });
+    } catch (error) {
+      if (error instanceof NetworkPolicyError) throw new AppError(400, '推送地址被网络安全策略阻止：不允许内网、回环或云元数据地址，如确需使用请让管理员加入目标白名单');
+      throw new AppError(502, `测试通知发送失败，请检查 ${({ bark: 'Bark 地址', webhook: 'Webhook 地址', ntfy: 'ntfy 服务器和主题', telegram: 'Telegram Bot Token 和 Chat ID' })[channel]}和网络`);
+    }
+  };
+  app.get('/api/notifications', async request => { resourceGuard(request); return notificationSummary(workspace(request).userId); });
+  app.put('/api/notifications', async request => {
+    resourceGuard(request); const { userId } = workspace(request);
+    store.setNotifications(userId, parseNotifications(userId, request.body)); notifier.wake();
+    return notificationSummary(userId);
+  });
+  app.post('/api/notifications/test', async request => {
+    resourceGuard(request); const { userId, target } = workspace(request, true);
+    const body = asRecord(request.body), channel = body.channel;
+    if (channel !== 'bark' && channel !== 'webhook' && channel !== 'ntfy' && channel !== 'telegram') throw new AppError(400, '通知渠道无效');
+    const { channel: _channel, ...fields } = body;
+    // Unsaved fields are tested as typed; nothing is saved and `enabled` is ignored.
+    const value = parseNotifications(userId, { channels: { [channel]: { ...fields, enabled: false } } });
+    const config = channel === 'bark' ? (value.bark.url ? { url: value.bark.url } : undefined)
+      : channel === 'webhook' ? (value.channels.webhook.url ? value.channels.webhook : undefined)
+      : channel === 'ntfy' ? (value.channels.ntfy.server && value.channels.ntfy.topic ? value.channels.ntfy : undefined)
+      : value.channels.telegram.botToken && value.channels.telegram.chatId ? value.channels.telegram : undefined;
+    if (!config) throw new AppError(400, ({ bark: '请先填写 Bark 推送地址', webhook: '请先填写 Webhook 地址', ntfy: '请先填写 ntfy 服务器地址和主题', telegram: '请先填写 Telegram Bot Token 和 Chat ID' })[channel]);
+    await sendTest(channel, config, value.bark.timeoutSeconds, target.username, operationSignal(request));
+    return { ok: true };
+  });
+  // Bark-only endpoints kept for existing API clients.
   app.get('/api/notifications/bark', async request => { resourceGuard(request); return barkSummary(workspace(request).userId); });
   app.put('/api/notifications/bark', async request => {
     resourceGuard(request); const { userId } = workspace(request);
-    store.setBark(userId, parseBark(userId, request.body)); bark.wake();
+    store.setBark(userId, parseBark(userId, request.body)); notifier.wake();
     return barkSummary(userId);
   });
   app.post('/api/notifications/bark/test', async request => {
     resourceGuard(request); const { userId, target } = workspace(request, true);
     const value = parseBark(userId, request.body, true);
     if (!value.url) throw new AppError(400, '请先填写 Bark 推送地址');
-    try {
-      await (options.barkSender ?? sendBark)(value.url, `这是 ${target.username} 的 FeedLantern 测试通知。`, AbortSignal.any([operationSignal(request), AbortSignal.timeout(value.timeoutSeconds * 1000)]), '订阅灯：测试通知');
-      return { ok: true };
-    } catch { throw new AppError(502, '测试通知发送失败，请检查 Bark 地址和网络'); }
+    await sendTest('bark', { url: value.url }, value.timeoutSeconds, target.username, operationSignal(request));
+    return { ok: true };
   });
 
   app.get('/api/credentials', async (request): Promise<CredentialSummary[]> => { credentialsGuard(request); return store.listCredentialSummaries(workspace(request).userId); });
@@ -635,6 +717,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return parsed.data;
   };
   const settingsPreview = (value: ApplicationSettings) => ({ ...value, bark: { ...value.bark, url: undefined, configured: !!value.bark.url } });
+  /** Config archives carry the importing admin's other channels; previews only say what is configured. */
+  const channelsPreview = (value: ReturnType<typeof notificationChannelsSchema.parse>) => {
+    const { bark: _bark, ...summary } = channelsSummary({ enabled: false, url: '' }, value);
+    return summary;
+  };
   const applySettings = async (next: ApplicationSettings, write: () => void = () => store.setSettings(next)): Promise<void> => {
     const previous = store.getSettings();
     const captureChanged = previous.server.backgroundConcurrency !== next.server.backgroundConcurrency
@@ -644,7 +731,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const replacement = captureChanged ? await makeBrowserService(nextConfig, options.browserService) : browser;
     const wasMaintenance = maintenance;
     maintenance = true;
-    await bark.stop();
+    await notifier.stop();
     await translations.stop();
     try {
       store.transaction(() => {
@@ -656,7 +743,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       pool.setConcurrency(next.server.backgroundConcurrency);
       jobs.setConcurrency(next.server.backgroundConcurrency);
       store.history.prune();
-    } finally { maintenance = wasMaintenance; bark.start(); translations.start(); }
+    } finally { maintenance = wasMaintenance; notifier.start(); translations.start(); }
   };
   app.post('/api/backups/export', async request => {
     backupGuard(request);
@@ -676,6 +763,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     let snapshot;
     try {
       snapshot = openBackup(body.archive, asNonEmptyString(body.password, '备份密码', 1024));
+      for (const row of snapshot.tables.feeds) if (row.item_filter_json) parseItemFilter(JSON.parse(row.item_filter_json));
       for (const row of snapshot.tables.feeds) parseFeedInput({ sourceType: row.source_type, translationMode: row.translation_mode, name: row.name, url: row.url, rules: JSON.parse(row.rules_json), ruleOrigins: row.rule_origins_json ? JSON.parse(row.rule_origins_json) : undefined, intervalMinutes: row.interval_minutes, waitMs: row.wait_ms, waitForSelector: row.wait_for_selector });
       for (const row of snapshot.tables.credentials) {
         const metadata = cookieMetadata(parseCookies(JSON.parse(row.encrypted_value), row.format, row.url), row.url);
@@ -692,7 +780,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     maintenance = true; jobs.stop();
     try {
       await pool.drain();
-      await bark.stop();
+      await notifier.stop();
       await translations.stop();
       await browser.closeEditors?.();
       browserOwners.clear();
@@ -705,11 +793,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       pool.setConcurrency(restoredSettings.server.backgroundConcurrency);
       jobs.setConcurrency(restoredSettings.server.backgroundConcurrency);
       return { ok: true };
-    } finally { maintenance = false; jobs.recover(); bark.start(); translations.start(); }
+    } finally { maintenance = false; jobs.recover(); notifier.start(); translations.start(); }
   });
   app.get('/api/backups/config', async request => {
     adminGuard(request);
-    return { format: 'feedlantern-config', version: 2, settings: { ...store.getSettings(), bark: store.getBark(authenticated(request).userId) }, feeds: store.listFeeds(authenticated(request).userId).map(f => ({ sourceType: f.sourceType, translationMode: f.translationMode, name: f.name, channelTitle: f.channelTitle, url: f.url, rules: f.rules, ruleOrigins: f.ruleOrigins, intervalMinutes: f.intervalMinutes, waitMs: f.waitMs, waitForSelector: f.waitForSelector, enabled: f.enabled, requiresCredential: !!f.credentialId })) };
+    const notifications = store.getNotifications(authenticated(request).userId);
+    return { format: 'feedlantern-config', version: 2, settings: { ...store.getSettings(), bark: notifications.bark }, notificationChannels: notifications.channels, feeds: store.listFeeds(authenticated(request).userId).map(f => ({ sourceType: f.sourceType, translationMode: f.translationMode, name: f.name, channelTitle: f.channelTitle, url: f.url, rules: f.rules, ruleOrigins: f.ruleOrigins, intervalMinutes: f.intervalMinutes, waitMs: f.waitMs, waitForSelector: f.waitForSelector, enabled: f.enabled, requiresCredential: !!f.credentialId, ...(f.itemFilter ? { itemFilter: f.itemFilter } : {}), outputLimit: f.outputLimit })) };
   });
   app.post('/api/backups/config', { bodyLimit: 10_000_000 }, async request => {
     adminGuard(request);
@@ -717,14 +806,18 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (archive.format !== 'feedlantern-config' || ![1, 2].includes(Number(archive.version)) || !Array.isArray(archive.feeds) || archive.feeds.length > 10000) throw new AppError(400, '配置格式无效');
     if (archive.version === 2 && archive.settings === undefined) throw new AppError(400, '配置文件缺少应用设置');
     const importedSettings = archive.settings === undefined ? undefined : parseSettings(archive.settings);
+    // Optional: archives exported before notification channels existed omit it and keep the current channels.
+    const importedChannels = archive.notificationChannels === undefined ? undefined : notificationChannelsSchema.safeParse(archive.notificationChannels);
+    if (importedChannels && !importedChannels.success) throw new AppError(400, `配置中的通知渠道无效：${issueMessage(importedChannels.error, '请检查地址和格式')}`);
     const entries = archive.feeds.map(raw => {
       const value = asRecord(raw);
-      return { input: parseFeedInput({ ...value, credentialId: null }), title: asOptionalString(value.channelTitle, '频道名称', 200), enabled: value.enabled !== false, needsCookie: value.requiresCredential === true };
+      const output = parseFeedSettings({ ...(value.itemFilter !== undefined ? { itemFilter: value.itemFilter } : {}), ...(value.outputLimit !== undefined ? { outputLimit: value.outputLimit } : {}) }, true);
+      return { input: parseFeedInput({ ...value, credentialId: null }), output, title: asOptionalString(value.channelTitle, '频道名称', 200), enabled: value.enabled !== false, needsCookie: value.requiresCredential === true };
     });
     const signature = (f: FeedInput) => JSON.stringify([f.sourceType ?? 'website', f.translationMode ?? 'bilingual', normalizeSource(f.url), ...['item', 'title', 'link', 'description', 'image', 'date'].map(k => f.rules[k as keyof SelectionRules] ?? '')]);
     if (body.confirm !== true) {
       const seen = new Set(store.listFeeds(authenticated(request).userId).map(signature));
-      return { settings: importedSettings ? settingsPreview(importedSettings) : null, entries: entries.map(e => { const duplicate = seen.has(signature(e.input)); seen.add(signature(e.input)); return { name: e.input.name, url: e.input.url, duplicate, needsCookie: e.needsCookie }; }) };
+      return { settings: importedSettings ? { ...settingsPreview(importedSettings), ...(importedChannels ? { notificationChannels: channelsPreview(importedChannels.data) } : {}) } : null, entries: entries.map(e => { const duplicate = seen.has(signature(e.input)); seen.add(signature(e.input)); return { name: e.input.name, url: e.input.url, duplicate, needsCookie: e.needsCookie }; }) };
     }
     return enqueueRefresh(async () => {
       adminGuard(request);
@@ -737,11 +830,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         if (seen.has(key)) { skipped++; continue; }
         const { feed } = store.createFeed(entry.input, authenticated(request).userId);
         if (entry.title) store.setChannelTitle(feed.id, entry.title);
+        if (Object.keys(entry.output).length) store.updateFeedSettings(feed.id, entry.output);
         if (!entry.enabled || entry.needsCookie) store.toggleFeed(feed.id);
         if (entry.needsCookie) store.markFetchFailure(feed.id, '请绑定 Cookie 凭据后恢复订阅', feed.nextFetchAt);
         seen.add(key); created++;
       }
       if (importedSettings) { const originalBark = store.getBark('admin'); store.setSettings({ ...importedSettings, bark: originalBark }); store.setBark(authenticated(request).userId, importedSettings.bark); }
+      if (importedChannels) store.setNotificationChannels(authenticated(request).userId, importedChannels.data);
       result = { created, skipped };
       });
       if (importedSettings) await applySettings(importedSettings, write); else write();
@@ -788,10 +883,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const input = asRecord(request.body);
     const settings = parseSettings({ ...store.getSettings(), bark: { ...store.getBark(authenticated(request).userId), ...input, enabled: false } });
     if (!settings.bark.url) throw new AppError(400, '请先填写 Bark 推送地址');
-    try {
-      await (options.barkSender ?? sendBark)(settings.bark.url, '这是一条 FeedLantern 测试通知，Bark 推送连接正常。', AbortSignal.timeout(settings.bark.timeoutSeconds * 1000), '订阅灯：测试通知');
-      return { ok: true };
-    } catch { throw new AppError(502, '测试通知发送失败，请检查 Bark 地址和网络'); }
+    await sendTest('bark', { url: settings.bark.url }, settings.bark.timeoutSeconds, authenticated(request).username);
+    return { ok: true };
   });
   const globalSettings = () => ({ ...store.getSettings(), bark: structuredClone(defaultApplicationSettings.bark) });
   app.get('/api/settings', async request => { adminGuard(request); return globalSettings(); });
@@ -809,11 +902,21 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       next.bark = previous.bark;
       await applySettings(next);
       if (personal) store.setBark(authenticated(request).userId, personal);
-      bark.wake(); return globalSettings();
+      notifier.wake(); return globalSettings();
     });
   });
-  function parseFeedSettings(body: Record<string, unknown>): FeedSettingsInput {
+  function parseFeedSettings(body: Record<string, unknown>, allowEmpty = false): FeedSettingsInput {
     const input: FeedSettingsInput = {};
+    if ('itemFilter' in body) {
+      try { input.itemFilter = parseItemFilter(body.itemFilter); }
+      catch (error) { if (error instanceof ItemFilterError) throw new AppError(400, error.message); throw error; }
+    }
+    if ('outputLimit' in body) {
+      if (typeof body.outputLimit !== 'number' || !Number.isInteger(body.outputLimit) || body.outputLimit < OUTPUT_LIMIT.min || body.outputLimit > OUTPUT_LIMIT.max) {
+        throw new AppError(400, `输出条数必须是 ${OUTPUT_LIMIT.min} 到 ${OUTPUT_LIMIT.max} 之间的整数`);
+      }
+      input.outputLimit = body.outputLimit;
+    }
     if ('translationMode' in body) {
       if (typeof body.translationMode !== 'string' || !['original','chinese','bilingual'].includes(body.translationMode)) throw new AppError(400, '翻译输出模式无效');
       input.translationMode = body.translationMode as 'original' | 'chinese' | 'bilingual';
@@ -825,19 +928,40 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       }
       input.intervalMinutes = body.intervalMinutes;
     }
-    if (!Object.keys(input).length) throw new AppError(400, '请提供需要修改的订阅设置');
+    if (!allowEmpty && !Object.keys(input).length) throw new AppError(400, '请提供需要修改的订阅设置');
     return input;
   }
+  /** Reject a regex filter that already runs out of time on the feed's stored items. */
+  function checkFilterBudget(feed: Feed, items: FeedItem[], input: FeedSettingsInput): void {
+    if (!input.itemFilter?.regex) return;
+    if (classifyItems(feed, items, { itemFilter: input.itemFilter }).timedOut) throw new AppError(400, '正则表达式在现有条目上运行超时，请简化规则');
+  }
+  const outputStatus = (feed: Feed, items: FeedItem[], override?: Parameters<typeof classifyItems>[2]) => {
+    const { statuses, timedOut } = classifyItems(feed, items, override);
+    return { outputStatus: Object.fromEntries(items.map((item, index) => [item.id, statuses[index]])) as Record<string, ItemOutputStatus>, ...(timedOut ? { filterTimedOut: true } : {}) };
+  };
   app.patch('/api/feeds/:id', async request => {
     feedsGuard(request);
     const input = parseFeedSettings(asRecord(request.body));
     return enqueueRefresh(() => {
       feedsGuard(request);
-      const feed = store.updateFeedSettings(String((request.params as { id: string }).id), input);
+      const id = String((request.params as { id: string }).id);
+      const current = store.getFeed(id);
+      if (!current) throw new AppError(404, 'Feed 不存在');
+      checkFilterBudget(current, store.getItems(id), input);
+      const feed = store.updateFeedSettings(id, input);
       if (!feed) throw new AppError(404, 'Feed 不存在');
       translations.wake();
       return feedPayload(feed);
     });
+  });
+  app.post('/api/feeds/:id/output-preview', async request => {
+    feedsGuard(request);
+    const feed = store.getFeed(String((request.params as { id: string }).id));
+    if (!feed) throw new AppError(404, 'Feed 不存在');
+    const body = asRecord(request.body);
+    const input = parseFeedSettings({ ...('itemFilter' in body ? { itemFilter: body.itemFilter } : {}), ...('outputLimit' in body ? { outputLimit: body.outputLimit } : {}) }, true);
+    return outputStatus(feed, store.getItems(feed.id), input);
   });
   app.post('/api/feeds/bulk', async request => {
     feedsGuard(request);
@@ -846,7 +970,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const action = body.action;
     if (!['copy', 'pause', 'resume', 'refresh', 'delete', 'settings'].includes(String(action))) throw new AppError(400, '操作无效');
     const settingsBody = asRecord(body.settings);
-    if (action === 'settings' && Object.keys(settingsBody).some(key => !['translationMode', 'intervalMinutes'].includes(key))) throw new AppError(400, '批量设置仅支持翻译输出模式和刷新间隔');
+    if (action === 'settings' && Object.keys(settingsBody).some(key => !['translationMode', 'intervalMinutes', 'outputLimit', 'itemFilter'].includes(key))) throw new AppError(400, '批量设置仅支持翻译输出模式、刷新间隔、输出条数和条目过滤');
     const settingsInput = action === 'settings' ? parseFeedSettings(settingsBody) : undefined;
     if (action === 'refresh') {
       const results = await Promise.all([...new Set(body.ids as string[])].map(async id => {
@@ -868,10 +992,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
           if (!feed) throw new AppError(404, '订阅不存在');
           if (action === 'copy') return { id, ok: true, feedUrl: feedUrl(currentConfig(), store, id) };
           if (settingsInput) {
+            checkFilterBudget(feed, store.getItems(id), settingsInput);
             store.transaction(() => store.updateFeedSettings(id, settingsInput));
             translations.wake();
           }
-          if (action === 'delete') { store.deleteFeed(id); bark.wake(); }
+          if (action === 'delete') { store.deleteFeed(id); notifier.wake(); }
           if (action === 'pause' && feed.enabled || action === 'resume' && !feed.enabled) store.toggleFeed(id);
           return { id, ok: true };
         });
@@ -935,7 +1060,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     feedsGuard(request);
     const feed = store.getFeed(String((request.params as { id: string }).id));
     if (!feed) throw new AppError(404, 'Feed 不存在');
-    return { ...feedPayload(feed), items: store.getItems(feed.id, 200) };
+    const items = store.getItems(feed.id);
+    return { ...feedPayload(feed), items, ...outputStatus(feed, items) };
   });
   app.put('/api/feeds/:id', async (request) => {
     feedsGuard(request);
@@ -977,7 +1103,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return enqueueRefresh(() => {
       feedsGuard(request);
       if (!store.deleteFeed(String((request.params as { id: string }).id))) throw new AppError(404, 'Feed 不存在');
-      bark.wake();
+      notifier.wake();
       return { ok: true };
     });
   });
@@ -1086,22 +1212,25 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return { ok: true };
   });
 
-  app.get('/feeds/:id/:token.xml', async (request, reply) => {
+  const publicFeed = (format: FeedFormat) => async (request: FastifyRequest, reply: FastifyReply) => {
     const params = request.params as { id: string; token: string };
-    const token = params.token.endsWith('.xml') ? params.token.slice(0, -4) : params.token;
+    const extension = format === 'rss' ? '.xml' : format === 'atom' ? '.atom' : '.json';
+    const token = params.token.endsWith(extension) ? params.token.slice(0, -extension.length) : params.token;
+    // One token guards every format, so rotating it revokes all three addresses.
     if (!store.checkFeedToken(params.id, token)) throw new AppError(404, 'Feed 不存在');
     const feed = store.getFeed(params.id);
     if (!feed) throw new AppError(404, 'Feed 不存在');
-    const items = store.getItems(feed.id, 100);
-    const publicUrl = `${currentConfig().publicOrigin}/feeds/${encodeURIComponent(feed.id)}/${encodeURIComponent(token)}.xml`;
+    const items = store.getItems(feed.id);
+    const publicUrl = `${currentConfig().publicOrigin}/feeds/${encodeURIComponent(feed.id)}/${encodeURIComponent(token)}${extension}`;
     const query = request.query as Record<string, unknown> | undefined;
-    const preview = wantsHtmlPreview(request.headers, query);
-    const etag = preview ? rssEtag(feed, items).replace(/"$/, '-html"') : rssEtag(feed, items);
+    // Only the RSS address has the human-readable browser page.
+    const preview = format === 'rss' && wantsHtmlPreview(request.headers, query);
+    const etag = preview ? rssEtag(feed, items).replace(/"$/, '-html"') : rssEtag(feed, items, format);
     reply.header('Cache-Control', 'private, max-age=60');
     reply.header('Referrer-Policy', 'no-referrer');
     reply.header('X-Robots-Tag', 'noindex, nofollow');
     reply.header('X-Content-Type-Options', 'nosniff');
-    reply.header('Vary', 'Accept, Sec-Fetch-Dest, Sec-Fetch-Mode');
+    reply.header('Vary', format === 'rss' ? 'Accept, Sec-Fetch-Dest, Sec-Fetch-Mode' : 'Sec-Fetch-Dest');
     reply.header('ETag', etag);
     if (etagMatches(request.headers['if-none-match'], etag)) return reply.code(304).send();
     if (preview) {
@@ -1110,10 +1239,19 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       reply.header('X-Frame-Options', 'DENY');
       return reply.type('text/html; charset=utf-8').send(page.html);
     }
+    const document = request.headers['sec-fetch-dest'] === 'document';
+    if (format === 'json') {
+      // Browsers display application/json instead of downloading the feed type.
+      return reply.type(document ? 'application/json; charset=utf-8' : 'application/feed+json; charset=utf-8').send(renderJsonFeed(feed, items, publicUrl));
+    }
+    if (format === 'atom') return reply.type(document ? 'application/xml; charset=utf-8' : 'application/atom+xml; charset=utf-8').send(renderAtom(feed, items, publicUrl));
     // A browser asking for the raw document gets an XML type it can display instead of downloading.
-    const raw = typeof query?.format === 'string' && request.headers['sec-fetch-dest'] === 'document';
+    const raw = typeof query?.format === 'string' && document;
     return reply.type(raw ? 'application/xml; charset=utf-8' : 'application/rss+xml; charset=utf-8').send(renderRss(feed, items, publicUrl));
-  });
+  };
+  app.get('/feeds/:id/:token.xml', publicFeed('rss'));
+  app.get('/feeds/:id/:token.atom', publicFeed('atom'));
+  app.get('/feeds/:id/:token.json', publicFeed('json'));
 
   if (hasDist(config.distDir)) await app.register(fastifyStatic, { root: config.distDir, wildcard: false });
   app.setNotFoundHandler(async (request, reply) => {
@@ -1128,7 +1266,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     try { store.purgeExpiredSessions(); store.tokens.purgeExpired(); store.history.prune(); store.translations.prune(); store.compact(); } catch { console.error('抓取日志清理失败，将自动重试'); }
   }, 60 * 60_000);
   cleanup.unref();
-  app.addHook('onReady', async () => { jobs.recover(); bark.start(); translations.start(); });
+  app.addHook('onReady', async () => { jobs.recover(); notifier.start(); translations.start(); });
   if (options.startScheduler !== false) {
     scheduler = setInterval(() => { void refreshDue().catch(() => {}); }, 30_000);
     scheduler.unref();
@@ -1141,7 +1279,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     clearInterval(cleanup);
     await pool.drain();
     await translations.stop();
-    await bark.stop();
+    await notifier.stop();
     await browser.dispose();
     if (!options.store) store.close();
   });

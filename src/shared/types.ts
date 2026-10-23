@@ -20,16 +20,36 @@ export interface FeedInput {
   waitMs: number;
   waitForSelector?: string;
 }
+/**
+ * Output-only item filter. Patterns match the item's published title and
+ * summary (case-insensitive); stored items are never deleted. An item is
+ * dropped when any `exclude` pattern matches, or when `include` is non-empty
+ * and none of its patterns match. `regex` treats every pattern as a regular
+ * expression instead of a plain keyword.
+ */
+export interface ItemFilter { include: string[]; exclude: string[]; regex: boolean }
+export const ITEM_FILTER_LIMITS = { patterns: 30, patternLength: 200 } as const;
+/** Items published per feed output (RSS, Atom and JSON Feed share it). */
+export const OUTPUT_LIMIT = { min: 10, max: 500, default: 100 } as const;
+export type FeedFormat = 'rss' | 'atom' | 'json';
+/** Why a stored item is or is not in the feed output (see `GET /api/feeds/:id`). */
+export type ItemOutputStatus = 'published' | 'untranslated' | 'excluded' | 'not-included' | 'over-limit';
 export interface FeedSettingsInput {
   translationMode?: 'original' | 'chinese' | 'bilingual';
   channelTitle?: string;
   intervalMinutes?: number;
+  /** `null` removes the filter. */
+  itemFilter?: ItemFilter | null;
+  outputLimit?: number;
 }
-export type BulkFeedSettingsInput = Pick<FeedSettingsInput, 'translationMode' | 'intervalMinutes'>;
+export type BulkFeedSettingsInput = Pick<FeedSettingsInput, 'translationMode' | 'intervalMinutes' | 'outputLimit' | 'itemFilter'>;
 export interface Feed extends FeedInput {
   ownerId?: string;
   id: string;
   channelTitle?: string;
+  itemFilter?: ItemFilter;
+  /** Items in the output; defaults to OUTPUT_LIMIT.default. */
+  outputLimit?: number;
   enabled: boolean;
   createdAt: string;
   lastFetchedAt: string | null;
@@ -59,7 +79,45 @@ export interface FetchLog {
   id: number; feedId: string; source: FetchSource; status: FetchStatus;
   startedAt: string; finishedAt: string | null; durationMs: number | null;
   itemCount: number | null; newItemCount: number | null; error: string | null;
-  notification: { status: AlertStatus; error: string | null } | null;
+  /** Aggregate alert state; `channels` lists the result of every channel the alert was sent to. */
+  notification: { status: AlertStatus; error: string | null; channels?: ChannelDelivery[] } | null;
+}
+export type NotificationChannel = 'bark' | 'webhook' | 'ntfy' | 'telegram';
+export const notificationChannels: NotificationChannel[] = ['bark', 'webhook', 'ntfy', 'telegram'];
+export const notificationChannelLabels: Record<NotificationChannel, string> = { bark: 'Bark', webhook: 'Webhook', ntfy: 'ntfy', telegram: 'Telegram' };
+export interface ChannelDelivery { channel: NotificationChannel; status: AlertStatus; error: string | null }
+/** Channels besides Bark. Secrets (`secret`, header values, `token`, `botToken`) are never returned by the API. */
+export interface NotificationChannelSettings {
+  webhook: { enabled: boolean; url: string; secret: string; headers: { name: string; value: string }[] };
+  ntfy: { enabled: boolean; server: string; topic: string; token: string };
+  telegram: { enabled: boolean; botToken: string; chatId: string };
+}
+export const defaultNotificationChannels: NotificationChannelSettings = {
+  webhook: { enabled: false, url: '', secret: '', headers: [] },
+  ntfy: { enabled: false, server: 'https://ntfy.sh/', topic: '', token: '' },
+  telegram: { enabled: false, botToken: '', chatId: '' },
+};
+/** Threshold, retry and cooldown settings shared by every channel of one account. */
+export type NotificationPolicy = Omit<ApplicationSettings['bark'], 'enabled' | 'url'>;
+export interface NotificationSummary extends NotificationPolicy {
+  channels: {
+    bark: { enabled: boolean; configured: boolean; maskedUrl: string };
+    webhook: { enabled: boolean; configured: boolean; maskedUrl: string; signed: boolean; headerNames: string[] };
+    ntfy: { enabled: boolean; configured: boolean; server: string; topic: string; tokenConfigured: boolean };
+    telegram: { enabled: boolean; configured: boolean; chatId: string; tokenConfigured: boolean };
+  };
+}
+/**
+ * PUT /api/notifications body. Omitted fields keep their saved value; an empty
+ * string clears a secret. `headers` replaces every saved header.
+ */
+export interface NotificationUpdate extends Partial<NotificationPolicy> {
+  channels?: {
+    bark?: Partial<{ enabled: boolean; url: string }>;
+    webhook?: Partial<NotificationChannelSettings['webhook']>;
+    ntfy?: Partial<NotificationChannelSettings['ntfy']>;
+    telegram?: Partial<NotificationChannelSettings['telegram']>;
+  };
 }
 export interface FetchLogPage { logs: FetchLog[]; nextCursor: string | null; retentionDays: number }
 export interface ApplicationSettings {
@@ -133,9 +191,14 @@ export interface ApiTokenSummary { id: string; name: string; scope: ApiTokenScop
 // PUT /api/credentials/:id same; DELETE /api/credentials/:id (409 if referenced)
 // GET /api/feeds -> Feed[]; POST /api/feeds FeedInput -> {feed,feedUrl}
 // GET /api/feeds/:id/logs?status=&cursor=&limit= -> FetchLogPage (owner only, default 20, max 100)
+// GET /api/notifications -> NotificationSummary; PUT NotificationUpdate -> NotificationSummary
+// POST /api/notifications/test {channel, ...unsaved channel fields} -> {ok:true} (nothing is saved)
 // GET /api/feeds/:id -> {feed,items:FeedItem[],feedUrl}; PUT FeedInput -> {feed,feedUrl}
 // POST /api/feeds/:id/refresh {}; POST /api/feeds/:id/toggle {}; POST /api/feeds/:id/rotate-token {}
+// GET /api/feeds/:id also returns outputStatus: Record<itemId, ItemOutputStatus>
+// PATCH /api/feeds/:id FeedSettingsInput; POST /api/feeds/:id/output-preview {itemFilter?,outputLimit?} -> {outputStatus}
 // DELETE /api/feeds/:id; GET /feeds/:id/:token.xml -> RSS 2.0 (token grants read-only access)
+// GET /feeds/:id/:token.atom -> Atom 1.0; GET /feeds/:id/:token.json -> JSON Feed 1.1 (same items and token)
 // POST /api/browser {url,credentialId,waitMs,waitForSelector?} -> ScreenFrame
 // GET /api/browser/:id -> ScreenFrame; POST /api/browser/:id/scroll {deltaY} -> ScreenFrame
 // POST /api/browser/:id/click {x,y} -> ScreenFrame; POST /api/browser/:id/follow {node} -> ScreenFrame
@@ -152,6 +215,11 @@ export interface ImportEntry {
   feedId?: string; error?: string; title?: string; detection?: DetectionResult;
 }
 export interface ImportJob { actorId?: string; ownerId?: string; id: string; createdAt: string; entries: ImportEntry[] }
+
+/** The `.xml` address the API returns, switched to another output format. */
+export function feedFormatUrl(rssUrl: string, format: FeedFormat): string {
+  return format === 'rss' ? rssUrl : rssUrl.replace(/\.xml$/, format === 'atom' ? '.atom' : '.json');
+}
 
 export function translationEnabled(feed: Pick<FeedInput, 'sourceType' | 'translationMode'>): boolean {
   return feed.translationMode === 'chinese' || feed.translationMode === 'bilingual' || feed.sourceType === 'rss' && feed.translationMode !== 'original';

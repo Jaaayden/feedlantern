@@ -58,6 +58,15 @@ Store 的无 owner 参数列表方法保留给整站后台调度和备份使用�
 | `GET/POST /api/tokens`、`DELETE /api/tokens/:id` | 列出、创建（`{name, scope:'read'\|'write', expiresInDays?}`，返回只出现一次的 `secret`）、吊销自己的访问令牌；仅限网页会话 |
 | `GET /api/openapi.json` | 公开的 OpenAPI 3.1 文档 |
 | `/feeds/:id/:token.xml` | 无管理员登录的密钥授权 RSS 2.0 |
+| `/feeds/:id/:token.atom`、`.json` | 同一密钥授权的 Atom 1.0、JSON Feed 1.1 |
+| `PATCH /api/feeds/:id` | 名称、间隔、翻译模式，以及 `itemFilter`（`null` 清除）和 `outputLimit` |
+| `POST /api/feeds/:id/output-preview` | `{itemFilter?,outputLimit?}` 预览未保存设置下每个条目的输出状态 |
+
+### 输出选择
+
+RSS、Atom、JSON Feed、浏览器预览页和管理端都通过 `src/server/feed-output.ts` 的 `classifyItems` 决定发布哪些条目：先去掉未完成翻译的条目，再应用 `itemFilter`，最后按 `outputLimit` 截断。每个条目的状态为 `published`、`untranslated`、`excluded`、`not-included` 或 `over-limit`；`GET /api/feeds/:id` 在 `outputStatus`（按条目 ID）中返回，ETag 也基于同一结果计算，修改规则后阅读器会拿到新内容。
+
+正则过滤的安全限制：保存时用 `u` 标志编译检查，`unsafeRegexReason` 拒绝反向引用以及“重复的组内还有重复或分支”（如 `(a+)+`、`(a|ab)*`）；运行时标题截取 500 字符、摘要 2000 字符，并在 `node:vm` 中以 100 毫秒超时执行，V8 会在回溯中途中断。超时结果按规则和内容缓存，本次输出不应用过滤并记录一次警告；保存时如果在已有条目上超时则直接拒绝。
 
 `ScreenFrame` 是从页面顶部截取的第一段截图（JPEG 质量 75，data URL，每段最高 8000 像素）。`height` 为已截取的高度，`documentHeight` 为可截取的总高度（最高 48000 像素；网页更长时 `truncated: true`），`viewportHeight` 为远端视口高度。`POST /api/browser/:id/segment {top}` 截取下一段，`top` 必须等于已截取的高度，否则拒绝，避免重复或跳段；返回 `{top, height, image, documentHeight, map}`。`map` 是元素地图：`boxes` 每 5 个数一组（x、y、宽、高、最近的上层元素序号，根为 -1），坐标相对整页顶部，另含 `labels`、`links`（仅 http/https）和 `innerScroll`。地图是累计的：后续分段只追加新元素，已有序号不变。编辑器据此在本地完成悬停高亮、↑/↓ 调整范围和滚动。
 
@@ -65,7 +74,7 @@ Store 的无 owner 参数列表方法保留给整站后台调度和备份使用�
 
 `POST /api/browser/:id/scroll` 接受 `{deltaY,x?,y?}`，坐标须同时提供并位于远端视口内；省略时使用视口中心。编辑器只在 `map.innerScroll` 为真时用它滚动页面内部的滚动区域。显式关闭编辑会话会取消进行中的操作并释放容量。
 
-完整备份格式版本为 3（兼容导入 version 1、2），独立于数据库迁移版本；敏感值只在加密包内部携带可迁移明文，目标实例使用自己的主密钥重新加密。
+数据库版本 9 为 `feeds` 增加 `item_filter_json`（JSON，可空）和 `output_limit`（默认 100）；完整备份中两列为可选字段，旧备份恢复后使用默认值。完整备份格式版本为 3（兼容导入 version 1、2），独立于数据库迁移版本；敏感值只在加密包内部携带可迁移明文，目标实例使用自己的主密钥重新加密。
 
 ## 用令牌调用 API
 
@@ -133,11 +142,11 @@ seccomp 配置来自 Playwright v1.63.0，保留上游配置；更新 Playwright
 
 RSS HTTP 获取绑定已检查的 IP，限制 5 次重定向、20 秒和 5 MB 响应；单条 HTML 上限 200,000 字符、标题上限 20,000 字符，超限明确失败，不静默截断。XML 禁止 DTD/实体声明。RSS 输出和管理预览都使用安全 HTML，管理预览另加 sandbox 与 CSP。
 
-翻译后台队列与网页抓取池分开，SQLite 任务使用 revision 防止暂停、编辑、删除后的旧结果回写。关闭、恢复备份和应用设置维护时先停止并取消翻译，再操作存储；启动恢复进行中的任务。获取失败进入抓取日志；翻译失败进入独立日志，两类故障分别去重并复用 Bark 发送队列。
+翻译后台队列与网页抓取池分开，SQLite 任务使用 revision 防止暂停、编辑、删除后的旧结果回写。关闭、恢复备份和应用设置维护时先停止并取消翻译，再操作存储；启动恢复进行中的任务。获取失败进入抓取日志；翻译失败进入独立日志，两类故障分别去重并复用通知发送队列。
 
 完整备份继续接受版本 1，新增字段/表使用兼容默认值，因此新程序可恢复旧备份；包含 RSS 翻译的新备份不应交给旧版本程序恢复。轻量配置格式 2 增加来源与模式，不携带内容缓存。
 
-`tests/rss-translation.test.ts` 验证解析、受限 HTTP、缓存、竞态、备份与接口。E2E 后端注入确定性翻译器与模拟 Bark 发送器，实际 RSS HTTP 和浏览器抓取仍使用本地 fixture；生产入口不包含模拟翻译。运行真实 Google 连接检查可使用 `node --import tsx scripts/check-translation.ts`。
+`tests/rss-translation.test.ts` 验证解析、受限 HTTP、缓存、竞态、备份与接口。E2E 后端注入确定性翻译器与模拟通知发送器，实际 RSS HTTP 和浏览器抓取仍使用本地 fixture；生产入口不包含模拟翻译。运行真实 Google 连接检查可使用 `node --import tsx scripts/check-translation.ts`。
 
 应用设置新增 `translation: {concurrency: 6, requestIntervalMs: 100}`，旧设置和备份缺失时自动采用默认值。并发范围 1–16，间隔范围 0–5000 毫秒；PUT 支持局部更新。全局请求调度器约束真实 HTTP 并发与启动间隔，正文先并行翻译，再按 DOM 顺序组装；局部失败等待已启动操作收敛后再记录重试，禁止半成品进入 RSS。
 
@@ -155,7 +164,21 @@ RSS HTTP 获取绑定已检查的 IP，限制 5 次重定向、20 秒和 5 MB �
 
 SQLite 版本 8 移除单管理员索引并增加加密 `user_notifications`。账号变更在事务内保护最后一名启用管理员；会话仍绑定稳定用户 ID。导入任务持久记录 `actorId` 和 `ownerId`，翻译手动重试记录操作人，浏览器记录操作人及目标。执行前及写入前检查权限与取消信号，删除不能恢复已清除的任务。删除账号也清理可能含来源片段的共享翻译缓存，不删除其他用户已保存的译文。
 
-完整备份 version 3 包含个人通知并兼容 version 1、2；只在加密备份内保存可恢复密钥。轻量配置仅导出操作管理员自己的订阅和个人 Bark。开发测试注入模拟 Bark 发送器，禁止向真实设备地址发送测试消息。
+完整备份 version 3 包含个人通知并兼容 version 1、2；只在加密备份内保存可恢复密钥。轻量配置仅导出操作管理员自己的订阅和个人通知设置。开发测试注入模拟通知发送器，禁止向真实设备地址发送测试消息。
+
+## 通知渠道
+
+告警按“告警 + 渠道投递”两层保存：`fetch_alerts` 每次故障一行，记录正文、`kind`（`fetch`／`translation`）、结构化 `payload`（订阅名称、错误、时间）以及汇总状态；`fetch_alert_deliveries` 每个渠道一行，各自记录 `attempts`、`next_attempt_at`、`error` 和状态。告警产生时为所有者所有已启用且填写完整的渠道各建一条投递；`NotificationWorker`（`src/server/notify.ts`）逐条发送，阈值、超时、重试和冷却沿用所有者的告警策略。汇总状态规则：仍有待发送即“待发送”，任一渠道送达即“已发送”（不再重复推送），全部失败才“发送失败”并在冷却后允许重新告警。取消告警（恢复成功、删除订阅、修改通知目标）由触发器同时取消其待发送投递。数据库迁移 `user_version=10` 把升级前的告警转换为 Bark 投递，已有日志继续显示 Bark 的发送结果。
+
+渠道配置与 Bark 设置一起加密存放在 `user_notifications.value`：原有 Bark 字段（含告警策略）保持不变，新增可选 `channels: {webhook, ntfy, telegram}`，因此旧数据和旧备份无需转换。所有渠道（包括 Bark）通过 `postJson`（`src/server/outbound.ts`）发送：先用 `NetworkPolicy` 解析并检查目标，再把连接固定到检查过的地址，不跟随重定向，响应体最多读取 64 KB。投递错误只保存固定文案。
+
+- `GET /api/notifications`：返回 `NotificationSummary`，即告警策略和各渠道的 `enabled`、`configured` 及非机密字段（脱敏地址、ntfy 服务器与主题、Telegram Chat ID、Webhook 是否签名及请求头名称），不返回地址、密钥、请求头值和令牌。
+- `PUT /api/notifications`：请求体为 `NotificationUpdate`，可同时包含策略字段和 `channels.{bark,webhook,ntfy,telegram}` 的局部更新。省略字段保持原值，空字符串清除；清除必填项（Bark／Webhook 地址、ntfy 主题、Telegram Token 或 Chat ID）会自动停用该渠道；`headers` 整体替换。通知目标变化时取消该账号的待发送告警。
+- `POST /api/notifications/test`：`{channel, ...未保存字段}`，以已保存设置叠加请求字段发送一次 `event: "test"` 通知，不保存；目标被网络策略拦截时返回 400。
+- `GET/PUT /api/notifications/bark` 与 `POST /api/notifications/bark/test` 保留给已有脚本，只读写 Bark 字段，保存 Bark 不会改动其他渠道。
+- `GET /api/backups/config` 新增可选 `notificationChannels`；导入时校验，缺省时保留当前渠道。
+
+测试与 E2E 通过 `createApp({ notificationSenders })` 注入各渠道发送器（`barkSender` 仍可单独替换 Bark）；`tests/notify.test.ts` 用本地 HTTP 接收端和精确白名单验证真实发送路径、签名与网络拦截。
 
 ## 数据保留与体积
 
@@ -163,7 +186,7 @@ SQLite 版本 8 移除单管理员索引并增加加密 `user_notifications`。�
 
 | 数据 | 清理规则 | 位置 |
 | --- | --- | --- |
-| 每个订阅的文章 | 最新 200 条 | `Store.upsertItems` |
+| 每个订阅的文章 | 网页订阅 max(200, 输出条数)，RSS 翻译订阅 max(100, 输出条数)，下次抓取时清理 | `storedItemLimit`（`Store.upsertItems`、`RssTranslations.upsert`） |
 | 翻译进度事件 | 每个订阅最新 200 条，且不超过 7 天；界面只读最近 100 条 | `RssTranslations.prune` |
 | 翻译片段缓存 | 最近使用的 20000 条（`TRANSLATION_CACHE_LIMIT`，备份格式共用同一上限） | `RssTranslations.prune` |
 | 抓取日志 | 按「日志保留天数」，默认 30 天 | `FetchHistory.prune` |

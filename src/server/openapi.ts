@@ -66,17 +66,21 @@ const schemas: Record<string, Schema> = {
     ruleOrigins: { type: 'object', additionalProperties: str({ enum: ['auto', 'manual'] }) },
     credentialId: nullable(str()), intervalMinutes: int({ minimum: 5, maximum: 1440 }), waitMs: int({ minimum: 0, maximum: 10000 }), waitForSelector: str(),
   }, ['name', 'url', 'rules', 'credentialId', 'intervalMinutes', 'waitMs']),
-  FeedSettingsInput: object({ translationMode, channelTitle: str({ minLength: 1, maxLength: 200 }), intervalMinutes: int({ minimum: 5, maximum: 1440 }) }, [], { description: '至少提供一个字段' }),
+  ItemFilter: object({ include: array(str({ maxLength: 200 }), { maxItems: 30 }), exclude: array(str({ maxLength: 200 }), { maxItems: 30 }), regex: bool }, ['include', 'exclude', 'regex'], { description: '条目过滤：排除优先，include 非空时必须命中其一；只影响输出' }),
+  FeedSettingsInput: object({ translationMode, channelTitle: str({ minLength: 1, maxLength: 200 }), intervalMinutes: int({ minimum: 5, maximum: 1440 }), itemFilter: nullable(ref('ItemFilter')), outputLimit: int({ minimum: 10, maximum: 500 }) }, [], { description: '至少提供一个字段；itemFilter 为 null 时删除过滤' }),
+  OutputStatus: object({ outputStatus: { type: 'object', additionalProperties: str({ enum: ['published', 'untranslated', 'excluded', 'not-included', 'over-limit'] }), description: '条目 ID → 是否输出及原因' }, filterTimedOut: bool }, ['outputStatus']),
+  NotificationSummary: { type: 'object', description: '告警策略（阈值、超时、重试、冷却）和各渠道状态；不返回任何密钥', properties: { channels: { type: 'object' } } },
+  NotificationUpdate: { type: 'object', description: '局部更新：省略的字段保持原值，空字符串清除密钥；headers 整体替换', properties: { channels: { type: 'object', properties: { bark: { type: 'object' }, webhook: { type: 'object' }, ntfy: { type: 'object' }, telegram: { type: 'object' } } } } },
   Feed: { allOf: [ref('FeedInput'), object({
     id: str(), ownerId: str(), channelTitle: str(), enabled: bool, createdAt: dateTime, lastFetchedAt: nullable(dateTime), lastSuccessAt: nullable(dateTime),
-    nextFetchAt: dateTime, lastError: nullable(str()), itemCount: int(), translation: object({ pending: int(), success: int(), failed: int() }),
+    nextFetchAt: dateTime, lastError: nullable(str()), itemCount: int(), itemFilter: ref('ItemFilter'), outputLimit: int({ minimum: 10, maximum: 500, default: 100 }), translation: object({ pending: int(), success: int(), failed: int() }),
   }, ['id', 'enabled', 'createdAt', 'lastFetchedAt', 'lastSuccessAt', 'nextFetchAt', 'lastError', 'itemCount'])] },
   FeedItem: object({
     id: str(), title: str(), link: str(), description: str(), image: str(), publishedAt: dateTime, publishedAtSource: str({ enum: ['absolute', 'relative'] }),
     firstSeenAt: dateTime, contentHtml: str(), translationStatus: str({ enum: ['pending', 'success', 'failed'] }), translationError: str(),
   }, ['title', 'link']),
   FeedPayload: object({ feed: ref('Feed'), feedUrl: str({ format: 'uri', description: '带密钥的 RSS 地址' }) }, ['feed', 'feedUrl']),
-  FeedDetail: { allOf: [ref('FeedPayload'), object({ items: array(ref('FeedItem')) }, ['items'])] },
+  FeedDetail: { allOf: [ref('FeedPayload'), ref('OutputStatus'), object({ items: array(ref('FeedItem')) }, ['items'])] },
   FetchLogPage: object({ logs: array({ type: 'object' }), nextCursor: nullable(str()), retentionDays: int() }, ['logs', 'nextCursor', 'retentionDays']),
   CredentialInput: object({ name: str({ minLength: 1 }), url: str({ format: 'uri' }), format: str({ enum: ['header', 'json'] }), value: { description: 'Cookie 请求头文本或 Cookie JSON' } }, ['name', 'url', 'format', 'value']),
   CredentialSummary: object({ id: str(), name: str(), url: str(), format: str({ enum: ['header', 'json'] }), domains: array(str()), count: int(), updatedAt: dateTime, expiresAt: nullable(dateTime) }, ['id', 'name', 'url', 'format', 'domains', 'count', 'updatedAt', 'expiresAt']),
@@ -130,6 +134,9 @@ const operations: Operation[] = [
   // Notifications
   { method: 'GET', path: '/api/notifications/bark', tag: 'notifications', summary: '个人 Bark 通知设置', workspace: true, response: ref('BarkSummary') },
   { method: 'PUT', path: '/api/notifications/bark', tag: 'notifications', summary: '保存个人 Bark 通知设置', workspace: true, body: ref('BarkSettings'), response: ref('BarkSummary') },
+  { method: 'GET', path: '/api/notifications', tag: 'notifications', summary: '通知渠道和告警策略', workspace: true, response: ref('NotificationSummary') },
+  { method: 'PUT', path: '/api/notifications', tag: 'notifications', summary: '保存通知渠道和告警策略', workspace: true, body: ref('NotificationUpdate'), response: ref('NotificationSummary') },
+  { method: 'POST', path: '/api/notifications/test', tag: 'notifications', summary: '向一个渠道发送测试通知（不保存）', workspace: true, body: object({ channel: str({ enum: ['bark', 'webhook', 'ntfy', 'telegram'] }) }, ['channel'], { additionalProperties: true }), response: ok },
   { method: 'POST', path: '/api/notifications/bark/test', tag: 'notifications', summary: '发送个人测试通知', workspace: true, body: ref('BarkSettings'), response: ok },
   // Credentials
   { method: 'GET', path: '/api/credentials', tag: 'credentials', summary: '列出 Cookie 凭据（不含明文）', workspace: true, response: array(ref('CredentialSummary')) },
@@ -139,7 +146,7 @@ const operations: Operation[] = [
   // Feeds
   { method: 'GET', path: '/api/feeds', tag: 'feeds', summary: '列出订阅', workspace: true, response: array(ref('Feed')) },
   { method: 'POST', path: '/api/feeds', tag: 'feeds', summary: '创建订阅', description: '网页订阅会立即抓取一次后返回；RSS 订阅在后台抓取。', workspace: true, body: ref('FeedInput'), response: ref('FeedPayload') },
-  { method: 'POST', path: '/api/feeds/bulk', tag: 'feeds', summary: '批量操作', workspace: true, body: object({ ids: array(str(), { minItems: 1, maxItems: 200 }), action: str({ enum: ['copy', 'pause', 'resume', 'refresh', 'delete', 'settings'] }), settings: object({ translationMode, intervalMinutes: int({ minimum: 5, maximum: 1440 }) }) }, ['ids', 'action']), response: ref('BulkResult') },
+  { method: 'POST', path: '/api/feeds/bulk', tag: 'feeds', summary: '批量操作', workspace: true, body: object({ ids: array(str(), { minItems: 1, maxItems: 200 }), action: str({ enum: ['copy', 'pause', 'resume', 'refresh', 'delete', 'settings'] }), settings: object({ translationMode, intervalMinutes: int({ minimum: 5, maximum: 1440 }), itemFilter: nullable(ref('ItemFilter')), outputLimit: int({ minimum: 10, maximum: 500 }) }) }, ['ids', 'action']), response: ref('BulkResult') },
   { method: 'GET', path: '/api/feeds/:id', tag: 'feeds', summary: '订阅详情和最近 200 条条目', workspace: true, response: ref('FeedDetail') },
   { method: 'PUT', path: '/api/feeds/:id', tag: 'feeds', summary: '替换订阅的网址和规则', description: '启用中的订阅会立即重新抓取。', workspace: true, body: ref('FeedInput'), response: ref('FeedPayload') },
   { method: 'PATCH', path: '/api/feeds/:id', tag: 'feeds', summary: '修改名称、刷新间隔或翻译输出', workspace: true, body: ref('FeedSettingsInput'), response: ref('FeedPayload') },
@@ -154,6 +161,7 @@ const operations: Operation[] = [
   ], response: ref('FetchLogPage') },
   { method: 'GET', path: '/api/feeds/:id/translation/progress', tag: 'feeds', summary: 'RSS 翻译进度', workspace: true, response: { type: 'object' } },
   { method: 'POST', path: '/api/feeds/:id/translation/retry', tag: 'feeds', summary: '重试失败的翻译', workspace: true, response: ref('FeedPayload') },
+  { method: 'POST', path: '/api/feeds/:id/output-preview', tag: 'feeds', summary: '按未保存的过滤和条数预览输出', description: '不修改订阅；仍是 POST，因此需要 write 令牌。', workspace: true, body: object({ itemFilter: nullable(ref('ItemFilter')), outputLimit: int({ minimum: 10, maximum: 500 }) }), response: ref('OutputStatus') },
   { method: 'POST', path: '/api/rss/preview', tag: 'feeds', summary: '预览 RSS 源的前 3 条', workspace: true, body: object({ url: str({ format: 'uri' }) }, ['url']), response: object({ title: str(), items: array(ref('ExtractedItem')) }) },
   // Import jobs
   { method: 'GET', path: '/api/import-jobs', tag: 'import-jobs', summary: '列出批量添加任务', workspace: true, response: array(ref('ImportJob')) },
