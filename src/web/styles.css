@@ -1708,3 +1708,9 @@ button.card-warning:hover { text-decoration: underline; text-underline-offset: 3
   .token-call-ip { grid-column: 2; grid-row: 2; text-align: left; }
   .token-call-duration { grid-column: 3; grid-row: 2; font-size: 11.5px; }
 }
+/* Restore preview: server and network settings, this instance vs the backup. */
+.restore-server { display: grid; gap: 8px; margin: 8px 0 12px; }
+.restore-server h4 { margin: 0; font-size: 14px; }
+.settings-diff { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: fixed; }
+.settings-diff th, .settings-diff td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line, rgba(127, 127, 127, 0.25)); overflow-wrap: anywhere; vertical-align: top; }
+.settings-diff th { color: var(--ink-2); font-weight: 600; }

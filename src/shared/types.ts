@@ -80,6 +80,12 @@ export interface ItemFilter { include: string[]; exclude: string[]; regex: boole
 export const ITEM_FILTER_LIMITS = { patterns: 30, patternLength: 200 } as const;
 /** Items published per feed output (RSS, Atom and JSON Feed share it). */
 export const OUTPUT_LIMIT = { min: 10, max: 500, default: 100 } as const;
+/**
+ * Items kept in the database per feed. `null` (automatic) keeps 200 for
+ * website feeds and 100 for RSS feeds; a set value is never below the
+ * output limit. 1000 matches the most items one multi-page fetch collects.
+ */
+export const RETENTION_LIMIT = { min: 10, max: 1000, websiteAuto: 200, rssAuto: 100 } as const;
 export type FeedFormat = 'rss' | 'atom' | 'json';
 /** Why a stored item is or is not in the feed output (see `GET /api/feeds/:id`). */
 export type ItemOutputStatus = 'published' | 'untranslated' | 'excluded' | 'not-included' | 'over-limit';
@@ -93,8 +99,10 @@ export interface FeedSettingsInput {
   /** `null` removes the filter. */
   itemFilter?: ItemFilter | null;
   outputLimit?: number;
+  /** Items kept in the database; `null` returns to the automatic value. */
+  retentionLimit?: number | null;
 }
-export type BulkFeedSettingsInput = Pick<FeedSettingsInput, 'translationMode' | 'targetLanguage' | 'translationProvider' | 'intervalMinutes' | 'outputLimit' | 'itemFilter'>;
+export type BulkFeedSettingsInput = Pick<FeedSettingsInput, 'translationMode' | 'targetLanguage' | 'translationProvider' | 'intervalMinutes' | 'outputLimit' | 'retentionLimit' | 'itemFilter'>;
 export interface Feed extends FeedInput {
   ownerId?: string;
   id: string;
@@ -102,6 +110,8 @@ export interface Feed extends FeedInput {
   itemFilter?: ItemFilter;
   /** Items in the output; defaults to OUTPUT_LIMIT.default. */
   outputLimit?: number;
+  /** Items kept in the database; `null` or missing means automatic (see RETENTION_LIMIT). */
+  retentionLimit?: number | null;
   enabled: boolean;
   createdAt: string;
   lastFetchedAt: string | null;

@@ -1,7 +1,7 @@
 import type { UserSummary } from '../shared/types';
 import { NotificationsPanel } from './NotificationsPanel';
 import { UsersPanel } from './UsersPanel';
-import { feedFormatUrl, ITEM_FILTER_LIMITS, OUTPUT_LIMIT, translationEnabled } from '../shared/types';
+import { feedFormatUrl, ITEM_FILTER_LIMITS, OUTPUT_LIMIT, RETENTION_LIMIT, translationEnabled } from '../shared/types';
 import type { FeedFormat, ItemFilter, ItemOutputStatus } from '../shared/types';
 import { TranslationLog } from './TranslationProgress';
 import { ItemPreview } from './ItemList';
@@ -499,6 +499,8 @@ function FeedSettingsTab({ feed, items, busy, setBusy, setError, dirty, reload, 
   const retranslates = language !== (feed.targetLanguage ?? 'zh-CN') || provider !== (feed.translationProvider ?? '');
   const savedLimit = feed.outputLimit ?? OUTPUT_LIMIT.default;
   const [limit, setLimit] = useState(String(savedLimit));
+  const savedRetention = feed.retentionLimit ? String(feed.retentionLimit) : '';
+  const [retention, setRetention] = useState(savedRetention);
   const [include, setInclude] = useState(feed.itemFilter?.include.join('\n') ?? '');
   const [exclude, setExclude] = useState(feed.itemFilter?.exclude.join('\n') ?? '');
   const [regex, setRegex] = useState(feed.itemFilter?.regex ?? false);
@@ -509,10 +511,14 @@ function FeedSettingsTab({ feed, items, busy, setBusy, setError, dirty, reload, 
   const filterDirty = filterKey !== JSON.stringify(feed.itemFilter ?? null);
   const limitNumber = Number(limit);
   const limitValid = !!limit && Number.isInteger(limitNumber) && limitNumber >= OUTPUT_LIMIT.min && limitNumber <= OUTPUT_LIMIT.max;
+  const retentionNumber = Number(retention);
+  const retentionMin = Math.max(RETENTION_LIMIT.min, limitValid ? limitNumber : OUTPUT_LIMIT.min);
+  const retentionValid = !retention.trim() || Number.isInteger(retentionNumber) && retentionNumber >= retentionMin && retentionNumber <= RETENTION_LIMIT.max;
+  const retentionAuto = feed.sourceType === 'rss' ? RETENTION_LIMIT.rssAuto : RETENTION_LIMIT.websiteAuto;
   const [networkProfileId, setNetworkProfileId] = useState(feed.networkProfileId ?? '');
   const profiles = useNetworkProfiles(setError);
   const networkDirty = networkProfileId !== (feed.networkProfileId ?? '');
-  const isDirty = title !== feed.name || interval !== String(feed.intervalMinutes) || mode !== (feed.translationMode ?? 'bilingual') || limit !== String(savedLimit) || filterDirty || retranslates || networkDirty;
+  const isDirty = title !== feed.name || interval !== String(feed.intervalMinutes) || mode !== (feed.translationMode ?? 'bilingual') || limit !== String(savedLimit) || retention.trim() !== savedRetention || filterDirty || retranslates || networkDirty;
   dirty.current = isDirty;
   // Ask the server which stored items the draft would publish; it runs the same code as the feed output.
   useEffect(() => {
@@ -527,6 +533,7 @@ function FeedSettingsTab({ feed, items, busy, setBusy, setError, dirty, reload, 
   }, [feed.id, filterKey, limitNumber, limitValid, items]);
   function resetOutput(next: Feed) {
     setLimit(String(next.outputLimit ?? OUTPUT_LIMIT.default));
+    setRetention(next.retentionLimit ? String(next.retentionLimit) : '');
     setInclude(next.itemFilter?.include.join('\n') ?? ''); setExclude(next.itemFilter?.exclude.join('\n') ?? ''); setRegex(next.itemFilter?.regex ?? false);
   }
   async function save(event: FormEvent) {
@@ -536,6 +543,7 @@ function FeedSettingsTab({ feed, items, busy, setBusy, setError, dirty, reload, 
     const minutes = Number(interval);
     if (!interval || !Number.isInteger(minutes) || minutes < 5 || minutes > 1440) { setError('刷新间隔必须是 5 到 1440 之间的整数'); return; }
     if (!limitValid) { setError(`输出条数必须是 ${OUTPUT_LIMIT.min} 到 ${OUTPUT_LIMIT.max} 之间的整数`); return; }
+    if (!retentionValid) { setError(`保留条数必须是 ${retentionMin} 到 ${RETENTION_LIMIT.max} 之间的整数（不少于输出条数），留空为自动`); return; }
     setBusy('保存设置'); setError('');
     try {
       const result = await api.feeds.settings(feed.id, {
@@ -545,6 +553,7 @@ function FeedSettingsTab({ feed, items, busy, setBusy, setError, dirty, reload, 
         ...(title !== feed.name ? { channelTitle: title } : {}),
         ...(interval !== String(feed.intervalMinutes) ? { intervalMinutes: minutes } : {}),
         ...(limit !== String(savedLimit) ? { outputLimit: limitNumber } : {}),
+        ...(retention.trim() !== savedRetention ? { retentionLimit: retention.trim() ? retentionNumber : null } : {}),
         ...(filterDirty ? { itemFilter: filter } : {}),
         ...(networkDirty ? { networkProfileId: networkProfileId || null } : {}),
       });
@@ -581,7 +590,10 @@ function FeedSettingsTab({ feed, items, busy, setBusy, setError, dirty, reload, 
       <fieldset className="output-settings" disabled={!!busy}>
         <legend>输出内容</legend>
         <p className="hint">RSS、Atom 和 JSON Feed 三种地址共用这些设置。过滤只影响输出，不删除已存储的条目，保存后立即生效。</p>
-        <Field label="输出条数" hint={`每种地址最多输出的条目数，支持 ${OUTPUT_LIMIT.min}–${OUTPUT_LIMIT.max}。调小不会立即删除已存储的条目，下次抓取时按保留规则清理；调大后，新抓到的条目会逐步补足。`}><input type="number" required min={OUTPUT_LIMIT.min} max={OUTPUT_LIMIT.max} step={1} value={limit} onChange={e => setLimit(e.target.value)} /></Field>
+        <div className="form-row">
+          <Field label="输出条数" hint={`每种地址最多输出的条目数，支持 ${OUTPUT_LIMIT.min}–${OUTPUT_LIMIT.max}。调小不会立即删除已存储的条目，下次抓取时按保留规则清理；调大后，新抓到的条目会逐步补足。`}><input type="number" required min={OUTPUT_LIMIT.min} max={OUTPUT_LIMIT.max} step={1} value={limit} onChange={e => setLimit(e.target.value)} /></Field>
+          <Field label="保留条数" hint={`数据库最多保存的历史条目数。留空为自动：${feed.sourceType === 'rss' ? 'RSS 订阅' : '网页订阅'} ${retentionAuto} 条，输出数量更大时取输出数量。可设 ${retentionMin}–${RETENTION_LIMIT.max}，不能小于输出数量。调小同样在下次抓取时清理；网页上仍能看到的条目总会保留，避免被当作新条目重复推送。`}><input type="number" min={retentionMin} max={RETENTION_LIMIT.max} step={1} placeholder={`自动（${Math.max(retentionAuto, limitValid ? limitNumber : 0)}）`} value={retention} onChange={e => setRetention(e.target.value)} /></Field>
+        </div>
         <div className="form-row">
           <Field label="包含关键词" hint="每行一个。填写后，只输出标题或摘要包含其中任意一个的条目。"><textarea rows={3} spellCheck={false} value={include} onChange={e => setInclude(e.target.value)} placeholder={'例如：\n发布\nrelease'} /></Field>
           <Field label="排除关键词" hint="每行一个。标题或摘要包含任意一个就不输出，优先于包含关键词。"><textarea rows={3} spellCheck={false} value={exclude} onChange={e => setExclude(e.target.value)} placeholder={'例如：\n广告\nsponsored'} /></Field>

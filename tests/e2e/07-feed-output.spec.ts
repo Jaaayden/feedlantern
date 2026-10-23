@@ -41,8 +41,17 @@ test('订阅面板切换 Atom / JSON Feed 地址，设置过滤和输出条数�
     await dialog.getByRole('button', { name: '保存设置' }).click();
     expect(await dialog.getByLabel('输出条数').evaluate(input => (input as HTMLInputElement).validity.rangeUnderflow)).toBe(true);
     await dialog.getByLabel('输出条数').fill('20');
+    // Retention: empty is automatic, and it may not drop below the output limit.
+    const retention = dialog.getByLabel(/^保留条数/);
+    await expect(retention).toHaveValue('');
+    await expect(retention).toHaveAttribute('placeholder', '自动（200）');
+    await retention.fill('15');
+    await dialog.getByRole('button', { name: '保存设置' }).click();
+    expect(await retention.evaluate(input => (input as HTMLInputElement).validity.rangeUnderflow)).toBe(true);
+    await retention.fill('300');
     await dialog.getByRole('button', { name: '保存设置' }).click();
     await expect(page.getByRole('status').filter({ hasText: '订阅设置已保存' })).toBeVisible();
+    await expect(retention).toHaveValue('300');
     await expect(dialog.getByRole('button', { name: '保存设置' })).toBeDisabled();
 
     // Every format drops the filtered item; the stored item is still listed, marked as filtered.
@@ -53,6 +62,7 @@ test('订阅面板切换 Atom / JSON Feed 地址，设置过滤和输出条数�
     }
     const settings = (await (await page.request.get(`/api/feeds/${feed.id}`)).json()).feed;
     expect(settings.outputLimit).toBe(20);
+    expect(settings.retentionLimit).toBe(300);
     expect(settings.itemFilter).toEqual({ include: [], exclude: ['^fixture article two$'], regex: true });
     await dialog.getByRole('button', { name: '订阅内容', exact: true }).click();
     const hidden = dialog.locator('article.preview-item[data-output="excluded"]');
@@ -73,7 +83,7 @@ test('订阅面板切换 Atom / JSON Feed 地址，设置过滤和输出条数�
   } finally { await page.request.delete(`/api/feeds/${feed.id}`, { headers }); }
 });
 
-test('批量修改输出条数，只改填写的字段', async ({ page }) => {
+test('批量修改输出条数和保留条数，只改填写的字段', async ({ page }) => {
   const auth = await loginAsAdmin(page.request), headers = protocolHeaders(auth.csrfToken);
   const ids: string[] = [];
   try {
@@ -86,12 +96,22 @@ test('批量修改输出条数，只改填写的字段', async ({ page }) => {
     await page.getByRole('button', { name: '批量修改设置', exact: true }).click();
     const form = page.getByRole('form', { name: '批量修改订阅设置' });
     await form.getByLabel('输出条数').fill('250');
+    await form.getByLabel('保留条数', { exact: true }).selectOption('set');
+    await form.getByLabel(/^保留条数（/).fill('400');
     await form.getByRole('button', { name: '应用到所选订阅' }).click();
     await expect(page.getByRole('status')).toContainText('已完成 2 项');
     for (const id of ids) {
       const saved = (await (await page.request.get(`/api/feeds/${id}`)).json()).feed;
       expect(saved.outputLimit).toBe(250);
+      expect(saved.retentionLimit).toBe(400);
       expect(saved.intervalMinutes).toBe(90);
     }
+    // Back to automatic (a successful batch clears the selection).
+    await page.getByLabel('全选当前结果').check();
+    await page.getByRole('button', { name: '批量修改设置', exact: true }).click();
+    await form.getByLabel('保留条数', { exact: true }).selectOption('auto');
+    await form.getByRole('button', { name: '应用到所选订阅' }).click();
+    await expect.poll(async () => (await (await page.request.get(`/api/feeds/${ids[1]}`)).json()).feed.retentionLimit).toBeNull();
+    for (const id of ids) expect((await (await page.request.get(`/api/feeds/${id}`)).json()).feed.retentionLimit).toBeNull();
   } finally { for (const id of ids) await page.request.delete(`/api/feeds/${id}`, { headers }); }
 });
