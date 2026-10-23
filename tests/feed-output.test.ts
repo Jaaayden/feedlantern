@@ -61,7 +61,7 @@ test('RSS 来源按纯文本匹配摘要，翻译订阅只对已完成翻译的�
   const rssFeed: Feed = { ...feed, sourceType: 'rss', translationMode: 'original', itemFilter: { include: [], exclude: ['hidden'], regex: false } };
   const html = [item('a', 'One', '<p data-x="hidden">visible text</p>'), item('b', 'Two', '<p>a <b>hidden</b> word</p>')];
   assert.deepEqual(classifyItems(rssFeed, html).statuses, ['published', 'excluded'], 'attributes are not summary text');
-  const translated: Feed = { ...rssFeed, translationMode: 'chinese', itemFilter: { include: [], exclude: ['广告'], regex: false } };
+  const translated: Feed = { ...rssFeed, translationMode: 'translated', itemFilter: { include: [], exclude: ['广告'], regex: false } };
   const items: FeedItem[] = [
     { ...item('c', '新闻'), contentHtml: '<p>正文</p>', translationStatus: 'success' },
     { ...item('d', '广告'), contentHtml: '<p>正文</p>', translationStatus: 'success' },

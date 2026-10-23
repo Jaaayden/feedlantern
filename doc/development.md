@@ -134,8 +134,9 @@ seccomp 配置来自 Playwright v1.63.0，保留上游配置；更新 Playwright
 数据库版本 5 增加订阅来源 `source_type`、输出模式 `translation_mode`；RSS 获取状态、任务、译文及片段缓存分别由 `rss_sources`、`translations`、`translation_cache` 保存。版本 6 将旧网页订阅设置为原文输出；网页订阅开启翻译后将已抓取内容同步到翻译队列，原始数据保留。
 
 - `POST /api/rss/preview {url}`：鉴权与 CSRF 保护，获取并返回前三条安全原文预览，不触发翻译。
-- `POST/PUT /api/feeds[/id]` 新增 `sourceType: 'rss'` 与 `translationMode: 'original' | 'chinese' | 'bilingual'`。RSS 输入不要求 `rules`、`waitMs` 或 Cookie。新建返回订阅链接后后台获取；来源类型缺省按原有网页订阅处理。
-- `PATCH /api/feeds/:id` 支持 `translationMode`；模式切换不改变地址、GUID 或缓存。
+- `POST/PUT /api/feeds[/id]` 新增 `sourceType: 'rss'` 与 `translationMode: 'original' | 'translated' | 'bilingual'`（v0.7 前名为 `chinese`，仍作为别名接受），以及 `targetLanguage`（`zh-CN` / `zh-TW` / `en` / `ja` / `ko`，默认 `zh-CN`）和 `translationProvider`（`google` / `deepl` / `openai`，`null` 跟随默认）。RSS 输入不要求 `rules`、`waitMs` 或 Cookie。新建返回订阅链接后后台获取；来源类型缺省按原有网页订阅处理。
+- `PATCH /api/feeds/:id` 与批量设置支持 `translationMode`、`targetLanguage`、`translationProvider`；模式切换不改变地址、GUID 或缓存，更换目标语言或实际使用的服务时该订阅全部条目重新排队翻译（`RssTranslations.retranslate`），GUID 不变。
+- `GET /api/translation/providers`（任意已登录用户）返回默认服务和各服务是否已配置；`POST /api/settings/translation/test {provider, settings?, targetLanguage?}`（管理员）用未保存的设置翻译一句示例。
 - `POST /api/feeds/:id/translation/retry {}`：重试未完成条目，清除该订阅重试计数；保留服务端限流等待期。
 - RSS 输出及 ETag 使用同一份仅翻译成功的条目列表；管理端仍返回等待／失败条目。
 - 详情及列表的 RSS Feed 增加 `translation: {pending,success,failed}`；详情条目增加 `contentHtml`、`translationStatus`、`translationError`。
@@ -148,7 +149,20 @@ RSS HTTP 获取绑定已检查的 IP，限制 5 次重定向、20 秒和 5 MB �
 
 `tests/rss-translation.test.ts` 验证解析、受限 HTTP、缓存、竞态、备份与接口。E2E 后端注入确定性翻译器与模拟通知发送器，实际 RSS HTTP 和浏览器抓取仍使用本地 fixture；生产入口不包含模拟翻译。运行真实 Google 连接检查可使用 `node --import tsx scripts/check-translation.ts`。
 
-应用设置新增 `translation: {concurrency: 6, requestIntervalMs: 100}`，旧设置和备份缺失时自动采用默认值。并发范围 1–16，间隔范围 0–5000 毫秒；PUT 支持局部更新。全局请求调度器约束真实 HTTP 并发与启动间隔，正文先并行翻译，再按 DOM 顺序组装；局部失败等待已启动操作收敛后再记录重试，禁止半成品进入 RSS。
+### 翻译服务
+
+`src/server/translation-providers.ts` 定义 `TranslationEngine`：一个服务加一个目标语言，只负责把一组文本按顺序翻译成同样数量的结果，失败抛出 `TranslationError`（`rateLimited` 表示需要退避）。排队、批量、缓存、限流退避和重试仍由 `TranslationWorker` 统一处理，Google 通道的行为不变。工作器为每个服务维护独立的队列、并发、启动间隔和冷却时间；`RssTranslations.next(defaultProvider, skip)` 跳过正在冷却或已满的服务。
+
+- 缓存键为 `sha256("<命名空间>:<片段>")`：Google 为 `google-browser:v2:<语言>`（`zh-CN` 即升级前的键），DeepL 为 `deepl:v1:<语言>`，OpenAI 兼容接口为 `openai:v1:<接口地址+模型+提示词摘要>:<语言>`。
+- DeepL 与 OpenAI 兼容接口的请求经 `policyPost` 发出：先用 `NetworkPolicy` 解析并校验地址，再把连接固定到已校验的 IP，不跟随重定向；私网和回环地址只有精确加入 `allowedHosts` 才放行。
+- OpenAI 兼容接口把片段编号为 `<seg id="N">…</seg>`（转义后发送），系统提示词为“自定义提示词 + 固定格式要求”；`parseSegments` 要求编号连续、数量一致、段内无标签、段外无内容，否则整批失败重试。`finish_reason: length` 视为失败。
+- 设置中的 API Key 随加密的应用设置保存；`GET /api/settings`、备份预览和轻量配置导出把 Key 置空并返回 `apiKeyConfigured`。`PUT /api/settings` 中 Key 缺省或为空表示保留，`null` 表示删除。
+- 数据库迁移 13 增加 `feeds.target_language`、`feeds.translation_provider`，并把 `chinese` 改为 `translated`。迁移按列是否存在执行，不依赖其他迁移的合并顺序。完整备份与轻量配置的订阅新增对应可选字段，备份格式版本不变。
+- RSS 的 `<language>` 由 `feedLanguage(feed)` 给出（如 `zh-cn`、`ja`）；Atom 的 `xml:lang` 与 JSON Feed 的 `language` 使用 `feedLanguageTag(feed)`（BCP 47，如 `zh-CN`、`ja`）。
+
+`tests/translation-providers.test.ts` 用本地 HTTP 服务模拟 DeepL 与 OpenAI 兼容接口；E2E 的 fixture 服务器提供 `/deepl/{free,pro}/v2/translate` 与 `/openai/v1/chat/completions`，后端通过 `FIXTURE_ORIGIN` 把 DeepL 的固定端点指向它。不调用任何真实翻译服务。
+
+应用设置新增 `translation: {concurrency: 6, requestIntervalMs: 100}`，旧设置和备份缺失时自动采用默认值。并发范围 1–16，间隔范围 0–5000 毫秒；PUT 支持局部更新。v0.7 起该并发与间隔只作用于 Google 通道，`translation.deepl` / `translation.openai` 各有自己的并发与间隔，`translation.defaultProvider` 选择默认服务。每个服务的请求调度器约束真实 HTTP 并发与启动间隔，正文先并行翻译，再按 DOM 顺序组装；局部失败等待已启动操作收敛后再记录重试，禁止半成品进入 RSS。
 
 ## v0.5.1 用户与目标工作台
 

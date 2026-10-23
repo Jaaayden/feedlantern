@@ -1,4 +1,4 @@
-import { translationEnabled } from '../shared/types.js';
+import { targetLanguages, translationEnabled } from '../shared/types.js';
 import { safeHtml } from './rss-source.js';
 import { createHash } from 'node:crypto';
 import { classifyItems } from './feed-output.js';
@@ -84,6 +84,15 @@ function thumbnail(item: FeedItem, feed: Feed): string {
   return url ? `<media:thumbnail url="${escapeAttribute(url)}"/>` : '';
 }
 
+/** RSS `language` code of a translated feed's output (lower case, e.g. `zh-cn`). */
+export function feedLanguage(feed: Pick<Feed, 'targetLanguage'>): string {
+  return targetLanguages[feed.targetLanguage ?? 'zh-CN'].rss;
+}
+/** BCP 47 tag of a translated feed's output, for Atom `xml:lang` and JSON Feed `language`. */
+export function feedLanguageTag(feed: Pick<Feed, 'targetLanguage'>): string {
+  return feed.targetLanguage ?? 'zh-CN';
+}
+
 export function renderRss(feed: Feed, items: FeedItem[], feedUrl: string): string {
   const buildDate = fixedDate(feed.lastSuccessAt ?? feed.createdAt, feed.createdAt);
   const renderedItems = publishedItems(feed, items).map((item) => {
@@ -112,8 +121,8 @@ export function renderRss(feed: Feed, items: FeedItem[], feedUrl: string): strin
     `<atom:link href="${escapeAttribute(feedUrl)}" rel="self" type="application/rss+xml"/>`,
     `<lastBuildDate>${escapeXml(buildDate)}</lastBuildDate>`,
     '<generator>FeedLantern</generator>',
-    // Translated feeds publish Chinese (or Chinese-first bilingual) text.
-    translationEnabled(feed) ? '<language>zh-cn</language>' : '',
+    // Translated feeds publish the target language (translation-first when bilingual).
+    translationEnabled(feed) ? `<language>${feedLanguage(feed)}</language>` : '',
     `<ttl>${Math.max(1, Math.round(feed.intervalMinutes))}</ttl>`,
     renderedItems,
     '</channel>',
@@ -140,7 +149,7 @@ export function renderAtom(feed: Feed, items: FeedItem[], feedUrl: string): stri
   const site = validHttpUrl(feed.url);
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
-    `<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/"${translationEnabled(feed) ? ' xml:lang="zh-CN"' : ''}>`,
+    `<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/"${translationEnabled(feed) ? ` xml:lang="${feedLanguageTag(feed)}"` : ''}>`,
     `<id>${escapeXml(`urn:feedlantern:feed:${feed.id}`)}</id>`,
     `<title type="text">${escapeXml(feed.name)}</title>`,
     `<subtitle type="text">${escapeXml(channelDescription(feed))}</subtitle>`,
@@ -163,7 +172,7 @@ export function renderJsonFeed(feed: Feed, items: FeedItem[], feedUrl: string): 
     ...(site ? { home_page_url: site } : {}),
     feed_url: feedUrl,
     description: channelDescription(feed),
-    ...(translationEnabled(feed) ? { language: 'zh-CN' } : {}),
+    ...(translationEnabled(feed) ? { language: feedLanguageTag(feed) } : {}),
     authors: [{ name: feedHost(feed) }],
     items: publishedItems(feed, items).map(item => {
       const link = validHttpUrl(item.link);

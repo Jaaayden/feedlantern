@@ -4,6 +4,7 @@ import { UsersPanel } from './UsersPanel';
 import { feedFormatUrl, ITEM_FILTER_LIMITS, OUTPUT_LIMIT, translationEnabled } from '../shared/types';
 import type { FeedFormat, ItemFilter, ItemOutputStatus } from '../shared/types';
 import { TranslationProgress } from './TranslationProgress';
+import { LanguageOptions, ProviderOptions, useTranslationProviders } from './TranslationFields';
 import { RssEditor, RssContent } from './RssEditor';
 import { ApplicationSettingsPanel } from './ApplicationSettingsPanel';
 import { BackupPanel } from './BackupPanel';
@@ -24,6 +25,7 @@ import type { StatusFilter } from './FeedCollection';
 import { readTheme, saveTheme, themeLabels } from './theme';
 import type { Theme } from './theme';
 import { api, onUnauthorized, setCsrfToken, setWorkspaceUser } from './api';
+import type { TargetLanguage, TranslationMode, TranslationProviderId } from '../shared/types';
 import type { CredentialPayload, OutputPreview } from './api';
 import type { AuthState, CredentialSummary, DetectionCandidate, DetectionResult, ExtractedItem, Feed, FeedInput, FeedItem, FieldName, PickResult, Rect, RuleOrigins, ScreenFrame, SelectionRules } from '../shared/types';
 
@@ -440,7 +442,11 @@ function FeedSettingsTab({ feed, items, busy, setBusy, setError, dirty, reload, 
 }) {
   const [title, setTitle] = useState(feed.name);
   const [interval, setIntervalValue] = useState(String(feed.intervalMinutes));
-  const [mode, setMode] = useState<'original' | 'chinese' | 'bilingual'>(feed.translationMode ?? 'bilingual');
+  const [mode, setMode] = useState<TranslationMode>(feed.translationMode ?? 'bilingual');
+  const [language, setLanguage] = useState<TargetLanguage>(feed.targetLanguage ?? 'zh-CN');
+  const [provider, setProvider] = useState<TranslationProviderId | ''>(feed.translationProvider ?? '');
+  const providers = useTranslationProviders();
+  const retranslates = language !== (feed.targetLanguage ?? 'zh-CN') || provider !== (feed.translationProvider ?? '');
   const savedLimit = feed.outputLimit ?? OUTPUT_LIMIT.default;
   const [limit, setLimit] = useState(String(savedLimit));
   const [include, setInclude] = useState(feed.itemFilter?.include.join('\n') ?? '');
@@ -453,7 +459,7 @@ function FeedSettingsTab({ feed, items, busy, setBusy, setError, dirty, reload, 
   const filterDirty = filterKey !== JSON.stringify(feed.itemFilter ?? null);
   const limitNumber = Number(limit);
   const limitValid = !!limit && Number.isInteger(limitNumber) && limitNumber >= OUTPUT_LIMIT.min && limitNumber <= OUTPUT_LIMIT.max;
-  const isDirty = title !== feed.name || interval !== String(feed.intervalMinutes) || mode !== (feed.translationMode ?? 'bilingual') || limit !== String(savedLimit) || filterDirty;
+  const isDirty = title !== feed.name || interval !== String(feed.intervalMinutes) || mode !== (feed.translationMode ?? 'bilingual') || limit !== String(savedLimit) || filterDirty || retranslates;
   dirty.current = isDirty;
   // Ask the server which stored items the draft would publish; it runs the same code as the feed output.
   useEffect(() => {
@@ -481,12 +487,15 @@ function FeedSettingsTab({ feed, items, busy, setBusy, setError, dirty, reload, 
     try {
       const result = await api.feeds.settings(feed.id, {
         ...(mode !== feed.translationMode ? { translationMode: mode } : {}),
+        ...(language !== (feed.targetLanguage ?? 'zh-CN') ? { targetLanguage: language } : {}),
+        ...(provider !== (feed.translationProvider ?? '') ? { translationProvider: provider || null } : {}),
         ...(title !== feed.name ? { channelTitle: title } : {}),
         ...(interval !== String(feed.intervalMinutes) ? { intervalMinutes: minutes } : {}),
         ...(limit !== String(savedLimit) ? { outputLimit: limitNumber } : {}),
         ...(filterDirty ? { itemFilter: filter } : {}),
       });
       saved(result); setTitle(result.feed.name); setIntervalValue(String(result.feed.intervalMinutes)); setMode(result.feed.translationMode ?? 'bilingual'); resetOutput(result.feed);
+      setLanguage(result.feed.targetLanguage ?? 'zh-CN'); setProvider(result.feed.translationProvider ?? '');
       changed(); notify('订阅设置已保存');
     } catch (error) { setError(messageOf(error)); } finally { setBusy(''); }
   }
@@ -507,8 +516,13 @@ function FeedSettingsTab({ feed, items, busy, setBusy, setError, dirty, reload, 
       <Field label="订阅名称" hint="同步更新订阅列表和 RSS 频道标题，订阅地址保持不变。"><input required maxLength={200} disabled={!!busy} value={title} onChange={e => setTitle(e.target.value)} /></Field>
       <div className="form-row">
         <Field label="刷新间隔（分钟）" hint="支持 5–1440 分钟。修改后从保存时重新计时，不会立即抓取；已暂停的订阅继续保持暂停。"><input type="number" required min={5} max={1440} step={1} disabled={!!busy} value={interval} onChange={e => setIntervalValue(e.target.value)} /></Field>
-        <Field label="输出模式" hint="开启翻译后，仅发布翻译完成的标题和已抓取内容；不会额外抓取文章全文。"><select aria-label="输出模式" disabled={!!busy} value={mode} onChange={e => setMode(e.target.value as typeof mode)}><option value="original">原文（不翻译）</option><option value="bilingual">双语（中文在前）</option><option value="chinese">仅中文</option></select></Field>
+        <Field label="输出模式" hint="开启翻译后，仅发布翻译完成的标题和已抓取内容；不会额外抓取文章全文。"><select aria-label="输出模式" disabled={!!busy} value={mode} onChange={e => setMode(e.target.value as typeof mode)}><option value="original">原文（不翻译）</option><option value="bilingual">双语（译文在前）</option><option value="translated">仅译文</option></select></Field>
       </div>
+      {mode !== 'original' && <div className="form-row">
+        <Field label="目标语言"><select aria-label="目标语言" disabled={!!busy} value={language} onChange={e => setLanguage(e.target.value as TargetLanguage)}><LanguageOptions /></select></Field>
+        <Field label="翻译服务" hint="服务由管理员在“设置”中配置。"><select aria-label="翻译服务" disabled={!!busy} value={provider} onChange={e => setProvider(e.target.value as TranslationProviderId | '')}><ProviderOptions info={providers} current={feed.translationProvider} /></select></Field>
+      </div>}
+      {retranslates && <p className="notice">更换目标语言或翻译服务后，已有文章会重新翻译；完成前它们暂不出现在订阅链接中。条目 ID 不变，阅读器不会重复推送。</p>}
       <fieldset className="output-settings" disabled={!!busy}>
         <legend>输出内容</legend>
         <p className="hint">RSS、Atom 和 JSON Feed 三种地址共用这些设置。过滤只影响输出，不删除已存储的条目，保存后立即生效。</p>

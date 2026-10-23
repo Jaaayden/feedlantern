@@ -40,9 +40,9 @@ test('网页设置保存、配置导出导入及手机显示', async ({ page }) 
     await expect(telegram.getByRole('button', { name: '发送测试通知' })).toBeDisabled();
     await form.getByLabel('日志保留天数').fill('90');
     await form.getByLabel('后台并发数').fill('2');
-    await expect(form.getByLabel('翻译请求并发数')).toHaveValue('6');
-    await form.getByLabel('翻译请求并发数').fill('8');
-    await form.getByLabel('翻译请求启动间隔（毫秒）').fill('0');
+    await expect(form.getByLabel('Google 请求并发数')).toHaveValue('6');
+    await form.getByLabel('Google 请求并发数').fill('8');
+    await form.getByLabel('Google 请求启动间隔（毫秒）').fill('0');
     await form.getByRole('button', { name: '保存应用设置' }).click();
     await expect(form.getByRole('status')).toContainText('设置已保存');
     await page.reload(); await page.getByRole('button', { name: '设置', exact: true }).click();
@@ -54,8 +54,8 @@ test('网页设置保存、配置导出导入及手机显示', async ({ page }) 
     await expect(webhook.getByLabel('自定义请求头（可选）')).toHaveAttribute('placeholder', /X-Token/);
     await expect(telegram.locator('.badge')).toHaveText('未配置');
     await expect(form.getByLabel('日志保留天数')).toHaveValue('90');
-    await expect(form.getByLabel('翻译请求并发数')).toHaveValue('8');
-    await expect(form.getByLabel('翻译请求启动间隔（毫秒）')).toHaveValue('0');
+    await expect(form.getByLabel('Google 请求并发数')).toHaveValue('8');
+    await expect(form.getByLabel('Google 请求启动间隔（毫秒）')).toHaveValue('0');
     await expect(policy.getByLabel('连续抓取失败告警阈值（次）')).toHaveValue('3');
     const archive = await (await page.request.get('/api/backups/config')).json();
     expect(archive.settings.bark.url).toBe('https://api.day.app/e2e-private-key/');

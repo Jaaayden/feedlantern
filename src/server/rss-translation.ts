@@ -7,36 +7,38 @@ import serialize from 'dom-serializer';
 import { digest, safeHtml, type SourceItem, type SourceResult } from './rss-source.js';
 import { escapeXml, sanitizeDescription } from './rss.js';
 import { TRANSLATION_CACHE_LIMIT } from './backups.js';
+import { NetworkPolicy } from './network.js';
+import { TranslationError, deeplEndpoints, deeplEngine, keepWhitespace, openaiEngine, providerProblem, providerRate, retryAfterMs, type TranslationEngine, type TranslationSettings } from './translation-providers.js';
 import { storedItemLimit } from './feed-output.js';
 
 export const TRANSLATION_EVENTS_PER_FEED = 200;
-import type { ApplicationSettings, Feed, FeedItem } from '../shared/types.js';
+import { defaultApplicationSettings, isTargetLanguage, isTranslationProvider, type Feed, type FeedItem, type TargetLanguage, type TranslationProviderId, type TranslationRate } from '../shared/types.js';
 
-export type Translator = (text: string, signal: AbortSignal) => Promise<string>;
-export class TranslationError extends Error {
-  constructor(message: string, public retryAfterMs = 0, public rateLimited = false) { super(message); }
-}
+export { TranslationError };
+/** Replaces the Google channel (tests and the e2e backend use a deterministic one). */
+export type Translator = (text: string, signal: AbortSignal, target?: TargetLanguage) => Promise<string>;
+/** The original Google + simplified Chinese namespace; existing cache entries keep their keys. */
+export const DEFAULT_CACHE_NAMESPACE = 'google-browser:v2:zh-CN';
 // Public browser client key shipped in Immersive Translate 1.33.1, not a user's
 // Cloud API credential. Protocol: https://download.immersivetranslate.com/immersive-translate.user.js
 const googleBrowserClientKey = 'AIzaSyATBXajvzQLTDHEQbcpq0Ihe0vWDHmO520';
 export const googleBatchLimits = { segments: 50, characters: 1800 } as const;
 
 /** Browser translation returns one HTML result per input, in array order. */
-export async function googleTranslateBatch(texts: string[], signal: AbortSignal): Promise<string[]> {
+export async function googleTranslateBatch(texts: string[], signal: AbortSignal, target: TargetLanguage = 'zh-CN'): Promise<string[]> {
   if (!texts.length) return [];
   if (texts.length > googleBatchLimits.segments) throw new TranslationError('单批翻译片段过多');
   const response = await fetch('https://translate-pa.googleapis.com/v1/translateHtml', {
     method: 'POST', redirect: 'error', signal: AbortSignal.any([signal, AbortSignal.timeout(20_000)]),
     headers: { 'content-type': 'application/json+protobuf', 'x-goog-api-key': googleBrowserClientKey },
     // Escape text nodes so literal <tags> are translated as text, not interpreted as HTML.
-    body: JSON.stringify([[texts.map(escapeXml), 'auto', 'zh-CN'], 'te_lib']),
+    body: JSON.stringify([[texts.map(escapeXml), 'auto', target], 'te_lib']),
   });
   if (!response.ok) {
     await response.body?.cancel();
-    const retry = response.headers.get('retry-after');
-    const retryMs = retry ? /^\d+$/.test(retry) ? Number(retry) * 1000 : Date.parse(retry) - Date.now() : 0;
+    const retryMs = retryAfterMs(response.headers.get('retry-after'));
     const limited = response.status === 429 || retryMs > 0;
-    throw new TranslationError(limited ? 'Google 浏览器翻译请求受限，请稍后重试' : response.status === 403 ? 'Google 浏览器翻译拒绝访问（HTTP 403），请检查接口可用性' : `Google 翻译服务暂不可用（HTTP ${response.status}）`, Number.isFinite(retryMs) ? Math.max(0, Math.min(retryMs, 86400_000)) : 0, limited);
+    throw new TranslationError(limited ? 'Google 浏览器翻译请求受限，请稍后重试' : response.status === 403 ? 'Google 浏览器翻译拒绝访问（HTTP 403），请检查接口可用性' : `Google 翻译服务暂不可用（HTTP ${response.status}）`, retryMs, limited);
   }
   const reader = response.body?.getReader();
   if (!reader) throw new TranslationError('Google 返回了空响应');
@@ -62,14 +64,14 @@ export async function googleTranslateBatch(texts: string[], signal: AbortSignal)
     parseDocument(html).children.forEach(collect);
     const text = parts.join('').trim();
     if (!text) throw new TranslationError('Google 返回了空译文');
-    return (texts[i].match(/^\s*/)?.[0] ?? '') + text + (texts[i].match(/\s*$/)?.[0] ?? '');
+    return keepWhitespace(texts[i], text);
   });
 }
 
 export const googleTranslate: Translator = async (text, signal) => (await googleTranslateBatch([text], signal))[0];
 
 interface TranslationBody { actorId?: string; sourceTitle?: string; html: string; title?: string; translatedHtml?: string; bilingualHtml?: string }
-interface Job { owner_id: string; item_id: string; feed_id: string; revision: string; attempts: number; body_json: string; title: string; link: string }
+interface Job { owner_id: string; item_id: string; feed_id: string; revision: string; attempts: number; body_json: string; title: string; link: string; provider?: string; target_language?: string }
 
 export class RssTranslations {
   constructor(private db: DatabaseSync, private userSignal: (id: string) => AbortSignal = () => new AbortController().signal) {
@@ -148,7 +150,7 @@ export class RssTranslations {
       const row = this.db.prepare('SELECT status,error,body_json FROM translations WHERE item_id=?').get(item.id);
       const body: TranslationBody = row ? JSON.parse(String(row.body_json)) : { html: item.description ?? '' };
       const done = row?.status === 'success' && typeof body.title === 'string' && !!body.title.trim() && typeof body.translatedHtml === 'string' && typeof body.bilingualHtml === 'string';
-      const bilingual = feed.translationMode !== 'chinese';
+      const bilingual = feed.translationMode !== 'translated';
       return { ...item, title: done && body.title ? bilingual ? `${body.title} / ${item.title}` : body.title : item.title,
         contentHtml: safeHtml(done ? (bilingual ? body.bilingualHtml : body.translatedHtml) ?? body.html : `<p>【${row?.status === 'failed' ? '翻译失败，暂显示原文' : '等待翻译，暂显示原文'}】</p>${body.html}`, item.link),
         description: undefined,
@@ -173,17 +175,23 @@ export class RssTranslations {
   cancelActor(id: string): void {
     this.db.prepare("UPDATE translations SET status='failed',revision=?,error='操作人身份已变化，请手动重试' WHERE json_extract(body_json,'$.actorId')=? AND status IN ('pending','running') AND feed_id IN (SELECT id FROM feeds WHERE owner_id!=?)").run(randomUUID(), id, id);
   }
+  /** A new service or target language: every article is translated again (cache hits stay free). */
+  retranslate(id: string): void {
+    this.db.prepare("UPDATE translations SET revision=?,status='pending',attempts=0,next_at=0,error=NULL WHERE feed_id=?").run(randomUUID(), id);
+  }
   invalidate(id: string): void {
     this.db.prepare("UPDATE translations SET revision=?,status=CASE WHEN status='running' THEN 'pending' ELSE status END WHERE feed_id=?").run(randomUUID(), id);
   }
   recover(): void { this.db.prepare("UPDATE translations SET status='pending' WHERE status='running'").run(); }
-  next(): Job | undefined {
-    return this.db.prepare(`SELECT t.*,f.owner_id,i.title,i.link FROM translations t JOIN feeds f ON f.id=t.feed_id JOIN feed_items i ON i.id=t.item_id
-      WHERE f.enabled=1 AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id=f.owner_id AND u.enabled=0) AND f.translation_mode IN ('chinese','bilingual') AND (json_extract(t.body_json,'$.actorId') IS NULL OR EXISTS (SELECT 1 FROM users actor WHERE actor.id=json_extract(t.body_json,'$.actorId') AND actor.enabled=1 AND (actor.id=f.owner_id OR actor.role='admin'))) AND t.status='pending' AND t.next_at<=? ORDER BY t.next_at,i.first_seen_at DESC LIMIT 1`).get(Date.now()) as unknown as Job | undefined;
+  /** The next due article, skipping services that are cooling down or already at capacity. */
+  next(defaultProvider: TranslationProviderId = 'google', skip: TranslationProviderId[] = []): Job | undefined {
+    return this.db.prepare(`SELECT * FROM (SELECT t.*,f.owner_id,i.title,i.link,i.first_seen_at,COALESCE(f.translation_provider,?) AS provider,f.target_language FROM translations t JOIN feeds f ON f.id=t.feed_id JOIN feed_items i ON i.id=t.item_id
+      WHERE f.enabled=1 AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id=f.owner_id AND u.enabled=0) AND f.translation_mode IN ('translated','bilingual') AND (json_extract(t.body_json,'$.actorId') IS NULL OR EXISTS (SELECT 1 FROM users actor WHERE actor.id=json_extract(t.body_json,'$.actorId') AND actor.enabled=1 AND (actor.id=f.owner_id OR actor.role='admin'))) AND t.status='pending' AND t.next_at<=?)
+      WHERE provider NOT IN (SELECT value FROM json_each(?)) ORDER BY next_at,first_seen_at DESC LIMIT 1`).get(defaultProvider, Date.now(), JSON.stringify(skip)) as unknown as Job | undefined;
   }
   signal(job: Job): AbortSignal { const actor = (JSON.parse(job.body_json) as TranslationBody).actorId; return AbortSignal.any([this.userSignal(job.owner_id), ...(actor ? [this.userSignal(actor)] : [])]); }
   valid(job: Job): boolean {
-    return !!this.db.prepare("SELECT 1 FROM translations t JOIN feeds f ON f.id=t.feed_id WHERE t.item_id=? AND t.revision=? AND f.enabled=1 AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id=f.owner_id AND u.enabled=0) AND f.translation_mode IN ('chinese','bilingual') AND (json_extract(t.body_json,'$.actorId') IS NULL OR EXISTS (SELECT 1 FROM users actor WHERE actor.id=json_extract(t.body_json,'$.actorId') AND actor.enabled=1 AND (actor.id=f.owner_id OR actor.role='admin')))").get(job.item_id, job.revision);
+    return !!this.db.prepare("SELECT 1 FROM translations t JOIN feeds f ON f.id=t.feed_id WHERE t.item_id=? AND t.revision=? AND f.enabled=1 AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id=f.owner_id AND u.enabled=0) AND f.translation_mode IN ('translated','bilingual') AND (json_extract(t.body_json,'$.actorId') IS NULL OR EXISTS (SELECT 1 FROM users actor WHERE actor.id=json_extract(t.body_json,'$.actorId') AND actor.enabled=1 AND (actor.id=f.owner_id OR actor.role='admin')))").get(job.item_id, job.revision);
   }
   begin(job: Job): void { this.db.prepare("UPDATE translations SET status='running' WHERE item_id=? AND revision=?").run(job.item_id, job.revision); }
   finish(job: Job, body: TranslationBody): void {
@@ -195,14 +203,14 @@ export class RssTranslations {
     this.db.prepare('UPDATE translations SET status=?,attempts=?,next_at=?,error=? WHERE item_id=? AND revision=?')
       .run(attempts >= 3 ? 'failed' : 'pending', attempts, interrupted ? 0 : Date.now() + Math.max(retryMs, attempts === 1 ? 60_000 : 300_000), interrupted ? null : message, job.item_id, job.revision);
   }
-  cached(text: string): string | undefined {
-    const key = digest(`google-browser:v2:zh-CN:${text}`);
+  cached(text: string, namespace = DEFAULT_CACHE_NAMESPACE): string | undefined {
+    const key = digest(`${namespace}:${text}`);
     const row = this.db.prepare('SELECT text FROM translation_cache WHERE key=?').get(key);
     if (row) this.db.prepare('UPDATE translation_cache SET touched_at=? WHERE key=?').run(Date.now(), key);
     return row ? String(row.text) : undefined;
   }
-  cache(text: string, translated: string): void {
-    this.db.prepare('INSERT INTO translation_cache(key,text,touched_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET text=excluded.text,touched_at=excluded.touched_at').run(digest(`google-browser:v2:zh-CN:${text}`), translated, Date.now());
+  cache(text: string, translated: string, namespace = DEFAULT_CACHE_NAMESPACE): void {
+    this.db.prepare('INSERT INTO translation_cache(key,text,touched_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET text=excluded.text,touched_at=excluded.touched_at').run(digest(`${namespace}:${text}`), translated, Date.now());
   }
   /** The UI shows the latest 100 events per feed; this bounds the table however fast events arrive. */
   prune(): void {
@@ -262,116 +270,159 @@ export async function translateBody(html: string, translate: (text: string) => P
   return { translatedHtml: rendered.map(r => r.translated).join(''), bilingualHtml: rendered.map(r => r.bilingual).join('') };
 }
 
+
 interface QueuedTranslation {
   ownerId: string;
   text: string;
+  engine: TranslationEngine;
   signal: AbortSignal;
   resolve: (text: string) => void;
   reject: (error: unknown) => void;
 }
 
+/** Each service has its own queue, concurrency, launch interval and rate-limit cooldown. */
+interface Gate { queue: QueuedTranslation[]; active: number; nextLaunch: number; cooldownUntil: number; timer?: NodeJS.Timeout }
+
+export interface TranslationNetwork {
+  /** Outbound policy for DeepL and OpenAI-compatible services (the current allow-list and DNS settings). */
+  policy?: () => NetworkPolicy;
+  /** Test-only replacement for DeepL's fixed endpoints. */
+  deeplEndpoints?: { free: string; pro: string };
+}
+type SettingsSource = number | (() => Partial<TranslationSettings> & TranslationRate);
+const providers: TranslationProviderId[] = ['google', 'deepl', 'openai'];
+
 export class TranslationWorker {
   private stopped = true;
   private timer?: NodeJS.Timeout;
-  private requestTimer?: NodeJS.Timeout;
-  private active = new Set<Promise<void>>();
+  private active = new Map<Promise<void>, TranslationProviderId>();
   private controller = new AbortController();
-  private nextLaunch = 0;
-  private cooldownUntil = 0;
+  private gates = new Map<TranslationProviderId, Gate>();
   private requests = new Map<string, Promise<string>>();
-  private requestQueue: QueuedTranslation[] = [];
-  private activeRequests = 0;
   constructor(private store: RssTranslations, private translate: Translator = googleTranslate,
-    private options: number | (() => ApplicationSettings['translation']) = () => ({ concurrency: 6, requestIntervalMs: 100 }),
-    private notify?: (feedId: string, error?: string) => void) {}
+    private options: SettingsSource = () => defaultApplicationSettings.translation,
+    private notify?: (feedId: string, error?: string) => void, private network: TranslationNetwork = {}) {}
 
-  private settings(): ApplicationSettings['translation'] {
-    return typeof this.options === 'number' ? { concurrency: 6, requestIntervalMs: this.options } : this.options();
+  private settings(): TranslationSettings {
+    const base = defaultApplicationSettings.translation;
+    return typeof this.options === 'number' ? { ...base, concurrency: 6, requestIntervalMs: this.options } : { ...base, ...this.options() };
+  }
+  private gate(provider: TranslationProviderId): Gate {
+    let gate = this.gates.get(provider);
+    if (!gate) { gate = { queue: [], active: 0, nextLaunch: 0, cooldownUntil: 0 }; this.gates.set(provider, gate); }
+    return gate;
+  }
+  private articles(provider: TranslationProviderId): number {
+    let count = 0; for (const value of this.active.values()) if (value === provider) count++;
+    return count;
+  }
+  /** The engine for one service and target language, built from the current settings. */
+  engine(provider: TranslationProviderId, target: TargetLanguage, settings = this.settings()): TranslationEngine {
+    const policy = this.network.policy ?? (() => new NetworkPolicy());
+    if (provider === 'deepl') return { ...deeplEngine(target, settings.deepl, policy, this.network.deeplEndpoints ?? deeplEndpoints), unavailable: providerProblem(settings, 'deepl') };
+    if (provider === 'openai') return { ...openaiEngine(target, settings.openai, policy), unavailable: providerProblem(settings, 'openai') };
+    const native = this.translate === googleTranslate;
+    return {
+      provider: 'google', label: 'Google 免费翻译', namespace: `google-browser:v2:${target}`,
+      batch: native ? googleBatchLimits : { segments: 1, characters: Infinity },
+      translate: native ? (texts, signal) => googleTranslateBatch(texts, signal, target) : async (texts, signal) => [await this.translate(texts[0], signal, target)],
+    };
   }
   start(): void {
     if (!this.stopped) return;
-    this.stopped = false; this.controller = new AbortController(); this.nextLaunch = 0;
+    this.stopped = false; this.controller = new AbortController();
+    for (const gate of this.gates.values()) gate.nextLaunch = 0;
     this.store.recover(); this.timer = setInterval(() => this.wake(), 1000); this.timer.unref(); this.wake();
   }
   wake(): void {
-    if (this.stopped || Date.now() < this.cooldownUntil) return;
-    while (this.active.size < this.settings().concurrency) {
-      const job = this.store.next(); if (!job) break;
+    if (this.stopped) return;
+    for (;;) {
+      const settings = this.settings(), now = Date.now();
+      const skip = providers.filter(provider => this.gate(provider).cooldownUntil > now || this.articles(provider) >= providerRate(settings, provider).concurrency);
+      if (skip.length === providers.length) break;
+      const job = this.store.next(settings.defaultProvider, skip); if (!job) break;
+      const provider = isTranslationProvider(job.provider) ? job.provider : 'google';
       this.store.begin(job);
       this.store.event(job, `开始翻译，第 ${job.attempts + 1} 次尝试`);
-      const work = this.run(job).catch(() => { console.error('RSS 翻译后台任务失败，将在重启后恢复'); }).finally(() => {
+      const work = this.run(job, provider).catch(() => { console.error('RSS 翻译后台任务失败，将在重启后恢复'); }).finally(() => {
         this.active.delete(work); if (!this.stopped) this.wake();
       });
-      this.active.add(work);
+      this.active.set(work, provider);
     }
   }
-  private segment(text: string, signal: AbortSignal, ownerId: string): Promise<string> {
+  private segment(text: string, signal: AbortSignal, ownerId: string, engine: TranslationEngine): Promise<string> {
     signal.throwIfAborted();
-    const cached = this.store.cached(text); if (cached !== undefined) return Promise.resolve(cached);
-    const key = `${ownerId}:${text}`;
+    const cached = this.store.cached(text, engine.namespace); if (cached !== undefined) return Promise.resolve(cached);
+    const key = `${engine.namespace}\u0000${ownerId}\u0000${text}`;
     const active = this.requests.get(key); if (active) return active;
+    const gate = this.gate(engine.provider);
     const work = new Promise<string>((resolve, reject) => {
-      this.requestQueue.push({ ownerId, text, signal, resolve, reject });
+      gate.queue.push({ ownerId, text, engine, signal, resolve, reject });
     }).finally(() => this.requests.delete(key));
     this.requests.set(key, work);
-    if (!this.requestTimer) this.requestTimer = setTimeout(() => { this.requestTimer = undefined; this.pumpRequests(); }, 10);
+    if (!gate.timer) gate.timer = setTimeout(() => { gate.timer = undefined; this.pump(engine.provider); }, 10);
     return work;
   }
-  /** A single global gate bounds actual HTTP requests, across articles and nodes. */
-  private pumpRequests(): void {
-    if (this.requestTimer) { clearTimeout(this.requestTimer); this.requestTimer = undefined; }
+  /** One gate per service bounds its actual HTTP requests, across articles and nodes. */
+  private pump(provider: TranslationProviderId): void {
+    const gate = this.gate(provider);
+    if (gate.timer) { clearTimeout(gate.timer); gate.timer = undefined; }
     if (this.stopped) return;
-    const settings = this.settings();
-    while (this.activeRequests < settings.concurrency && this.requestQueue.length) {
-      const wait = Math.max(this.nextLaunch, this.cooldownUntil) - Date.now();
+    const rate = providerRate(this.settings(), provider);
+    while (gate.active < rate.concurrency && gate.queue.length) {
+      const wait = Math.max(gate.nextLaunch, gate.cooldownUntil) - Date.now();
       if (wait > 0) {
-        this.requestTimer = setTimeout(() => this.pumpRequests(), wait); this.requestTimer.unref(); return;
+        gate.timer = setTimeout(() => this.pump(provider), wait); gate.timer.unref(); return;
       }
-      const job = this.requestQueue.shift()!;
+      const job = gate.queue.shift()!;
       if (job.signal.aborted) { job.reject(job.signal.reason); continue; }
       const batch = [job];
       let size = job.text.length;
-      if (this.translate === googleTranslate) {
-        while (this.requestQueue.length && this.requestQueue[0].ownerId === job.ownerId && batch.length < googleBatchLimits.segments && size + this.requestQueue[0].text.length <= googleBatchLimits.characters) {
-          const next = this.requestQueue.shift()!;
-          if (next.signal.aborted) { next.reject(next.signal.reason); continue; }
-          size += next.text.length; batch.push(next);
-        }
+      const limits = job.engine.batch;
+      while (gate.queue.length && gate.queue[0].ownerId === job.ownerId && gate.queue[0].engine.namespace === job.engine.namespace && batch.length < limits.segments && size + gate.queue[0].text.length <= limits.characters) {
+        const next = gate.queue.shift()!;
+        if (next.signal.aborted) { next.reject(next.signal.reason); continue; }
+        size += next.text.length; batch.push(next);
       }
-      this.nextLaunch = Date.now() + settings.requestIntervalMs;
-      this.activeRequests++;
+      gate.nextLaunch = Date.now() + rate.requestIntervalMs;
+      gate.active++;
       void (async () => {
-        const results = this.translate === googleTranslate ? await googleTranslateBatch(batch.map(part => part.text), job.signal) : [await this.translate(job.text, job.signal)];
+        const results = await job.engine.translate(batch.map(part => part.text), job.signal);
         job.signal.throwIfAborted();
+        if (results.length !== batch.length) throw new TranslationError('翻译服务返回的译文数量不匹配');
         for (let i = 0; i < batch.length; i++) {
           if (!results[i]?.trim()) throw new TranslationError('翻译服务返回了空译文');
         }
         for (let i = 0; i < batch.length; i++) {
-          this.store.cache(batch[i].text, results[i]); batch[i].resolve(results[i]);
+          this.store.cache(batch[i].text, results[i], job.engine.namespace); batch[i].resolve(results[i]);
         }
       })().catch(error => {
         if (!job.signal.aborted && error instanceof TranslationError && error.rateLimited) {
-          this.cooldownUntil = Math.max(this.cooldownUntil, Date.now() + Math.max(60_000, error.retryAfterMs));
+          gate.cooldownUntil = Math.max(gate.cooldownUntil, Date.now() + Math.max(60_000, error.retryAfterMs));
           // Fail queued segments promptly so articles can persist retries without
           // holding partial jobs open throughout the provider's cooldown.
-          for (const pending of this.requestQueue.splice(0)) pending.reject(error);
+          for (const pending of gate.queue.splice(0)) pending.reject(error);
         }
         for (const part of batch) part.reject(error);
-      }).finally(() => { this.activeRequests--; this.pumpRequests(); });
+      }).finally(() => { gate.active--; this.pump(provider); });
     }
   }
-  private async run(job: Job): Promise<void> {
+  private async run(job: Job, provider: TranslationProviderId): Promise<void> {
     const signal = AbortSignal.any([this.controller.signal, this.store.signal(job)]);
+    const engine = this.engine(provider, isTargetLanguage(job.target_language) ? job.target_language : 'zh-CN');
+    // Unexpected errors may carry raw socket details; only a fixed message is shown and stored.
+    const fallback = provider === 'google' ? 'Google 免费翻译连接失败' : `${engine.label} 连接失败`;
     let completed = 0, submitted = 0, cached = 0;
     try {
+      if (engine.unavailable) throw new TranslationError(engine.unavailable);
       const translate = async (text: string): Promise<string> => {
         const points = Array.from(text); const parts: string[] = [];
         for (let i = 0; i < points.length; i += 1000) parts.push(points.slice(i, i + 1000).join(''));
         const output = await parallelMap(parts, 16, async part => {
           signal.throwIfAborted(); if (!this.store.valid(job)) throw Error('stale');
           submitted++;
-          if (this.store.cached(part) !== undefined) cached++;
-          const result = await this.segment(part, signal, job.owner_id);
+          if (this.store.cached(part, engine.namespace) !== undefined) cached++;
+          const result = await this.segment(part, signal, job.owner_id, engine);
           completed++;
           this.store.event(job, `已完成 ${completed} 个片段（已提交 ${submitted}，缓存命中 ${cached}）`);
           return result;
@@ -389,19 +440,29 @@ export class TranslationWorker {
     } catch (error) {
       const retryMs = error instanceof TranslationError ? error.retryAfterMs : 0;
       this.store.event(job, signal.aborted ? '翻译中断，恢复运行后继续' : `${error instanceof TranslationError ? error.message : '翻译连接失败'}；${job.attempts >= 2 ? '已达重试上限' : '已安排自动重试'}`);
-      this.store.fail(job, error instanceof TranslationError ? error.message : 'Google 免费翻译连接失败，请检查服务主机网络后重试', retryMs, signal.aborted);
-      if (!signal.aborted && this.store.valid(job)) this.notify?.(job.feed_id, error instanceof TranslationError ? error.message : 'Google 免费翻译连接失败');
+      this.store.fail(job, error instanceof TranslationError ? error.message : `${fallback}，请检查服务主机网络后重试`, retryMs, signal.aborted);
+      if (!signal.aborted && this.store.valid(job)) this.notify?.(job.feed_id, error instanceof TranslationError ? error.message : fallback);
     }
   }
-  status() { return { activeArticles: this.active.size, activeRequests: this.activeRequests, queuedSegments: this.requestQueue.length, cooldownUntil: this.cooldownUntil > Date.now() ? this.cooldownUntil : null, stopped: this.stopped }; }
+  /** Queue state for one service, or all of them combined. */
+  status(provider?: TranslationProviderId) {
+    const now = Date.now();
+    const gates = (provider ? [provider] : providers).map(id => this.gate(id));
+    const cooldown = Math.max(0, ...gates.map(gate => gate.cooldownUntil));
+    return {
+      provider: provider ?? null, activeArticles: provider ? this.articles(provider) : this.active.size,
+      activeRequests: gates.reduce((sum, gate) => sum + gate.active, 0), queuedSegments: gates.reduce((sum, gate) => sum + gate.queue.length, 0),
+      cooldownUntil: cooldown > now ? cooldown : null, stopped: this.stopped,
+    };
+  }
   retry(): void { this.wake(); }
   async stop(): Promise<void> {
     this.stopped = true;
     if (this.timer) clearInterval(this.timer);
-    if (this.requestTimer) clearTimeout(this.requestTimer);
+    for (const gate of this.gates.values()) { if (gate.timer) clearTimeout(gate.timer); gate.timer = undefined; }
     this.controller.abort();
-    for (const pending of this.requestQueue.splice(0)) pending.reject(this.controller.signal.reason);
-    await Promise.allSettled([...this.active]);
+    for (const gate of this.gates.values()) for (const pending of gate.queue.splice(0)) pending.reject(this.controller.signal.reason);
+    await Promise.allSettled([...this.active.keys()]);
     this.requests.clear();
   }
 }

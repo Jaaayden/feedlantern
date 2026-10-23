@@ -10,7 +10,10 @@ await mkdir(dataDir, { recursive: true });
 // Translation and push providers are deterministic; browser capture and RSS HTTP
 // fetches exercise the real production paths against the local fixture server.
 const config = getConfig();
-const app = await createApp({ config, barkSender: async () => {}, notificationSenders: { webhook: async () => {}, ntfy: async () => {}, telegram: async () => {} }, translator: async text => `中文：${text}`, translationIntervalMs: 0 });
+// DeepL's endpoints are fixed in production; tests point them at the fixture server.
+const fixture = process.env.FIXTURE_ORIGIN;
+const deeplEndpoints = fixture ? { free: `${fixture}/deepl/free/v2/translate`, pro: `${fixture}/deepl/pro/v2/translate` } : undefined;
+const app = await createApp({ config, barkSender: async () => {}, notificationSenders: { webhook: async () => {}, ntfy: async () => {}, telegram: async () => {} }, translator: async text => `中文：${text}`, translationIntervalMs: 0, deeplEndpoints });
 await app.listen({ host: config.host, port: config.port });
 for (const signal of ['SIGTERM', 'SIGINT'] as const) process.once(signal, () => {
   void app.close().finally(() => process.exit(0));

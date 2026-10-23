@@ -165,11 +165,11 @@ test('批量设置校验、权限、逐项结果与只更新指定字段', async
     assert.deepEqual(changed.json().results, [{ id: a.id, ok: true }, { id: b.id, ok: true }, { id: 'missing', ok: false, error: '订阅不存在' }]);
     for (const feed of [a, b]) {
       const after = store.getFeed(feed.id)!;
-      assert.equal(after.translationMode, 'chinese'); assert.equal(after.intervalMinutes, feed.intervalMinutes);
+      assert.equal(after.translationMode, 'translated'); assert.equal(after.intervalMinutes, feed.intervalMinutes);
       assert.equal(after.name, feed.name); assert.equal(after.nextFetchAt, feed.nextFetchAt);
     }
     await bulk({ intervalMinutes: 15 });
-    for (const id of [a.id, b.id]) { assert.equal(store.getFeed(id)!.intervalMinutes, 15); assert.equal(store.getFeed(id)!.translationMode, 'chinese'); }
+    for (const id of [a.id, b.id]) { assert.equal(store.getFeed(id)!.intervalMinutes, 15); assert.equal(store.getFeed(id)!.translationMode, 'translated'); }
     await bulk({ translationMode: 'bilingual', intervalMinutes: 30 });
     for (const id of [a.id, b.id]) { assert.equal(store.getFeed(id)!.intervalMinutes, 30); assert.equal(store.getFeed(id)!.translationMode, 'bilingual'); }
     assert.equal(store.getFeed(b.id)!.enabled, false);

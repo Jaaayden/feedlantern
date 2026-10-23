@@ -35,7 +35,10 @@ const dateTime: Schema = { type: 'string', format: 'date-time' };
 const nullable = (schema: Schema): Schema => ({ oneOf: [schema, { type: 'null' }] });
 const object = (properties: Record<string, Schema>, required: string[] = [], extra: Schema = {}): Schema => ({ type: 'object', properties, ...(required.length ? { required } : {}), ...extra });
 const ok = ref('Ok');
-const translationMode = str({ enum: ['original', 'chinese', 'bilingual'] });
+const translationMode = str({ enum: ['original', 'translated', 'bilingual'], description: 'translated 为仅译文（旧名 chinese 仍被接受）' });
+const targetLanguage = str({ enum: ['zh-CN', 'zh-TW', 'en', 'ja', 'ko'], default: 'zh-CN', description: '翻译目标语言' });
+const translationProvider = nullable(str({ enum: ['google', 'deepl', 'openai'], description: '翻译服务；null 跟随实例默认服务' }));
+const providerId = str({ enum: ['google', 'deepl', 'openai'] });
 
 const schemas: Record<string, Schema> = {
   Error: object({ error: str({ description: '面向用户的中文错误说明' }) }, ['error']),
@@ -61,13 +64,13 @@ const schemas: Record<string, Schema> = {
   }, ['id', 'username', 'role', 'enabled', 'createdAt', 'updatedAt']),
   SelectionRules: object({ item: str(), title: str(), link: str(), description: str(), image: str(), date: str() }, ['item', 'title', 'link'], { description: 'CSS 选择器；title/link 等相对于 item' }),
   FeedInput: object({
-    sourceType: str({ enum: ['website', 'rss'], default: 'website' }), translationMode,
+    sourceType: str({ enum: ['website', 'rss'], default: 'website' }), translationMode, targetLanguage, translationProvider,
     name: str({ minLength: 1 }), url: str({ format: 'uri' }), rules: ref('SelectionRules'),
     ruleOrigins: { type: 'object', additionalProperties: str({ enum: ['auto', 'manual'] }) },
     credentialId: nullable(str()), intervalMinutes: int({ minimum: 5, maximum: 1440 }), waitMs: int({ minimum: 0, maximum: 10000 }), waitForSelector: str(),
   }, ['name', 'url', 'rules', 'credentialId', 'intervalMinutes', 'waitMs']),
   ItemFilter: object({ include: array(str({ maxLength: 200 }), { maxItems: 30 }), exclude: array(str({ maxLength: 200 }), { maxItems: 30 }), regex: bool }, ['include', 'exclude', 'regex'], { description: '条目过滤：排除优先，include 非空时必须命中其一；只影响输出' }),
-  FeedSettingsInput: object({ translationMode, channelTitle: str({ minLength: 1, maxLength: 200 }), intervalMinutes: int({ minimum: 5, maximum: 1440 }), itemFilter: nullable(ref('ItemFilter')), outputLimit: int({ minimum: 10, maximum: 500 }) }, [], { description: '至少提供一个字段；itemFilter 为 null 时删除过滤' }),
+  FeedSettingsInput: object({ translationMode, targetLanguage, translationProvider, channelTitle: str({ minLength: 1, maxLength: 200 }), intervalMinutes: int({ minimum: 5, maximum: 1440 }), itemFilter: nullable(ref('ItemFilter')), outputLimit: int({ minimum: 10, maximum: 500 }) }, [], { description: '至少提供一个字段；itemFilter 为 null 时删除过滤' }),
   OutputStatus: object({ outputStatus: { type: 'object', additionalProperties: str({ enum: ['published', 'untranslated', 'excluded', 'not-included', 'over-limit'] }), description: '条目 ID → 是否输出及原因' }, filterTimedOut: bool }, ['outputStatus']),
   NotificationSummary: { type: 'object', description: '告警策略（阈值、超时、重试、冷却）和各渠道状态；不返回任何密钥', properties: { channels: { type: 'object' } } },
   NotificationUpdate: { type: 'object', description: '局部更新：省略的字段保持原值，空字符串清除密钥；headers 整体替换', properties: { channels: { type: 'object', properties: { bark: { type: 'object' }, webhook: { type: 'object' }, ntfy: { type: 'object' }, telegram: { type: 'object' } } } } },
@@ -91,7 +94,11 @@ const schemas: Record<string, Schema> = {
     enabled: bool, configured: bool, maskedUrl: str(), failureThreshold: int(), timeoutSeconds: int(), maxAttempts: int(), retryDelaySeconds: int(), laterRetryDelaySeconds: int(), cooldownMinutes: int(),
   }),
   ApplicationSettings: object({
-    translation: object({ concurrency: int(), requestIntervalMs: int() }), feedView: str({ enum: ['list', 'cards'] }), logRetentionDays: int(),
+    translation: object({
+      concurrency: int({ description: 'Google 通道的并发数' }), requestIntervalMs: int({ description: 'Google 通道的请求启动间隔' }), defaultProvider: providerId,
+      deepl: object({ apiKey: str({ description: '只写：响应中始终为空字符串；更新时省略或留空保持原值，null 删除' }), apiKeyConfigured: bool, plan: str({ enum: ['auto', 'free', 'pro'] }), concurrency: int(), requestIntervalMs: int() }),
+      openai: object({ baseUrl: str({ description: '请求发送到 baseUrl/chat/completions' }), model: str(), apiKey: str({ description: '只写，同 deepl.apiKey' }), apiKeyConfigured: bool, systemPrompt: str({ maxLength: 4000 }), concurrency: int(), requestIntervalMs: int() }),
+    }), feedView: str({ enum: ['list', 'cards'] }), logRetentionDays: int(),
     bark: ref('BarkSettings'), server: { type: 'object', description: '后台并发、目标白名单、代理与会话等服务器设置' },
   }),
   ImportJob: object({ id: str(), createdAt: dateTime, ownerId: str(), actorId: str(), entries: array({ type: 'object', description: '每个网址的识别状态、结果和错误' }) }, ['id', 'createdAt', 'entries']),
@@ -146,7 +153,7 @@ const operations: Operation[] = [
   // Feeds
   { method: 'GET', path: '/api/feeds', tag: 'feeds', summary: '列出订阅', workspace: true, response: array(ref('Feed')) },
   { method: 'POST', path: '/api/feeds', tag: 'feeds', summary: '创建订阅', description: '网页订阅会立即抓取一次后返回；RSS 订阅在后台抓取。', workspace: true, body: ref('FeedInput'), response: ref('FeedPayload') },
-  { method: 'POST', path: '/api/feeds/bulk', tag: 'feeds', summary: '批量操作', workspace: true, body: object({ ids: array(str(), { minItems: 1, maxItems: 200 }), action: str({ enum: ['copy', 'pause', 'resume', 'refresh', 'delete', 'settings'] }), settings: object({ translationMode, intervalMinutes: int({ minimum: 5, maximum: 1440 }), itemFilter: nullable(ref('ItemFilter')), outputLimit: int({ minimum: 10, maximum: 500 }) }) }, ['ids', 'action']), response: ref('BulkResult') },
+  { method: 'POST', path: '/api/feeds/bulk', tag: 'feeds', summary: '批量操作', workspace: true, body: object({ ids: array(str(), { minItems: 1, maxItems: 200 }), action: str({ enum: ['copy', 'pause', 'resume', 'refresh', 'delete', 'settings'] }), settings: object({ translationMode, targetLanguage, translationProvider, intervalMinutes: int({ minimum: 5, maximum: 1440 }), itemFilter: nullable(ref('ItemFilter')), outputLimit: int({ minimum: 10, maximum: 500 }) }) }, ['ids', 'action']), response: ref('BulkResult') },
   { method: 'GET', path: '/api/feeds/:id', tag: 'feeds', summary: '订阅详情和最近 200 条条目', workspace: true, response: ref('FeedDetail') },
   { method: 'PUT', path: '/api/feeds/:id', tag: 'feeds', summary: '替换订阅的网址和规则', description: '启用中的订阅会立即重新抓取。', workspace: true, body: ref('FeedInput'), response: ref('FeedPayload') },
   { method: 'PATCH', path: '/api/feeds/:id', tag: 'feeds', summary: '修改名称、刷新间隔或翻译输出', workspace: true, body: ref('FeedSettingsInput'), response: ref('FeedPayload') },
@@ -160,6 +167,8 @@ const operations: Operation[] = [
     { name: 'limit', schema: int({ minimum: 1, maximum: 100, default: 20 }) },
   ], response: ref('FetchLogPage') },
   { method: 'GET', path: '/api/feeds/:id/translation/progress', tag: 'feeds', summary: 'RSS 翻译进度', workspace: true, response: { type: 'object' } },
+  { method: 'GET', path: '/api/translation/providers', tag: 'feeds', summary: '可选的翻译服务', description: '任何已登录用户可读：实例默认服务，以及各服务是否已由管理员配置。',
+    response: object({ defaultProvider: providerId, providers: array(object({ id: providerId, label: str(), configured: bool }, ['id', 'label', 'configured'])) }, ['defaultProvider', 'providers']) },
   { method: 'POST', path: '/api/feeds/:id/translation/retry', tag: 'feeds', summary: '重试失败的翻译', workspace: true, response: ref('FeedPayload') },
   { method: 'POST', path: '/api/feeds/:id/output-preview', tag: 'feeds', summary: '按未保存的过滤和条数预览输出', description: '不修改订阅；仍是 POST，因此需要 write 令牌。', workspace: true, body: object({ itemFilter: nullable(ref('ItemFilter')), outputLimit: int({ minimum: 10, maximum: 500 }) }), response: ref('OutputStatus') },
   { method: 'POST', path: '/api/rss/preview', tag: 'feeds', summary: '预览 RSS 源的前 3 条', workspace: true, body: object({ url: str({ format: 'uri' }) }, ['url']), response: object({ title: str(), items: array(ref('ExtractedItem')) }) },
@@ -167,13 +176,16 @@ const operations: Operation[] = [
   { method: 'GET', path: '/api/import-jobs', tag: 'import-jobs', summary: '列出批量添加任务', workspace: true, response: array(ref('ImportJob')) },
   { method: 'POST', path: '/api/import-jobs', tag: 'import-jobs', summary: '创建批量添加任务', workspace: true, body: object({
     entries: array(object({ url: str({ format: 'uri' }), credentialId: nullable(str()) }, ['url']), { minItems: 1, maxItems: 100 }),
-    intervalMinutes: int({ minimum: 5, maximum: 1440, default: 60 }), sourceType: str({ enum: ['website', 'rss'] }), translationMode: str({ enum: ['chinese', 'bilingual'] }),
+    intervalMinutes: int({ minimum: 5, maximum: 1440, default: 60 }), sourceType: str({ enum: ['website', 'rss'] }), translationMode: str({ enum: ['translated', 'bilingual'], description: '旧名 chinese 仍被接受' }), targetLanguage, translationProvider,
   }, ['entries']), response: ref('ImportJob') },
   { method: 'POST', path: '/api/import-jobs/:id/:action', tag: 'import-jobs', summary: '取消、重试或确认任务中的网址', description: 'confirm 需要 entryId 和完整 input，返回 FeedPayload；cancel/retry 返回 ImportJob。', workspace: true,
     params: { action: str({ enum: ['confirm', 'cancel', 'retry'] }) }, body: object({ entryId: str(), input: ref('FeedInput') }), response: { oneOf: [ref('ImportJob'), ref('FeedPayload')] } },
   // Settings
   { method: 'GET', path: '/api/settings', tag: 'settings', summary: '全局应用设置', admin: true, response: ref('ApplicationSettings') },
   { method: 'PUT', path: '/api/settings', tag: 'settings', summary: '修改全局应用设置（局部合并）', admin: true, body: ref('ApplicationSettings'), response: ref('ApplicationSettings') },
+  { method: 'POST', path: '/api/settings/translation/test', tag: 'settings', summary: '用未保存的设置测试翻译服务', description: '翻译一句示例；settings 中 apiKey 留空时使用已保存的 Key。不保存任何设置。', admin: true,
+    body: object({ provider: providerId, targetLanguage, settings: { type: 'object', description: 'deepl 或 openai 的设置（同 ApplicationSettings.translation.deepl / openai）' } }, ['provider']),
+    response: object({ ok: { const: true }, sample: str(), text: str() }, ['ok', 'sample', 'text']) },
   { method: 'POST', path: '/api/settings/bark/test', tag: 'settings', summary: '发送测试通知', admin: true, body: ref('BarkSettings'), response: ok },
   // Backups
   { method: 'POST', path: '/api/backups/export', tag: 'backups', summary: '导出加密完整备份', admin: true, body: object({ currentPassword: str(), password: str({ minLength: 12 }) }, ['currentPassword', 'password']), response: ref('EncryptedBackup') },

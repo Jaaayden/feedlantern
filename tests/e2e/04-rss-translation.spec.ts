@@ -26,7 +26,7 @@ test('RSS 翻译创建、原文预览、双语输出、模式切换和移动端'
   const guid = originalXml.match(/<guid[^>]*>(.*?)<\/guid>/)?.[1];
   await page.screenshot({ path: 'test-results/rss-detail-desktop.png', fullPage: true });
   await dialog.getByRole('button', { name: '订阅设置', exact: true }).click();
-  await dialog.getByLabel('输出模式').selectOption('chinese');
+  await dialog.getByLabel('输出模式').selectOption('translated');
   await dialog.getByRole('button', { name: '保存设置', exact: true }).click();
   await expect(dialog.getByRole('button', { name: '保存设置', exact: true })).toBeDisabled();
   expect(await dialog.locator('input[readonly]').inputValue()).toBe(rss);
@@ -45,15 +45,15 @@ test('批量添加 RSS 翻译，跳过重复地址并输出中文订阅', async 
   await page.getByRole('button', { name: '更多新建方式' }).click();
   await page.getByRole('menuitem', { name: '批量添加' }).click();
   await page.getByLabel('批量订阅类型').selectOption('rss');
-  await page.getByLabel('翻译输出模式').selectOption('chinese');
+  await page.getByLabel('翻译输出模式').selectOption('translated');
   const url = `${fixtureBaseUrl}/feed.xml?batch=translation`;
   await page.getByLabel('每行一个网址（最多 100 个）').fill(`${url}\n${url}`);
   await expect(page.getByText('重复，将跳过', { exact: false })).toBeVisible();
   await page.getByRole('button', { name: '开始批量添加翻译' }).click();
-  await expect(page.getByText('RSS 翻译（中文） · 已创建', { exact: false })).toBeVisible();
+  await expect(page.getByText('RSS 中文翻译 · 已创建', { exact: false })).toBeVisible();
   const feeds = await (await page.request.get('/api/feeds')).json();
   const added = feeds.filter((feed: { url: string }) => feed.url === url);
-  expect(added).toHaveLength(1); expect(added[0].sourceType).toBe('rss'); expect(added[0].translationMode).toBe('chinese');
+  expect(added).toHaveLength(1); expect(added[0].sourceType).toBe('rss'); expect(added[0].translationMode).toBe('translated');
   await expect.poll(async () => (await (await page.request.get(`/api/feeds/${added[0].id}`)).json()).feed.translation.success).toBe(1);
 });
 

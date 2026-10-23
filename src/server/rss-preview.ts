@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { DomUtils, parseDocument } from 'htmlparser2';
-import { translationEnabled } from '../shared/types.js';
+import { translationEnabled, translationLabel } from '../shared/types.js';
 import type { Feed, FeedItem } from '../shared/types.js';
 import { escapeXml, publishedItems } from './rss.js';
 
@@ -68,8 +68,8 @@ export function renderRssPreview(feed: Feed, items: FeedItem[], feedUrl: string)
   const rawUrl = `${feedUrl}?format=xml`;
   const updated = dateText(feed.lastSuccessAt);
   const kind = feed.sourceType === 'rss'
-    ? translationEnabled(feed) ? (feed.translationMode === 'chinese' ? 'RSS 中文翻译' : 'RSS 双语翻译') : 'RSS 转发'
-    : translationEnabled(feed) ? (feed.translationMode === 'chinese' ? '网页订阅 · 中文翻译' : '网页订阅 · 双语翻译') : '网页订阅';
+    ? translationEnabled(feed) ? `RSS ${translationLabel(feed)}` : 'RSS 转发'
+    : translationEnabled(feed) ? `网页订阅 · ${translationLabel(feed)}` : '网页订阅';
   const rows = list.map(item => {
     const link = safeLink(item.link);
     const summary = plainText(item, feed);
