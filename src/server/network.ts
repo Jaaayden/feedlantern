@@ -11,7 +11,9 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import ipaddr from 'ipaddr.js';
 import type { BrowserContext } from 'playwright';
 import { headerScopeMatches, type CustomHeader } from './fetch-options.js';
-import { formatHost, openTunnelToAny, ProxyConnectError, proxyLabel, type UpstreamProxy } from './upstream-proxy.js';
+import { request as httpsRequest } from 'node:https';
+import { connect as tlsConnect } from 'node:tls';
+import { formatHost, openResolverTunnel, openTunnelToAny, ProxyConnectError, proxyLabel, type UpstreamProxy } from './upstream-proxy.js';
 
 export interface NetworkPolicyOptions {
   /** Opt in for hosts using a local fake-IP DNS proxy. Results remain checked. */
@@ -20,6 +22,20 @@ export interface NetworkPolicyOptions {
   allowedHosts?: readonly string[];
   /** DNS results are cached briefly to avoid resolving every image/script twice. */
   dnsCacheTtlMs?: number;
+  /**
+   * The upstream proxy of the fetch this policy checks. With DNS over HTTPS
+   * on, the DoH query goes through the same proxy, because a network that
+   * only works through the proxy cannot reach the resolver directly either.
+   * Results are still checked here, and the proxy is then given the IP.
+   */
+  dohProxy?: UpstreamProxy;
+  /** The DNS-over-HTTPS JSON endpoint; tests point it at a local fixture. */
+  dohUrl?: string;
+}
+
+/** Network policy options for a fetch that may use a network profile proxy. */
+export function policyOptionsFor(options: NetworkPolicyOptions, proxy: UpstreamProxy | null | undefined): NetworkPolicyOptions {
+  return proxy ? { ...options, dohProxy: proxy } : options;
 }
 
 export class NetworkPolicyError extends Error {
@@ -158,18 +174,75 @@ async function resolveHostAddresses(hostname: string): Promise<string[]> {
   }
 }
 
-export async function resolveDnsOverHttps(hostname: string, fetcher: typeof fetch = fetch): Promise<string[]> {
+export const DEFAULT_DOH_URL = 'https://cloudflare-dns.com/dns-query';
+const DOH_TIMEOUT_MS = 10_000;
+const DOH_MAX_BYTES = 64 * 1024;
+
+function dohQuery(hostname: string, endpoint: string): URL {
+  const url = new URL(endpoint);
+  url.searchParams.set('name', hostname);
+  url.searchParams.set('type', 'A');
+  return url;
+}
+
+/** The A records of a DNS JSON answer, or an error when there are none. */
+function dohAddresses(data: { Status?: number; Answer?: Array<{ type: number; data: string }> }): string[] {
+  const addresses = data.Answer?.filter(record => record.type === 1 && ipaddr.isValid(record.data)).map(record => record.data) ?? [];
+  if (data.Status !== 0 || !addresses.length) throw new Error('No DNS addresses');
+  return addresses;
+}
+
+export async function resolveDnsOverHttps(hostname: string, fetcher: typeof fetch = fetch, endpoint = DEFAULT_DOH_URL): Promise<string[]> {
   try {
-    const response = await fetcher(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(hostname)}&type=A`, {
-      headers: { accept: 'application/dns-json' }, signal: AbortSignal.timeout(10_000), redirect: 'error',
+    const response = await fetcher(dohQuery(hostname, endpoint).href, {
+      headers: { accept: 'application/dns-json' }, signal: AbortSignal.timeout(DOH_TIMEOUT_MS), redirect: 'error',
     });
     if (!response.ok) throw new Error('DNS response failed');
-    const data = await response.json() as { Status?: number; Answer?: Array<{ type: number; data: string }> };
-    const addresses = data.Answer?.filter(record => record.type === 1 && ipaddr.isValid(record.data)).map(record => record.data) ?? [];
-    if (data.Status !== 0 || !addresses.length) throw new Error('No DNS addresses');
-    return addresses;
+    return dohAddresses(await response.json() as Parameters<typeof dohAddresses>[0]);
   } catch {
     throw new NetworkPolicyError('加密 DNS 查询失败，请检查网络连接或关闭 DNS_OVER_HTTPS 设置');
+  }
+}
+
+/**
+ * The same query, sent through the feed's upstream proxy. The proxy is
+ * reached at `proxyAddress`, already checked against the policy; the
+ * resolver host is handed to the proxy by name (see openResolverTunnel) and
+ * HTTPS still verifies the resolver's certificate end to end.
+ */
+export async function resolveDnsOverHttpsViaProxy(hostname: string, proxy: UpstreamProxy, proxyAddress: string, endpoint = DEFAULT_DOH_URL): Promise<string[]> {
+  const url = dohQuery(hostname, endpoint);
+  const secure = url.protocol === 'https:';
+  const port = url.port ? Number(url.port) : secure ? 443 : 80;
+  const signal = AbortSignal.timeout(DOH_TIMEOUT_MS);
+  try {
+    const tunnel = await openResolverTunnel(proxy, proxyAddress, url.hostname, port, signal);
+    const body = await new Promise<string>((resolve, reject) => {
+      const request = (secure ? httpsRequest : httpRequest)(url, {
+        // One request per tunnel: `connection: close` keeps the socket out of any agent pool.
+        signal, headers: { accept: 'application/dns-json', connection: 'close' },
+        createConnection: () => {
+          if (!secure) { tunnel.resume(); return tunnel; }
+          const socket = tlsConnect({ socket: tunnel, servername: url.hostname, ALPNProtocols: ['http/1.1'] });
+          tunnel.resume();
+          return socket;
+        },
+      }, response => {
+        if (response.statusCode !== 200) { response.resume(); reject(new Error('DNS response failed')); return; }
+        const chunks: Buffer[] = []; let size = 0;
+        response.on('data', (chunk: Buffer) => { size += chunk.length; if (size > DOH_MAX_BYTES) response.destroy(new Error('DNS response too large')); else chunks.push(chunk); });
+        response.on('end', () => { tunnel.destroy(); resolve(Buffer.concat(chunks).toString('utf8')); });
+        response.on('error', reject);
+      });
+      request.on('error', error => { tunnel.destroy(); reject(error); });
+      request.end();
+    });
+    return dohAddresses(JSON.parse(body));
+  } catch (error) {
+    const label = proxyLabel(proxy);
+    // Proxy errors already name the proxy; say it once.
+    const reason = error instanceof ProxyConnectError ? `：${error.message.replace(` ${label}`, '')}` : signal.aborted ? '：10 秒内没有响应' : '';
+    throw new NetworkPolicyError(`经代理 ${label} 的加密 DNS 查询失败${reason}。请检查代理是否可用，或在“设置 → 服务器与网络”关闭 DNS over HTTPS`);
   }
 }
 
@@ -182,12 +255,36 @@ export class NetworkPolicy {
   private readonly allowedHosts: Set<string>;
   private readonly dnsCacheTtlMs: number;
   private readonly dnsOverHttps: boolean;
+  /**
+   * Each policy has its own cache, and a policy with `dohProxy` is always a
+   * separate instance, so answers obtained through a proxy are never reused
+   * for direct connections (or another proxy), and the other way round.
+   */
   private readonly cache = new Map<string, { expiresAt: number; addresses: string[] }>();
+  private readonly dohProxy?: UpstreamProxy;
+  private readonly dohUrl: string;
+  /** Resolves the proxy server itself; that lookup can never go through the proxy. */
+  private direct?: NetworkPolicy;
 
-  constructor(options: NetworkPolicyOptions = {}) {
+  constructor(private readonly options: NetworkPolicyOptions = {}) {
     this.allowedHosts = normalizeAllowedHosts(options.allowedHosts);
     this.dnsOverHttps = options.dnsOverHttps ?? process.env.DNS_OVER_HTTPS === 'true';
     this.dnsCacheTtlMs = Math.max(0, options.dnsCacheTtlMs ?? 30_000);
+    this.dohProxy = options.dohProxy;
+    this.dohUrl = options.dohUrl ?? DEFAULT_DOH_URL;
+  }
+
+  /** The same policy for a fetch through `proxy` (or this one when there is none). */
+  forProxy(proxy: UpstreamProxy | null | undefined): NetworkPolicy {
+    if (!proxy || proxy === this.dohProxy) return this;
+    // Same class, so a subclass (tests, diagnostics) keeps its behaviour.
+    return new (this.constructor as new (options: NetworkPolicyOptions) => NetworkPolicy)({ ...this.options, dohProxy: proxy });
+  }
+
+  private directPolicy(): NetworkPolicy {
+    if (!this.dohProxy) return this;
+    this.direct ??= new (this.constructor as new (options: NetworkPolicyOptions) => NetworkPolicy)({ ...this.options, dohProxy: undefined });
+    return this.direct;
   }
 
   private async lookupCached(hostname: string): Promise<string[]> {
@@ -195,9 +292,10 @@ export class NetworkPolicy {
     const now = Date.now();
     const cached = this.cache.get(normalized);
     if (cached && cached.expiresAt > now) return cached.addresses;
-    const addresses = this.dnsOverHttps && !ipaddr.isValid(normalized) && !BLOCKED_HOSTNAMES.has(normalized) && !normalized.endsWith('.localhost')
-      ? await resolveDnsOverHttps(normalized)
-      : await resolveHostAddresses(normalized);
+    const doh = this.dnsOverHttps && !ipaddr.isValid(normalized) && !BLOCKED_HOSTNAMES.has(normalized) && !normalized.endsWith('.localhost');
+    const addresses = !doh ? await resolveHostAddresses(normalized)
+      : this.dohProxy ? await resolveDnsOverHttpsViaProxy(normalized, this.dohProxy, await this.resolveProxy(this.dohProxy), this.dohUrl)
+        : await resolveDnsOverHttps(normalized, fetch, this.dohUrl);
     this.cache.set(normalized, { expiresAt: now + this.dnsCacheTtlMs, addresses });
     return addresses;
   }
@@ -240,7 +338,7 @@ export class NetworkPolicy {
   async resolveProxy(proxy: Pick<UpstreamProxy, 'type' | 'host' | 'port'>): Promise<string> {
     const raw = `http://${formatHost(proxy.host)}:${proxy.port}/`;
     try {
-      return (await this.resolveForConnection(raw)).address;
+      return (await this.directPolicy().resolveForConnection(raw)).address;
     } catch (error) {
       if (!(error instanceof NetworkPolicyError)) throw error;
       if (/无法解析/.test(error.message)) throw new NetworkPolicyError(`无法解析代理服务器地址：${proxyLabel(proxy)}`);
@@ -367,7 +465,8 @@ export async function createRestrictedForwardProxy(
   options: RestrictedForwardProxyOptions = {},
 ): Promise<RestrictedForwardProxy> {
   const { upstream, requireAuth, ...policyOptions } = options;
-  const policy = new NetworkPolicy(policyOptions);
+  // With an upstream proxy, DNS-over-HTTPS lookups go through it as well.
+  const policy = new NetworkPolicy(policyOptionsFor(policyOptions, upstream));
   const sockets = new Set<Socket>();
   const upstreamRequests = new Set<ClientRequest>();
   const credentials = requireAuth ? { username: 'feedlantern', password: randomBytes(24).toString('base64url') } : undefined;

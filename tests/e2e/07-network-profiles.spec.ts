@@ -52,9 +52,25 @@ test('网络配置：设置中管理、编辑器预览与后台刷新经代理�
 
     await card.getByRole('button', { name: '测试网络配置 E2E proxy' }).click();
     const tester = page.getByRole('dialog', { name: '测试：E2E proxy' });
+    // No feed uses it and it was never tested: the neutral address is filled in.
+    await expect(tester.getByLabel('测试网址')).toHaveValue('https://cp.cloudflare.com/generate_204');
+    await expect(tester).toContainText('默认填入通用的连通性检查地址，可以修改。');
+    // A 204 counts as success (a local stand-in, the real address is never requested here).
+    await tester.getByLabel('测试网址').fill(`${fixtureBaseUrl}/generate_204`);
+    await tester.getByRole('button', { name: '测试连接' }).click();
+    await expect(tester.getByRole('status')).toContainText('连接成功：目标网站返回 HTTP 204');
+    // Not 2xx: connected, but reported as a failure with the real status code.
+    await tester.getByLabel('测试网址').fill(`${fixtureBaseUrl}/missing-page-for-network-test`);
+    await tester.getByRole('button', { name: '测试连接' }).click();
+    await expect(tester.getByRole('alert')).toContainText('返回 HTTP 404，不是 2xx 成功状态');
     await tester.getByLabel('测试网址').fill(listUrl);
     await tester.getByRole('button', { name: '测试连接' }).click();
     await expect(tester.getByRole('status')).toContainText('连接成功：目标网站返回 HTTP 200');
+    await tester.getByRole('button', { name: '关闭', exact: true }).first().click();
+    // Reopened: the address tested last in this browser.
+    await card.getByRole('button', { name: '测试网络配置 E2E proxy' }).click();
+    await expect(tester.getByLabel('测试网址')).toHaveValue(listUrl);
+    await expect(tester).toContainText('默认填入上次测试的网址');
     await tester.getByRole('button', { name: '关闭', exact: true }).first().click();
 
     // Edit without retyping secrets keeps them.
@@ -108,6 +124,13 @@ test('网络配置：设置中管理、编辑器预览与后台刷新经代理�
     expect((await unreachable.json()).error).toContain('安全策略阻止');
     const inUse = await page.request.delete(`/api/network-profiles/${profileId}`, { headers });
     expect(inUse.status()).toBe(409);
+
+    // A feed uses the profile now: its source address comes first.
+    await page.goto('/');
+    await page.getByRole('button', { name: '设置', exact: true }).click();
+    await page.getByRole('region', { name: '网络配置' }).getByRole('button', { name: '测试网络配置 E2E proxy' }).click();
+    await expect(tester).toContainText('默认填入订阅“Network profile feed”的来源地址');
+    await expect(tester.getByLabel('测试网址')).toHaveValue(listUrl);
   } finally {
     if (feedId) await page.request.delete(`/api/feeds/${feedId}`, { headers });
     if (profileId) await page.request.delete(`/api/network-profiles/${profileId}`, { headers });

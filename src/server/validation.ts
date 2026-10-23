@@ -1,4 +1,5 @@
 import { ZodError } from 'zod';
+import { FetchTimeoutError } from './fetch-errors.js';
 import type { Cookie } from 'playwright';
 import { isTargetLanguage, isTranslationProvider, paginationLimits, type FeedInput, type PaginationRules, type SelectionRules, type TargetLanguage, type TranslationMode, type TranslationProviderId } from '../shared/types.js';
 import { AppError } from './auth.js';
@@ -191,6 +192,11 @@ export function parseCredentialInput(value: unknown): CredentialValue {
 export function friendlyError(error: unknown, fallback: string): string {
   if (error instanceof CookieParseError) return error.message;
   if (error instanceof AppError) return error.message;
+  // Names only the host, so it is safe to show as is.
+  if (error instanceof FetchTimeoutError) return error.message;
+  // Node and Playwright report these in English ("The operation was aborted").
+  if (error instanceof Error && error.name === 'TimeoutError') return '请求超时，目标网站长时间未响应';
+  if (error instanceof Error && error.name === 'AbortError') return '操作已中止（已取消或服务正在停止）';
   if (error instanceof Error) {
     const message = error.message.replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s/@]+@/gi, '[已隐藏]@').replace(/https?:\/\/[^\s)]+/gi, '[目标页面]').replace(/(?:cookie|authorization|set-cookie)\s*[:=][^\n]*/gi, '[敏感请求头已隐藏]');
     if (message && message.length <= 300 && !/\n|stack|at\s+/.test(message)) return message;

@@ -8,6 +8,7 @@ import type { BarkSender } from './bark.js';
 import { NotificationWorker, alertTitle, channelsSummary, defaultSenders, ntfySchema, notificationChannelsSchema, telegramSchema, webhookSchema, type ChannelConfigs, type ChannelSender, type NotificationEvent, type NotificationSenders } from './notify.js';
 import { applicationSettingsSchema, settingsFromConfig, applyRuntimeSettings } from './settings.js';
 import { safeDiagnostic } from './fetch-history.js';
+import { isAbortError } from './fetch-errors.js';
 import { TaskPool, siteKey } from './task-pool.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import ipaddr from 'ipaddr.js';
@@ -61,7 +62,7 @@ import {
 } from './auth.js';
 import { getConfig, ensureDataDir, hasDist, isAllowedOrigin, type ConfigInput, type ServerConfig } from './config.js';
 import { renderAtom, renderJsonFeed, renderRss, rssEtag } from './rss.js';
-import { classifyItems, ItemFilterError, parseItemFilter } from './feed-output.js';
+import { classifyItems, ItemFilterError, parseItemFilter, retentionProblem } from './feed-output.js';
 import { etagMatches, renderRssPreview, wantsHtmlPreview } from './rss-preview.js';
 import { parseTargetLanguage, parseTranslationMode, parseTranslationProvider, asInteger, describeError, asNonEmptyString, asOptionalString, asRecord, cookieMetadata, frameError, friendlyError, logHiddenError, parseCredentialInput, parseFeedInput, parseHttpUrl, parsePagination, parsePartialRules, parseRules } from './validation.js';
 import { reportSummary } from './pagination.js';
@@ -329,7 +330,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       translations.wake();
       return checked;
     } catch (error) {
-      if (!stillActive()) { store.history.interrupt(runId); return null; }
+      // A cancel or a stopping service is an interruption, never a failure (or a timeout) to alert on.
+      if (!stillActive() || closing && isAbortError(error)) { store.history.interrupt(runId); return null; }
       const shown = friendlyError(error, '抓取失败，已保留已有条目');
       logHiddenError(`后台抓取订阅 ${feed.id} 失败`, error, shown);
       const message = safeDiagnostic(shown);
@@ -823,6 +825,15 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const keepKeys = (next: ApplicationSettings, previous: ApplicationSettings): ApplicationSettings => ({ ...next, translation: { ...next.translation,
     deepl: { ...next.translation.deepl, apiKey: next.translation.deepl.apiKey || previous.translation.deepl.apiKey },
     openai: { ...next.translation.openai, apiKey: next.translation.openai.apiKey || previous.translation.openai.apiKey } } });
+  /** Server and network fields in the order of the settings page, for the restore preview. */
+  const serverFieldLabels: Record<keyof ApplicationSettings['server'], string> = {
+    backgroundConcurrency: '后台并发数', allowedHosts: '网络访问白名单', dnsOverHttps: 'DNS over HTTPS', trustedProxies: '可信反向代理',
+    publicOrigin: '公开访问地址', cookieSecure: '强制安全会话 Cookie', sessionTtlDays: '登录会话有效期（天）', host: '监听地址', port: '监听端口',
+  };
+  const serverChanges = (current: ApplicationSettings['server'], backup: ApplicationSettings['server']) =>
+    (Object.keys(serverFieldLabels) as Array<keyof ApplicationSettings['server']>)
+      .filter(key => JSON.stringify(current[key]) !== JSON.stringify(backup[key]))
+      .map(key => ({ key, label: serverFieldLabels[key], current: current[key], backup: backup[key] }));
   const settingsPreview = (value: ApplicationSettings) => ({ ...maskKeys(value), bark: { ...value.bark, url: undefined, configured: !!value.bark.url } });
   /** Config archives carry the importing admin's other channels; previews only say what is configured. */
   const channelsPreview = (value: ReturnType<typeof notificationChannelsSchema.parse>) => {
@@ -882,8 +893,17 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       if (snapshot.tables.rss_sources.some(s => !ids.has(s.feed_id)) || snapshot.tables.translations.some(t => itemFeeds.get(t.item_id) !== t.feed_id)) throw Error();
       if (snapshot.tables.feed_items.some(i => !ids.has(i.feed_id)) || snapshot.tables.feeds.some(f => f.credential_id && !creds.has(f.credential_id))) throw Error();
     } catch { limiter.registerFailure(request.ip); throw new AppError(400, '备份密码错误、文件损坏或格式不受支持'); }
-    if (action === 'preview') return { appVersion: snapshot.appVersion, createdAt: snapshot.createdAt, feeds: snapshot.tables.feeds.length, bundles: snapshot.tables.bundles.length, items: snapshot.tables.feed_items.length, credentials: snapshot.tables.credentials.length, username: snapshot.tables.users.find(u => u.role === 'admin')!.username, sourceSecurity: snapshot.security, targetSecurity: security(), settings: snapshot.tables.settings.some(row => row.key === 'application') ? settingsPreview(parseSettings(JSON.parse(snapshot.tables.settings.find(row => row.key === 'application')!.value))) : null };
+    if (action === 'preview') {
+      const saved = snapshot.tables.settings.find(row => row.key === 'application');
+      const backupSettings = saved ? parseSettings(JSON.parse(saved.value)) : null;
+      // Server settings are listed as a difference instead: by default this instance keeps its own.
+      const { server: _server, ...settings } = backupSettings ? settingsPreview(backupSettings) : { server: undefined };
+      return { appVersion: snapshot.appVersion, createdAt: snapshot.createdAt, feeds: snapshot.tables.feeds.length, bundles: snapshot.tables.bundles.length, items: snapshot.tables.feed_items.length, credentials: snapshot.tables.credentials.length, username: snapshot.tables.users.find(u => u.role === 'admin')!.username, sourceSecurity: snapshot.security, targetSecurity: security(),
+        settings: backupSettings ? settings : null, serverSettingsIncluded: !!backupSettings, serverChanges: backupSettings ? serverChanges(store.getSettings().server, backupSettings.server) : [] };
+    }
     if (body.confirm !== true) throw new AppError(400, '请先预览并确认覆盖恢复');
+    if (body.restoreServerSettings !== undefined && typeof body.restoreServerSettings !== 'boolean') throw new AppError(400, 'restoreServerSettings 必须是布尔值');
+    const restoreServer = body.restoreServerSettings === true;
     maintenance = true; jobs.stop();
     try {
       await pool.drain();
@@ -891,7 +911,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       await translations.stop();
       await browser.closeEditors?.();
       browserOwners.clear();
-      store.restoreTables(snapshot.tables);
+      store.restoreTables(snapshot.tables, { restoreServer });
       const restoredSettings = store.getSettings();
       const nextConfig = { ...config }; applyRuntimeSettings(nextConfig, restoredSettings);
       const replacement = await makeBrowserService(nextConfig, options.browserService);
@@ -899,7 +919,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       applyRuntimeSettings(config, restoredSettings);
       pool.setConcurrency(restoredSettings.server.backgroundConcurrency);
       jobs.setConcurrency(restoredSettings.server.backgroundConcurrency);
-      return { ok: true };
+      return { ok: true, serverSettingsRestored: restoreServer };
     } finally { maintenance = false; jobs.recover(); notifier.start(); translations.start(); }
   });
   app.get('/api/backups/config', async request => {
@@ -918,7 +938,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     for (const service of ['deepl', 'openai'] as const) delete settings.translation[service].apiKeyConfigured;
     const notifications = store.getNotifications(authenticated(request).userId);
     const feeds = store.listFeeds(authenticated(request).userId);
-    return { format: 'feedlantern-config', version: 2, settings: { ...settings, bark: notifications.bark }, notificationChannels: notifications.channels, bundles: exportConfigBundles(store, authenticated(request).userId, feeds.map(f => f.id)), feeds: feeds.map(f => ({ sourceType: f.sourceType, translationMode: f.translationMode, targetLanguage: f.targetLanguage, translationProvider: f.translationProvider, name: f.name, channelTitle: f.channelTitle, url: f.url, rules: f.rules, ruleOrigins: f.ruleOrigins, ...(f.pagination ? { pagination: f.pagination } : {}), intervalMinutes: f.intervalMinutes, waitMs: f.waitMs, waitForSelector: f.waitForSelector, enabled: f.enabled, requiresCredential: !!f.credentialId, ...profileExport(f.networkProfileId), ...(f.itemFilter ? { itemFilter: f.itemFilter } : {}), outputLimit: f.outputLimit })) };
+    return { format: 'feedlantern-config', version: 2, settings: { ...settings, bark: notifications.bark }, notificationChannels: notifications.channels, bundles: exportConfigBundles(store, authenticated(request).userId, feeds.map(f => f.id)), feeds: feeds.map(f => ({ sourceType: f.sourceType, translationMode: f.translationMode, targetLanguage: f.targetLanguage, translationProvider: f.translationProvider, name: f.name, channelTitle: f.channelTitle, url: f.url, rules: f.rules, ruleOrigins: f.ruleOrigins, ...(f.pagination ? { pagination: f.pagination } : {}), intervalMinutes: f.intervalMinutes, waitMs: f.waitMs, waitForSelector: f.waitForSelector, enabled: f.enabled, requiresCredential: !!f.credentialId, ...profileExport(f.networkProfileId), ...(f.itemFilter ? { itemFilter: f.itemFilter } : {}), outputLimit: f.outputLimit, ...(f.retentionLimit ? { retentionLimit: f.retentionLimit } : {}) })) };
   });
   app.post('/api/backups/config', { bodyLimit: 10_000_000 }, async request => {
     adminGuard(request);
@@ -932,7 +952,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const entries = archive.feeds.map(raw => {
       const value = asRecord(raw);
       const profile = value.networkProfile === undefined || value.networkProfile === null ? undefined : parseNetworkProfileInput({ ...asRecord(value.networkProfile), headers: [] });
-      const output = parseFeedSettings({ ...(value.itemFilter !== undefined ? { itemFilter: value.itemFilter } : {}), ...(value.outputLimit !== undefined ? { outputLimit: value.outputLimit } : {}) }, true);
+      const output = parseFeedSettings({ ...(value.itemFilter !== undefined ? { itemFilter: value.itemFilter } : {}), ...(value.outputLimit !== undefined ? { outputLimit: value.outputLimit } : {}), ...(value.retentionLimit !== undefined ? { retentionLimit: value.retentionLimit } : {}) }, true);
+      if (output.retentionLimit !== undefined && output.retentionLimit !== null) {
+        const problem = retentionProblem(output.retentionLimit, output.outputLimit);
+        if (problem) throw new AppError(400, `配置中的订阅“${String(value.name ?? '').slice(0, 100)}”：${problem}`);
+      }
       return { input: parseFeedInput({ ...value, credentialId: null, networkProfileId: null }), output, title: asOptionalString(value.channelTitle, '频道名称', 200), enabled: value.enabled !== false, needsCookie: value.requiresCredential === true, needsNetwork: value.requiresNetworkProfile === true, profile };
     });
     const bundles = parseConfigBundles(archive.bundles, entries.length);
@@ -1064,6 +1088,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       }
       input.outputLimit = body.outputLimit;
     }
+    if ('retentionLimit' in body) {
+      // `null` (or an empty value from a form) means automatic; the output limit is checked against the saved feed in the store.
+      const value = body.retentionLimit === '' || body.retentionLimit === undefined ? null : body.retentionLimit;
+      const problem = retentionProblem(value, OUTPUT_LIMIT.min);
+      if (problem) throw new AppError(400, problem);
+      input.retentionLimit = value as number | null;
+    }
     if ('translationMode' in body) input.translationMode = parseTranslationMode(body.translationMode ?? '');
     if ('targetLanguage' in body) input.targetLanguage = parseTargetLanguage(body.targetLanguage ?? '');
     if ('translationProvider' in body) input.translationProvider = parseTranslationProvider(body.translationProvider);
@@ -1121,7 +1152,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const action = body.action;
     if (!['copy', 'pause', 'resume', 'refresh', 'delete', 'settings'].includes(String(action))) throw new AppError(400, '操作无效');
     const settingsBody = asRecord(body.settings);
-    if (action === 'settings' && Object.keys(settingsBody).some(key => !['translationMode', 'targetLanguage', 'translationProvider', 'intervalMinutes', 'outputLimit', 'itemFilter'].includes(key))) throw new AppError(400, '批量设置仅支持翻译输出模式、目标语言、翻译服务、刷新间隔、输出条数和条目过滤');
+    if (action === 'settings' && Object.keys(settingsBody).some(key => !['translationMode', 'targetLanguage', 'translationProvider', 'intervalMinutes', 'outputLimit', 'retentionLimit', 'itemFilter'].includes(key))) throw new AppError(400, '批量设置仅支持翻译输出模式、目标语言、翻译服务、刷新间隔、输出条数、保留条数和条目过滤');
     const settingsInput = action === 'settings' ? parseFeedSettings(settingsBody) : undefined;
     if (action === 'refresh') {
       const results = await Promise.all([...new Set(body.ids as string[])].map(async id => {

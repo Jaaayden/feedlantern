@@ -8,10 +8,18 @@ import sanitizeHtml from 'sanitize-html';
 import { NetworkPolicy } from './network.js';
 import { scopedHeaders, type FetchNetworkOptions } from './fetch-options.js';
 import { openTunnelToAny } from './upstream-proxy.js';
+import { hostOf, withFetchTimeout } from './fetch-errors.js';
+
+/** How long one source fetch (all redirects included) may take. */
+export const SOURCE_TIMEOUT_SECONDS = 20;
 
 export interface SourceItem { key: string; title: string; link: string; html: string; publishedAt?: string }
 export interface SourceResult { title: string; items: SourceItem[]; etag?: string; modified?: string; unchanged?: boolean }
-export interface SourceOptions { etag?: string; modified?: string; signal?: AbortSignal; network?: FetchNetworkOptions }
+export interface SourceOptions {
+  etag?: string; modified?: string; signal?: AbortSignal; network?: FetchNetworkOptions;
+  /** Defaults to SOURCE_TIMEOUT_SECONDS; tests use a shorter value. */
+  timeoutSeconds?: number;
+}
 export type SourceFetcher = (url: string, options?: SourceOptions) => Promise<SourceResult>;
 export const digest = (text: string) => createHash('sha256').update(text).digest('hex');
 
@@ -130,30 +138,38 @@ function requestHeaders(target: string, raw: string, network: FetchNetworkOption
   };
 }
 
-/** Pin each connection to the policy-checked IP, including every redirect. */
-export async function fetchSource(raw: string, policy: NetworkPolicy, options: SourceOptions = {}): Promise<SourceResult> {
-  const signal = AbortSignal.any([AbortSignal.timeout(20_000), ...(options.signal ? [options.signal] : [])]);
+/**
+ * Pin each connection to the policy-checked IP, including every redirect.
+ * A timeout names the host that did not answer; a caller abort is passed on.
+ */
+export async function fetchSource(raw: string, base: NetworkPolicy, options: SourceOptions = {}): Promise<SourceResult> {
+  // Through a profile proxy, DNS over HTTPS goes through that proxy too.
+  const policy = base.forProxy(options.network?.proxy);
   let target = raw;
-  for (let redirects = 0; redirects <= 5; redirects++) {
-    const { url, address, addresses = [address] } = await abortable(policy.resolveForConnection(target), signal);
-    signal.throwIfAborted();
-    const headers = { ...requestHeaders(target, raw, options.network, 'application/rss+xml, application/atom+xml, application/xml, text/xml'), ...(options.etag ? { 'if-none-match': options.etag } : {}), ...(options.modified ? { 'if-modified-since': options.modified } : {}) };
-    const response = await requestOnce(url, addresses, policy, headers, signal, options.network);
-    if ([301, 302, 303, 307, 308].includes(response.status) && response.location) { target = new URL(response.location, target).href; continue; }
-    if (response.status === 304) return { title: '', items: [], unchanged: true };
-    if (response.status !== 200) throw Error(`RSS 获取失败（HTTP ${response.status}）`);
-    return { ...parseSource(response.body, target), etag: response.etag, modified: response.modified };
-  }
-  throw Error('RSS 重定向次数过多');
+  return withFetchTimeout(options.timeoutSeconds ?? SOURCE_TIMEOUT_SECONDS, options.signal, () => hostOf(target), !!options.network?.proxy, async signal => {
+    for (let redirects = 0; redirects <= 5; redirects++) {
+      const { url, address, addresses = [address] } = await abortable(policy.resolveForConnection(target), signal);
+      signal.throwIfAborted();
+      const headers = { ...requestHeaders(target, raw, options.network, 'application/rss+xml, application/atom+xml, application/xml, text/xml'), ...(options.etag ? { 'if-none-match': options.etag } : {}), ...(options.modified ? { 'if-modified-since': options.modified } : {}) };
+      const response = await requestOnce(url, addresses, policy, headers, signal, options.network);
+      if ([301, 302, 303, 307, 308].includes(response.status) && response.location) { target = new URL(response.location, target).href; continue; }
+      if (response.status === 304) return { title: '', items: [], unchanged: true };
+      if (response.status !== 200) throw Error(`RSS 获取失败（HTTP ${response.status}）`);
+      return { ...parseSource(response.body, target), etag: response.etag, modified: response.modified };
+    }
+    throw Error('RSS 重定向次数过多');
+  });
 }
 
 /** One GET with a network profile applied, for the profile's connection test. Redirects are not followed. */
-export async function probeTarget(raw: string, policy: NetworkPolicy, network: FetchNetworkOptions | undefined, signal?: AbortSignal): Promise<{ status: number }> {
-  const combined = AbortSignal.any([AbortSignal.timeout(20_000), ...(signal ? [signal] : [])]);
-  const { url, address, addresses = [address] } = await abortable(policy.resolveForConnection(raw), combined);
-  const response = await requestOnce(url, addresses, policy, requestHeaders(raw, raw, network, 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'), combined, network, 1_000_000).catch(error => {
-    if (error instanceof Error && /超过 5 MB/.test(error.message)) return { status: 200, body: '' } as RawResponse;
-    throw error;
+export async function probeTarget(raw: string, base: NetworkPolicy, network: FetchNetworkOptions | undefined, signal?: AbortSignal): Promise<{ status: number }> {
+  const policy = base.forProxy(network?.proxy);
+  return withFetchTimeout(SOURCE_TIMEOUT_SECONDS, signal, () => hostOf(raw), !!network?.proxy, async combined => {
+    const { url, address, addresses = [address] } = await abortable(policy.resolveForConnection(raw), combined);
+    const response = await requestOnce(url, addresses, policy, requestHeaders(raw, raw, network, 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'), combined, network, 1_000_000).catch(error => {
+      if (error instanceof Error && /超过 5 MB/.test(error.message)) return { status: 200, body: '' } as RawResponse;
+      throw error;
+    });
+    return { status: response.status };
   });
-  return { status: response.status };
 }
