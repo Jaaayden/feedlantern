@@ -1489,3 +1489,4 @@ button.user-failing { padding: 0; border: 0; background: none; font: inherit; fo
 button.user-failing:hover { text-decoration: underline; text-underline-offset: 3px; }
 .link-button { padding: 0; border: 0; background: none; font: inherit; color: var(--accent-ink); font-weight: 600; cursor: pointer; }
 .link-button:hover { text-decoration: underline; }
+.settings-subheading { font-size: 13.5px; font-weight: 650; color: var(--ink-2); margin: 6px 0 -6px; }

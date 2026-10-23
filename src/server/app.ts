@@ -1,7 +1,8 @@
-import { defaultApplicationSettings, translationEnabled } from '../shared/types.js';
+import { defaultApplicationSettings, isTargetLanguage, isTranslationProvider, translationEnabled, translationProviderLabels, type TranslationProviderId, type TranslationProvidersInfo } from '../shared/types.js';
+import { providerProblem } from './translation-providers.js';
 import { fetchSource, type SourceFetcher } from './rss-source.js';
 import { NetworkPolicy } from './network.js';
-import { TranslationWorker, type Translator } from './rss-translation.js';
+import { TranslationError, TranslationWorker, type Translator } from './rss-translation.js';
 import { BarkWorker, sendBark, type BarkSender } from './bark.js';
 import { applicationSettingsSchema, settingsFromConfig, applyRuntimeSettings } from './settings.js';
 import { safeDiagnostic } from './fetch-history.js';
@@ -52,7 +53,7 @@ import {
 import { getConfig, ensureDataDir, hasDist, isAllowedOrigin, type ConfigInput, type ServerConfig } from './config.js';
 import { renderRss, rssEtag } from './rss.js';
 import { etagMatches, renderRssPreview, wantsHtmlPreview } from './rss-preview.js';
-import { asInteger, describeError, asNonEmptyString, asOptionalString, asRecord, cookieMetadata, frameError, friendlyError, logHiddenError, parseCredentialInput, parseFeedInput, parseHttpUrl, parsePartialRules, parseRules } from './validation.js';
+import { parseTargetLanguage, parseTranslationMode, parseTranslationProvider, asInteger, describeError, asNonEmptyString, asOptionalString, asRecord, cookieMetadata, frameError, friendlyError, logHiddenError, parseCredentialInput, parseFeedInput, parseHttpUrl, parsePartialRules, parseRules } from './validation.js';
 import { Store, type CredentialValue } from './store.js';
 
 export interface BrowserServiceLike {
@@ -79,8 +80,11 @@ export interface CreateAppOptions extends ConfigInput {
   startScheduler?: boolean;
   barkSender?: BarkSender;
   rssFetcher?: SourceFetcher;
+  /** Replaces the Google channel only; DeepL and OpenAI-compatible services always use their real clients. */
   translator?: Translator;
   translationIntervalMs?: number;
+  /** Test-only replacement for DeepL's fixed API endpoints. */
+  deeplEndpoints?: { free: string; pro: string };
 }
 
 function authHeaders(request: FastifyRequest): { marker: boolean; csrf?: string } {
@@ -166,14 +170,19 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   let closing = false;
   let maintenance = false;
   const pool = new TaskPool(config.backgroundConcurrency);
-  const translations = new TranslationWorker(store.translations, options.translator, options.translationIntervalMs ?? (() => store.getSettings().translation), (feedId, error) => {
+  const translationSettings = () => {
+    const settings = store.getSettings().translation;
+    return options.translationIntervalMs === undefined ? settings : { ...settings, requestIntervalMs: options.translationIntervalMs };
+  };
+  const translationNetwork = { policy: () => new NetworkPolicy({ allowedHosts: config.allowedHosts, dnsOverHttps: config.dnsOverHttps }), deeplEndpoints: options.deeplEndpoints };
+  const translations = new TranslationWorker(store.translations, options.translator, translationSettings, (feedId, error) => {
     try {
       const feed = store.getFeed(feedId); if (!feed) return;
       if (error) store.history.translationFailed(feed, error);
       else store.history.translationRecovered(feedId);
       bark.wake();
     } catch { console.error('翻译通知入队失败'); }
-  });
+  }, translationNetwork);
   const getRss: SourceFetcher = options.rssFetcher ?? ((url, input) => fetchSource(url, new NetworkPolicy({ allowedHosts: config.allowedHosts, dnsOverHttps: config.dnsOverHttps }), input));
   const refreshInFlight = new Map<string, { promise: Promise<Feed | null>; force: boolean }>();
 
@@ -567,7 +576,15 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (!parsed.success) throw new AppError(400, '设置无效，请检查 Bark 地址、服务器地址和数值范围');
     return parsed.data;
   };
-  const settingsPreview = (value: ApplicationSettings) => ({ ...value, bark: { ...value.bark, url: undefined, configured: !!value.bark.url } });
+  /** API keys are write-only: responses carry `apiKeyConfigured` instead. */
+  const maskKeys = (value: ApplicationSettings): ApplicationSettings => ({ ...value, translation: { ...value.translation,
+    deepl: { ...value.translation.deepl, apiKey: '', apiKeyConfigured: !!value.translation.deepl.apiKey },
+    openai: { ...value.translation.openai, apiKey: '', apiKeyConfigured: !!value.translation.openai.apiKey } } });
+  /** An empty key in an update or imported file keeps the key already saved here. */
+  const keepKeys = (next: ApplicationSettings, previous: ApplicationSettings): ApplicationSettings => ({ ...next, translation: { ...next.translation,
+    deepl: { ...next.translation.deepl, apiKey: next.translation.deepl.apiKey || previous.translation.deepl.apiKey },
+    openai: { ...next.translation.openai, apiKey: next.translation.openai.apiKey || previous.translation.openai.apiKey } } });
+  const settingsPreview = (value: ApplicationSettings) => ({ ...maskKeys(value), bark: { ...value.bark, url: undefined, configured: !!value.bark.url } });
   const applySettings = async (next: ApplicationSettings, write: () => void = () => store.setSettings(next)): Promise<void> => {
     const previous = store.getSettings();
     const captureChanged = previous.server.backgroundConcurrency !== next.server.backgroundConcurrency
@@ -642,19 +659,22 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
   app.get('/api/backups/config', async request => {
     adminGuard(request);
-    return { format: 'feedlantern-config', version: 2, settings: { ...store.getSettings(), bark: store.getBark(authenticated(request).userId) }, feeds: store.listFeeds(authenticated(request).userId).map(f => ({ sourceType: f.sourceType, translationMode: f.translationMode, name: f.name, channelTitle: f.channelTitle, url: f.url, rules: f.rules, ruleOrigins: f.ruleOrigins, intervalMinutes: f.intervalMinutes, waitMs: f.waitMs, waitForSelector: f.waitForSelector, enabled: f.enabled, requiresCredential: !!f.credentialId })) };
+    // The configuration file is not encrypted, so translation API keys stay out of it.
+    const settings = maskKeys(store.getSettings());
+    for (const service of ['deepl', 'openai'] as const) delete settings.translation[service].apiKeyConfigured;
+    return { format: 'feedlantern-config', version: 2, settings: { ...settings, bark: store.getBark(authenticated(request).userId) }, feeds: store.listFeeds(authenticated(request).userId).map(f => ({ sourceType: f.sourceType, translationMode: f.translationMode, targetLanguage: f.targetLanguage, translationProvider: f.translationProvider, name: f.name, channelTitle: f.channelTitle, url: f.url, rules: f.rules, ruleOrigins: f.ruleOrigins, intervalMinutes: f.intervalMinutes, waitMs: f.waitMs, waitForSelector: f.waitForSelector, enabled: f.enabled, requiresCredential: !!f.credentialId })) };
   });
   app.post('/api/backups/config', { bodyLimit: 10_000_000 }, async request => {
     adminGuard(request);
     const body = asRecord(request.body), archive = asRecord(body.archive);
     if (archive.format !== 'feedlantern-config' || ![1, 2].includes(Number(archive.version)) || !Array.isArray(archive.feeds) || archive.feeds.length > 10000) throw new AppError(400, '配置格式无效');
     if (archive.version === 2 && archive.settings === undefined) throw new AppError(400, '配置文件缺少应用设置');
-    const importedSettings = archive.settings === undefined ? undefined : parseSettings(archive.settings);
+    const importedSettings = archive.settings === undefined ? undefined : keepKeys(parseSettings(archive.settings), store.getSettings());
     const entries = archive.feeds.map(raw => {
       const value = asRecord(raw);
       return { input: parseFeedInput({ ...value, credentialId: null }), title: asOptionalString(value.channelTitle, '频道名称', 200), enabled: value.enabled !== false, needsCookie: value.requiresCredential === true };
     });
-    const signature = (f: FeedInput) => JSON.stringify([f.sourceType ?? 'website', f.translationMode ?? 'bilingual', normalizeSource(f.url), ...['item', 'title', 'link', 'description', 'image', 'date'].map(k => f.rules[k as keyof SelectionRules] ?? '')]);
+    const signature = (f: FeedInput) => JSON.stringify([f.sourceType ?? 'website', f.translationMode ?? 'bilingual', ...(f.targetLanguage && f.targetLanguage !== 'zh-CN' ? [f.targetLanguage] : []), normalizeSource(f.url), ...['item', 'title', 'link', 'description', 'image', 'date'].map(k => f.rules[k as keyof SelectionRules] ?? '')]);
     if (body.confirm !== true) {
       const seen = new Set(store.listFeeds(authenticated(request).userId).map(signature));
       return { settings: importedSettings ? settingsPreview(importedSettings) : null, entries: entries.map(e => { const duplicate = seen.has(signature(e.input)); seen.add(signature(e.input)); return { name: e.input.name, url: e.input.url, duplicate, needsCookie: e.needsCookie }; }) };
@@ -686,9 +706,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     feedsGuard(request);
     const body = asRecord(request.body);
     if (body.sourceType !== undefined && !['website', 'rss'].includes(String(body.sourceType))) throw new AppError(400, '订阅类型无效');
-    if (body.translationMode !== undefined && !['chinese', 'bilingual'].includes(String(body.translationMode))) throw new AppError(400, '翻译输出模式无效');
+    const mode = parseTranslationMode(body.translationMode);
+    if (mode === 'original') throw new AppError(400, '翻译输出模式无效');
     const sourceType = body.sourceType === 'rss' ? 'rss' as const : 'website' as const;
-    const translationMode = body.translationMode === 'chinese' ? 'chinese' as const : 'bilingual' as const;
+    const translationMode = mode ?? 'bilingual';
+    const targetLanguage = parseTargetLanguage(body.targetLanguage) ?? 'zh-CN';
+    const translationProvider = parseTranslationProvider(body.translationProvider) ?? null;
     if (!Array.isArray(body.entries) || !body.entries.length || body.entries.length > 100) throw new AppError(400, '每批支持 1–100 个网址');
     const entries = body.entries.map(raw => {
       const entry = asRecord(raw);
@@ -700,7 +723,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         if (!credential) throw new AppError(400, 'Cookie 凭据不存在');
         cookiesForTarget(credential, url);
       }
-      return { url, credentialId, sourceType, translationMode, intervalMinutes: asInteger(body.intervalMinutes, '刷新间隔', 5, 1440, 60) };
+      return { url, credentialId, sourceType, translationMode, targetLanguage, translationProvider, intervalMinutes: asInteger(body.intervalMinutes, '刷新间隔', 5, 1440, 60) };
     });
     return jobs.create(entries, workspace(request, true).userId, authenticated(request).userId);
   });
@@ -726,7 +749,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       return { ok: true };
     } catch { throw new AppError(502, '测试通知发送失败，请检查 Bark 地址和网络'); }
   });
-  const globalSettings = () => ({ ...store.getSettings(), bark: structuredClone(defaultApplicationSettings.bark) });
+  const globalSettings = () => ({ ...maskKeys(store.getSettings()), bark: structuredClone(defaultApplicationSettings.bark) });
   app.get('/api/settings', async request => { adminGuard(request); return globalSettings(); });
   app.put('/api/settings', async request => {
     adminGuard(request);
@@ -738,8 +761,16 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       adminGuard(request);
       const previous = store.getSettings();
       const personal = body.bark === undefined ? undefined : parseBark(authenticated(request).userId, body.bark);
-      const next = parseSettings({ ...previous, ...body, translation: { ...previous.translation, ...asRecord(body.translation) }, bark: { ...previous.bark, ...asRecord(body.bark) }, server: { ...previous.server, ...asRecord(body.server) } });
+      const translation = asRecord(body.translation);
+      const service = (name: 'deepl' | 'openai') => {
+        const patch = asRecord(translation[name]);
+        // Omitted or empty keeps the saved key; `null` removes it.
+        return { ...previous.translation[name], ...patch, apiKey: patch.apiKey === null ? '' : patch.apiKey || previous.translation[name].apiKey };
+      };
+      const next = parseSettings({ ...previous, ...body, translation: { ...previous.translation, ...translation, deepl: service('deepl'), openai: service('openai') }, bark: { ...previous.bark, ...asRecord(body.bark) }, server: { ...previous.server, ...asRecord(body.server) } });
       next.bark = previous.bark;
+      const problem = providerProblem(next.translation, next.translation.defaultProvider);
+      if (problem) throw new AppError(400, `默认翻译服务不可用：${problem}`);
       await applySettings(next);
       if (personal) store.setBark(authenticated(request).userId, personal);
       bark.wake(); return globalSettings();
@@ -747,10 +778,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
   function parseFeedSettings(body: Record<string, unknown>): FeedSettingsInput {
     const input: FeedSettingsInput = {};
-    if ('translationMode' in body) {
-      if (typeof body.translationMode !== 'string' || !['original','chinese','bilingual'].includes(body.translationMode)) throw new AppError(400, '翻译输出模式无效');
-      input.translationMode = body.translationMode as 'original' | 'chinese' | 'bilingual';
-    }
+    if ('translationMode' in body) input.translationMode = parseTranslationMode(body.translationMode ?? '');
+    if ('targetLanguage' in body) input.targetLanguage = parseTargetLanguage(body.targetLanguage ?? '');
+    if ('translationProvider' in body) input.translationProvider = parseTranslationProvider(body.translationProvider);
     if ('channelTitle' in body) input.channelTitle = asNonEmptyString(body.channelTitle, '订阅名称', 200);
     if ('intervalMinutes' in body) {
       if (typeof body.intervalMinutes !== 'number' || !Number.isInteger(body.intervalMinutes) || body.intervalMinutes < 5 || body.intervalMinutes > 1440) {
@@ -779,7 +809,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const action = body.action;
     if (!['copy', 'pause', 'resume', 'refresh', 'delete', 'settings'].includes(String(action))) throw new AppError(400, '操作无效');
     const settingsBody = asRecord(body.settings);
-    if (action === 'settings' && Object.keys(settingsBody).some(key => !['translationMode', 'intervalMinutes'].includes(key))) throw new AppError(400, '批量设置仅支持翻译输出模式和刷新间隔');
+    if (action === 'settings' && Object.keys(settingsBody).some(key => !['translationMode', 'targetLanguage', 'translationProvider', 'intervalMinutes'].includes(key))) throw new AppError(400, '批量设置仅支持翻译输出模式、目标语言、翻译服务和刷新间隔');
     const settingsInput = action === 'settings' ? parseFeedSettings(settingsBody) : undefined;
     if (action === 'refresh') {
       const results = await Promise.all([...new Set(body.ids as string[])].map(async id => {
@@ -825,8 +855,35 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   app.get('/api/feeds/:id/translation/progress', async request => {
     feedsGuard(request);
     const id = String((request.params as { id: string }).id);
-    if (!store.getFeed(id) || !translationEnabled(store.getFeed(id)!)) throw new AppError(404, 'RSS 翻译订阅不存在');
-    return { ...store.translations.progress(id), worker: translations.status() };
+    const feed = store.getFeed(id);
+    if (!feed || !translationEnabled(feed)) throw new AppError(404, 'RSS 翻译订阅不存在');
+    return { ...store.translations.progress(id), worker: translations.status(feed.translationProvider ?? store.getSettings().translation.defaultProvider) };
+  });
+  app.get('/api/translation/providers', async (request): Promise<TranslationProvidersInfo> => {
+    authenticated(request);
+    const settings = store.getSettings().translation;
+    return { defaultProvider: settings.defaultProvider, providers: (['google', 'deepl', 'openai'] as const).map(id => ({ id, label: translationProviderLabels[id], configured: !providerProblem(settings, id) })) };
+  });
+  /** Translates one sample sentence with the given (unsaved) settings, so an administrator can check a key or endpoint. */
+  app.post('/api/settings/translation/test', async request => {
+    adminGuard(request);
+    const body = asRecord(request.body);
+    if (!isTranslationProvider(body.provider)) throw new AppError(400, '翻译服务无效');
+    const provider: TranslationProviderId = body.provider;
+    const target = isTargetLanguage(body.targetLanguage) ? body.targetLanguage : 'zh-CN';
+    const previous = store.getSettings().translation;
+    const patch = provider === 'google' ? {} : asRecord(body.settings);
+    const parsed = applicationSettingsSchema.shape.translation.safeParse({ ...previous, ...(provider === 'google' ? {} : { [provider]: { ...previous[provider], ...patch, apiKey: patch.apiKey || previous[provider].apiKey } }) });
+    if (!parsed.success) throw new AppError(400, '翻译服务设置无效，请检查接口地址、模型名称和 API Key');
+    const engine = translations.engine(provider, target, parsed.data);
+    if (engine.unavailable) throw new AppError(400, engine.unavailable);
+    const sample = 'FeedLantern turns web pages into RSS feeds.';
+    try {
+      const [text] = await engine.translate([sample], AbortSignal.any([operationSignal(request), AbortSignal.timeout(60_000)]));
+      return { ok: true, sample, text };
+    } catch (error) {
+      throw new AppError(502, error instanceof TranslationError ? error.message : `${engine.label} 连接失败，请检查接口地址和服务主机网络`);
+    }
   });
   app.post('/api/feeds/:id/translation/retry', async request => {
     feedsGuard(request);

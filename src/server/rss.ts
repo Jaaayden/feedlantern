@@ -1,4 +1,4 @@
-import { translationEnabled } from '../shared/types.js';
+import { targetLanguages, translationEnabled } from '../shared/types.js';
 import { safeHtml } from './rss-source.js';
 import { createHash } from 'node:crypto';
 import type { Feed, FeedItem } from '../shared/types.js';
@@ -65,6 +65,11 @@ function thumbnail(item: FeedItem, feed: Feed): string {
   return url ? `<media:thumbnail url="${escapeAttribute(url)}"/>` : '';
 }
 
+/** RSS `language` code of a translated feed's output; formats other than RSS should use the same value. */
+export function feedLanguage(feed: Pick<Feed, 'targetLanguage'>): string {
+  return targetLanguages[feed.targetLanguage ?? 'zh-CN'].rss;
+}
+
 export function renderRss(feed: Feed, items: FeedItem[], feedUrl: string): string {
   const buildDate = fixedDate(feed.lastSuccessAt ?? feed.createdAt, feed.createdAt);
   const renderedItems = publishedItems(feed, items).map((item) => {
@@ -93,8 +98,8 @@ export function renderRss(feed: Feed, items: FeedItem[], feedUrl: string): strin
     `<atom:link href="${escapeAttribute(feedUrl)}" rel="self" type="application/rss+xml"/>`,
     `<lastBuildDate>${escapeXml(buildDate)}</lastBuildDate>`,
     '<generator>FeedLantern</generator>',
-    // Translated feeds publish Chinese (or Chinese-first bilingual) text.
-    translationEnabled(feed) ? '<language>zh-cn</language>' : '',
+    // Translated feeds publish the target language (translation-first when bilingual).
+    translationEnabled(feed) ? `<language>${feedLanguage(feed)}</language>` : '',
     `<ttl>${Math.max(1, Math.round(feed.intervalMinutes))}</ttl>`,
     renderedItems,
     '</channel>',

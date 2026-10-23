@@ -167,7 +167,7 @@ test('批量导入去重按用户，停用期间不保存发现结果，重新�
 test('翻译任务在停用时取消，重新启用后完成，通知队列同时遵守用户状态', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'fl-translation-owner-')), store = new Store(dir);
   store.createAdmin('admin', 'admin-password'); const user = store.createUser('alice', 'alice-password');
-  const feed = store.createFeed({ ...input, sourceType: 'rss', translationMode: 'chinese' }, user.id).feed;
+  const feed = store.createFeed({ ...input, sourceType: 'rss', translationMode: 'translated' }, user.id).feed;
   store.translations.upsert(feed, [{ key: 'one', title: 'Article', link: item.link, html: '<p>Content</p>' }]);
   let started = false, canceled = false;
   const worker = new TranslationWorker(store.translations, async (text, signal) => {
@@ -361,7 +361,7 @@ test('代管翻译和导入记录操作人，降级取消队列，所有者可�
   const dir = mkdtempSync(join(tmpdir(), 'fl-actor-queues-')), store = new Store(dir);
   store.createAdmin('admin', 'admin-password'); const actor = store.createUser('manager', 'manager-password'), owner = store.createUser('reader', 'reader-password');
   store.updateUser('admin', actor.id, { role: 'admin' });
-  const feed = store.createFeed({ ...input, sourceType: 'rss', translationMode: 'chinese' }, owner.id).feed;
+  const feed = store.createFeed({ ...input, sourceType: 'rss', translationMode: 'translated' }, owner.id).feed;
   store.translations.upsert(feed, [{ key: 'one', title: 'Article', link: item.link, html: '<p>Content</p>' }]);
   store.translations.retry(feed.id, actor.id);
   const translation = store.translations.next()!;

@@ -8,9 +8,32 @@ export interface SelectionRules {
   image?: string;
   date?: string;
 }
+/** `translated` publishes only the translation; `bilingual` puts the translation first. */
+export type TranslationMode = 'original' | 'translated' | 'bilingual';
+export type TargetLanguage = 'zh-CN' | 'zh-TW' | 'en' | 'ja' | 'ko';
+export type TranslationProviderId = 'google' | 'deepl' | 'openai';
+export const targetLanguages: Record<TargetLanguage, { label: string; short: string; rss: string }> = {
+  'zh-CN': { label: '简体中文', short: '中文', rss: 'zh-cn' },
+  'zh-TW': { label: '繁體中文', short: '繁体中文', rss: 'zh-tw' },
+  en: { label: 'English（英语）', short: '英语', rss: 'en' },
+  ja: { label: '日本語（日语）', short: '日语', rss: 'ja' },
+  ko: { label: '한국어（韩语）', short: '韩语', rss: 'ko' },
+};
+export const translationProviderLabels: Record<TranslationProviderId, string> = { google: 'Google 免费翻译', deepl: 'DeepL', openai: 'OpenAI 兼容接口' };
+export const isTargetLanguage = (value: unknown): value is TargetLanguage => typeof value === 'string' && Object.hasOwn(targetLanguages, value);
+export const isTranslationProvider = (value: unknown): value is TranslationProviderId => typeof value === 'string' && Object.hasOwn(translationProviderLabels, value);
+export function translationLabel(feed: Pick<FeedInput, 'translationMode' | 'targetLanguage'>): string {
+  const short = targetLanguages[feed.targetLanguage ?? 'zh-CN'].short;
+  if (feed.translationMode === 'translated') return `${short}翻译`;
+  return feed.targetLanguage && feed.targetLanguage !== 'zh-CN' ? `双语翻译（${short}）` : '双语翻译';
+}
 export interface FeedInput {
   sourceType?: 'website' | 'rss';
-  translationMode?: 'original' | 'chinese' | 'bilingual';
+  translationMode?: TranslationMode;
+  /** Defaults to simplified Chinese. */
+  targetLanguage?: TargetLanguage;
+  /** `null`/omitted follows the instance default provider. */
+  translationProvider?: TranslationProviderId | null;
   name: string;
   url: string;
   rules: SelectionRules;
@@ -21,11 +44,13 @@ export interface FeedInput {
   waitForSelector?: string;
 }
 export interface FeedSettingsInput {
-  translationMode?: 'original' | 'chinese' | 'bilingual';
+  translationMode?: TranslationMode;
+  targetLanguage?: TargetLanguage;
+  translationProvider?: TranslationProviderId | null;
   channelTitle?: string;
   intervalMinutes?: number;
 }
-export type BulkFeedSettingsInput = Pick<FeedSettingsInput, 'translationMode' | 'intervalMinutes'>;
+export type BulkFeedSettingsInput = Pick<FeedSettingsInput, 'translationMode' | 'targetLanguage' | 'translationProvider' | 'intervalMinutes'>;
 export interface Feed extends FeedInput {
   ownerId?: string;
   id: string;
@@ -62,8 +87,15 @@ export interface FetchLog {
   notification: { status: AlertStatus; error: string | null } | null;
 }
 export interface FetchLogPage { logs: FetchLog[]; nextCursor: string | null; retentionDays: number }
+export interface TranslationRate { concurrency: number; requestIntervalMs: number }
 export interface ApplicationSettings {
-  translation: { concurrency: number; requestIntervalMs: number };
+  /** `concurrency` / `requestIntervalMs` apply to the Google channel; other services have their own. */
+  translation: TranslationRate & {
+    defaultProvider: TranslationProviderId;
+    /** API keys are stored encrypted and never returned by the API (`apiKeyConfigured` instead). */
+    deepl: TranslationRate & { apiKey: string; apiKeyConfigured?: boolean; plan: 'auto' | 'free' | 'pro' };
+    openai: TranslationRate & { baseUrl: string; model: string; apiKey: string; apiKeyConfigured?: boolean; systemPrompt: string };
+  };
   feedView: 'list' | 'cards';
   logRetentionDays: number;
   bark: {
@@ -77,7 +109,11 @@ export interface ApplicationSettings {
   };
 }
 export const defaultApplicationSettings: ApplicationSettings = {
-  translation: { concurrency: 6, requestIntervalMs: 100 },
+  translation: {
+    concurrency: 6, requestIntervalMs: 100, defaultProvider: 'google',
+    deepl: { apiKey: '', plan: 'auto', concurrency: 2, requestIntervalMs: 200 },
+    openai: { baseUrl: '', model: '', apiKey: '', systemPrompt: '', concurrency: 2, requestIntervalMs: 0 },
+  },
   feedView: 'list', logRetentionDays: 30,
   bark: { enabled: false, url: '', failureThreshold: 10, timeoutSeconds: 10, maxAttempts: 3, retryDelaySeconds: 60, laterRetryDelaySeconds: 300, cooldownMinutes: 30 },
   server: { backgroundConcurrency: 1, allowedHosts: [], dnsOverHttps: false, trustedProxies: [], publicOrigin: 'http://127.0.0.1:4321', cookieSecure: false, sessionTtlDays: 30, host: '127.0.0.1', port: 4321 },
@@ -120,6 +156,8 @@ export interface DetectionCandidate {
   warnings: string[];
 }
 export interface DetectionResult { candidates: DetectionCandidate[]; recommendedId: string | null; warnings: string[] }
+/** GET /api/translation/providers: what any signed-in user may choose for a feed. */
+export interface TranslationProvidersInfo { defaultProvider: TranslationProviderId; providers: Array<{ id: TranslationProviderId; label: string; configured: boolean }> }
 export interface AuthState { userId?: string; role?: "admin" | "user"; setupRequired: boolean; authenticated: boolean; username?: string; csrfToken?: string; version: string }
 
 // JSON API: errors always { error: string }; all mutations require X-FeedLantern: 1.
@@ -143,7 +181,7 @@ export interface AuthState { userId?: string; role?: "admin" | "user"; setupRequ
 // DELETE /api/browser/:id -> {ok:true}
 
 export interface ImportEntry {
-  sourceType?: 'website' | 'rss'; translationMode?: 'original' | 'chinese' | 'bilingual';
+  sourceType?: 'website' | 'rss'; translationMode?: TranslationMode; targetLanguage?: TargetLanguage; translationProvider?: TranslationProviderId | null;
   id: string; url: string; credentialId: string | null; intervalMinutes: number;
   state: 'queued' | 'running' | 'created' | 'existing' | 'review' | 'failed' | 'canceled';
   feedId?: string; error?: string; title?: string; detection?: DetectionResult;
@@ -151,7 +189,7 @@ export interface ImportEntry {
 export interface ImportJob { actorId?: string; ownerId?: string; id: string; createdAt: string; entries: ImportEntry[] }
 
 export function translationEnabled(feed: Pick<FeedInput, 'sourceType' | 'translationMode'>): boolean {
-  return feed.translationMode === 'chinese' || feed.translationMode === 'bilingual' || feed.sourceType === 'rss' && feed.translationMode !== 'original';
+  return feed.translationMode === 'translated' || feed.translationMode === 'bilingual' || feed.sourceType === 'rss' && feed.translationMode !== 'original';
 }
 
 export interface UserStats { feeds: number; failingFeeds: number; pausedFeeds: number; credentials: number; lastSeenAt: string | null }

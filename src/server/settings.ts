@@ -4,11 +4,30 @@ import ipaddr from 'ipaddr.js';
 import { defaultApplicationSettings, type ApplicationSettings } from '../shared/types.js';
 import type { ServerConfig } from './config.js';
 
+const rate = { concurrency: z.number().int().min(1).max(16), requestIntervalMs: z.number().int().min(0).max(5000) };
+// Keys travel in an HTTP header: printable ASCII only, so CR/LF can never reach it.
+const apiKey = z.string().max(500).regex(/^[\x21-\x7e]*$/, 'API Key 格式无效').default('');
+/** `apiKeyConfigured` is a read-only flag the API returns instead of the key; accept and drop it. */
+const withoutFlag = <T extends { apiKeyConfigured?: boolean }>({ apiKeyConfigured: _flag, ...rest }: T) => rest;
+const defaults = defaultApplicationSettings.translation;
+export const translationSettingsSchema = z.object({
+  ...rate,
+  defaultProvider: z.enum(['google', 'deepl', 'openai']).default('google'),
+  deepl: z.object({ ...rate, apiKey, apiKeyConfigured: z.boolean().optional(), plan: z.enum(['auto', 'free', 'pro']).default('auto') })
+    .strict().transform(withoutFlag).default(defaults.deepl),
+  openai: z.object({
+    ...rate, apiKey, apiKeyConfigured: z.boolean().optional(),
+    baseUrl: z.string().max(2048).refine(value => {
+      if (!value) return true;
+      try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash; } catch { return false; }
+    }, 'OpenAI 兼容接口地址必须是不含查询参数的 HTTP(S) 地址').transform(value => value.replace(/\/+$/, '')).default(''),
+    model: z.string().max(200).regex(/^[^\u0000-\u001f\u007f]*$/, '模型名称无效').transform(value => value.trim()).default(''),
+    systemPrompt: z.string().max(4000).default(''),
+  }).strict().transform(withoutFlag).default(defaults.openai),
+}).strict();
+
 export const applicationSettingsSchema = z.object({
-  translation: z.object({
-    concurrency: z.number().int().min(1).max(16),
-    requestIntervalMs: z.number().int().min(0).max(5000),
-  }).strict().default(defaultApplicationSettings.translation),
+  translation: translationSettingsSchema.default(defaults),
   feedView: z.enum(['list', 'cards']),
   logRetentionDays: z.number().int().min(1).max(365),
   bark: z.object({

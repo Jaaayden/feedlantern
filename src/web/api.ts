@@ -19,6 +19,10 @@ import type {
   PickResult,
   ScreenFrame,
   SegmentResult,
+  TargetLanguage,
+  TranslationMode,
+  TranslationProviderId,
+  TranslationProvidersInfo,
 } from '../shared/types';
 
 export class ApiError extends Error {
@@ -98,7 +102,7 @@ export const api = {
   },
   jobs: {
     list: () => request<ImportJob[]>('/api/import-jobs'),
-    create: (entries: Array<{ url: string; credentialId: string | null }>, intervalMinutes: number, sourceType: 'website' | 'rss' = 'website', translationMode: 'chinese' | 'bilingual' = 'bilingual') => request<ImportJob>('/api/import-jobs', { method: 'POST', body: { entries, intervalMinutes, sourceType, translationMode } }),
+    create: (entries: Array<{ url: string; credentialId: string | null }>, intervalMinutes: number, sourceType: 'website' | 'rss' = 'website', translation: { translationMode?: Exclude<TranslationMode, 'original'>; targetLanguage?: TargetLanguage; translationProvider?: TranslationProviderId | null } = {}) => request<ImportJob>('/api/import-jobs', { method: 'POST', body: { entries, intervalMinutes, sourceType, translationMode: 'bilingual', ...translation } }),
     action: (id: string, action: 'retry' | 'cancel', entryId?: string) => request<ImportJob>(`/api/import-jobs/${id}/${action}`, { method: 'POST', body: { entryId } }),
     confirm: (id: string, entryId: string, input: FeedInput) => request<{ feed: Feed; feedUrl: string }>(`/api/import-jobs/${id}/confirm`, { method: 'POST', body: { entryId, input } }),
   },
@@ -121,6 +125,11 @@ export const api = {
     save: ({ bark: _bark, ...body }: ApplicationSettings) => request<ApplicationSettings>('/api/settings', { method: 'PUT', body }),
     get: () => request<ApplicationSettings>('/api/settings'),
     update: (feedView: 'list' | 'cards') => request<{ feedView: 'list' | 'cards' }>('/api/settings', { method: 'PUT', body: { feedView } }),
+    /** Translate a sample sentence with unsaved service settings (an empty key uses the saved one). */
+    testTranslation: (provider: TranslationProviderId, settings?: unknown, targetLanguage?: TargetLanguage) => request<{ ok: boolean; sample: string; text: string }>('/api/settings/translation/test', { method: 'POST', body: { provider, settings, targetLanguage } }),
+  },
+  translation: {
+    providers: () => request<TranslationProvidersInfo>('/api/translation/providers'),
   },
   auth: {
     status: () => request<AuthState>('/api/auth/status'),

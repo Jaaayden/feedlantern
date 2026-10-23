@@ -1,5 +1,5 @@
 import type { UserSummary } from '../shared/types.js';
-import { translationEnabled } from '../shared/types.js';
+import { isTargetLanguage, isTranslationProvider, translationEnabled } from '../shared/types.js';
 import { RssTranslations } from './rss-translation.js';
 import { TRANSLATION_CACHE_LIMIT, type Tables } from './backups.js';
 import { FetchHistory } from './fetch-history.js';
@@ -129,7 +129,9 @@ function rowToFeed(row: Record<string, unknown>): Feed {
     id: String(row.id),
     ownerId: String(row.owner_id),
     sourceType: row.source_type === 'rss' ? 'rss' : 'website',
-    translationMode: row.translation_mode === 'original' ? 'original' : row.translation_mode === 'chinese' ? 'chinese' : 'bilingual',
+    translationMode: row.translation_mode === 'original' ? 'original' : row.translation_mode === 'translated' || row.translation_mode === 'chinese' ? 'translated' : 'bilingual',
+    targetLanguage: isTargetLanguage(row.target_language) ? row.target_language : 'zh-CN',
+    translationProvider: isTranslationProvider(row.translation_provider) ? row.translation_provider : null,
     name: String(row.name),
     channelTitle: String(row.channel_title ?? row.name),
     url: String(row.url),
@@ -290,6 +292,17 @@ export class Store {
       DROP INDEX IF EXISTS users_single_admin;
       CREATE TABLE user_notifications (user_id TEXT PRIMARY KEY, value TEXT NOT NULL);
       PRAGMA user_version=8; COMMIT;`);
+    // Migration numbers are reserved per feature branch, so this one checks its
+    // own column instead of trusting the order in which branches were merged.
+    const feedColumns = new Set(this.db.prepare('PRAGMA table_info(feeds)').all().map(column => String(column.name)));
+    if (!feedColumns.has('target_language')) {
+      const current = Number((this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
+      this.db.exec(`BEGIN;
+        ALTER TABLE feeds ADD COLUMN target_language TEXT NOT NULL DEFAULT 'zh-CN';
+        ALTER TABLE feeds ADD COLUMN translation_provider TEXT;
+        UPDATE feeds SET translation_mode='translated' WHERE translation_mode='chinese';
+        PRAGMA user_version=${Math.max(13, current)}; COMMIT;`);
+    }
     this.translations = new RssTranslations(this.db, id => this.userSignal(id));
     this.history = new FetchHistory(this.db, () => this.getSettings(), id => this.getBarkForFeed(id));
     this.migrateBark();
@@ -666,10 +679,10 @@ export class Store {
     this.db.prepare(`INSERT INTO feeds(
       id, name, url, rules_json, rule_origins_json, credential_id, interval_minutes, wait_ms,
       wait_for_selector, enabled, created_at, last_fetched_at, last_success_at, next_fetch_at,
-      last_error, item_count, token_ciphertext, token_hash, channel_title, source_type, translation_mode, owner_id
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL, NULL, ?, NULL, 0, ?, ?, ?, ?, ?, ?)`)
+      last_error, item_count, token_ciphertext, token_hash, channel_title, source_type, translation_mode, owner_id, target_language, translation_provider
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL, NULL, ?, NULL, 0, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(id, input.name, input.url, JSON.stringify(input.rules), input.ruleOrigins ? JSON.stringify(input.ruleOrigins) : null, input.credentialId, input.intervalMinutes, input.waitMs, input.waitForSelector ?? null, timestamp, nextFetchAt, encrypt(this.masterKey, token), hashToken(token),
-        input.name, input.sourceType ?? 'website', input.translationMode ?? (input.sourceType === 'rss' ? 'bilingual' : 'original'), ownerId);
+        input.name, input.sourceType ?? 'website', input.translationMode ?? (input.sourceType === 'rss' ? 'bilingual' : 'original'), ownerId, input.targetLanguage ?? 'zh-CN', input.translationProvider ?? null);
     return { feed: this.getFeed(id)!, token };
   }
 
@@ -683,12 +696,23 @@ export class Store {
       this.translations.resetSource(id);
     }
     this.db.prepare('UPDATE feeds SET source_type=?,translation_mode=? WHERE id=?').run(input.sourceType ?? 'website', input.translationMode ?? existing.translationMode ?? 'bilingual', id);
+    this.setTranslationTarget(existing, input);
     const origins = mergeRuleOrigins(existing.ruleOrigins, input.ruleOrigins);
     const nextFetchAt = new Date(Date.now() + input.intervalMinutes * 60_000).toISOString();
     this.db.prepare(`UPDATE feeds SET name = ?, channel_title = ?, url = ?, rules_json = ?, rule_origins_json = ?, credential_id = ?, interval_minutes = ?, wait_ms = ?, wait_for_selector = ?, next_fetch_at = ?, last_error = NULL WHERE id = ?`)
       .run(input.name, input.name, input.url, JSON.stringify(input.rules), origins ? JSON.stringify(origins) : null, input.credentialId, input.intervalMinutes, input.waitMs, input.waitForSelector ?? null, nextFetchAt, id);
     this.translations.syncWebsite(this.getFeed(id)!);
     return this.getFeed(id);
+  }
+
+  /** Translations made by another service or into another language are redone, never reused. */
+  private setTranslationTarget(feed: Feed, input: Pick<FeedSettingsInput, 'targetLanguage' | 'translationProvider'>): void {
+    const target = input.targetLanguage ?? feed.targetLanguage ?? 'zh-CN';
+    const provider = input.translationProvider === undefined ? feed.translationProvider ?? null : input.translationProvider;
+    if (target === feed.targetLanguage && provider === (feed.translationProvider ?? null)) return;
+    this.db.prepare('UPDATE feeds SET target_language=?,translation_provider=? WHERE id=?').run(target, provider, feed.id);
+    const fallback = this.getSettings().translation.defaultProvider;
+    if (target !== feed.targetLanguage || (provider ?? fallback) !== (feed.translationProvider ?? fallback)) this.translations.retranslate(feed.id);
   }
 
   setChannelTitle(id: string, title: string): Feed | null {
@@ -700,6 +724,7 @@ export class Store {
     if (!feed) return null;
     if (input.translationMode && input.translationMode !== feed.translationMode) this.translations.invalidate(id);
     if (input.translationMode) this.db.prepare('UPDATE feeds SET translation_mode=? WHERE id=?').run(input.translationMode, id);
+    this.setTranslationTarget(feed, input);
     const title = input.channelTitle ?? feed.name;
     const interval = input.intervalMinutes ?? feed.intervalMinutes;
     const nextFetchAt = interval === feed.intervalMinutes

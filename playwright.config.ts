@@ -56,6 +56,7 @@ export default defineConfig({
         PUBLIC_ORIGIN: e2eBaseUrl,
         DATA_DIR: dataDir,
         ALLOWED_TARGET_HOSTS: `127.0.0.1:${fixturePort}`,
+        FIXTURE_ORIGIN: fixtureBaseUrl,
       },
     },
     {
