@@ -39,7 +39,7 @@ test('规则可能失效：列表与筛选提示、日志标记、重新识别�
     const logs = dialog.getByRole('region', { name: '抓取日志' });
     await expect(logs.locator('article').first()).toContainText('成功');
     await expect(logs.locator('article').first()).toContainText('规则可能失效');
-    await expect(logs.locator('article').first()).toContainText('Bark：未启用');
+    await expect(logs.locator('article').first()).toContainText('通知：未启用');
 
     await notice.getByRole('button', { name: '重新识别', exact: true }).click();
     await expect(notice.getByRole('region', { name: '当前规则' })).toContainText('2 条', { timeout: 30_000 });

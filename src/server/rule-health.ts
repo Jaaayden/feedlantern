@@ -1,7 +1,7 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { defaultApplicationSettings, type ApplicationSettings, type ExtractedItem, type Feed, type RuleHealthField, type RuleHealthReason, type RuleHealthWarning } from '../shared/types.js';
-import { safeDiagnostic } from './fetch-history.js';
+import { safeDiagnostic, type FetchHistory } from './fetch-history.js';
 
 /**
  * Thresholds are deliberately conservative: a feed is only judged once it has
@@ -106,7 +106,7 @@ function parseWarning(value: unknown): RuleHealthWarning | undefined {
  * logs: bounded per feed, pruned with the log retention and not backed up.
  */
 export class RuleHealth {
-  constructor(private db: DatabaseSync, private settings: () => ApplicationSettings, private barkForFeed: (id: string) => ApplicationSettings['bark']) {
+  constructor(private db: DatabaseSync, private settings: () => ApplicationSettings, private history: FetchHistory) {
     if (!db.prepare('PRAGMA table_info(fetch_logs)').all().some(row => row.name === 'warning')) db.exec('ALTER TABLE fetch_logs ADD COLUMN warning TEXT');
   }
 
@@ -143,23 +143,11 @@ export class RuleHealth {
     }
     const warning: RuleHealthWarning = { detectedAt: previous?.detectedAt ?? recordedAt, checkedAt: recordedAt, itemCount: sample.itemCount, baselineSamples: verdict ? history.length : previous?.baselineSamples ?? 0, reasons };
     // One notification per warning episode, separate from failure alerts.
-    const alert = previous ? { id: null, disabled: false } : this.enqueueAlert(feed, warning, alertedAt, now);
+    const alert = previous ? { id: null, disabled: false } : this.history.ruleHealthAlert(feed, reasons.map(reason => reason.message), alertedAt, now);
     this.save(feed.id, signature, warning, alert.id ? now : alertedAt);
     this.db.prepare('UPDATE fetch_logs SET warning=?, alert_id=COALESCE(?, alert_id), notification_disabled=? WHERE id=?')
       .run(safeDiagnostic(reasons.map(reason => reason.message).join('；')), alert.id, alert.disabled ? 1 : 0, logId);
     return warning;
-  }
-
-  private enqueueAlert(feed: Feed, warning: RuleHealthWarning, alertedAt: number | null, now: number): { id: string | null; disabled: boolean } {
-    const bark = this.barkForFeed(feed.id);
-    if (!bark.enabled || !bark.url || bark.ruleHealthAlerts === false) return { id: null, disabled: true };
-    if (alertedAt !== null && now - alertedAt < bark.cooldownMinutes * 60_000) return { id: null, disabled: false };
-    const id = randomUUID();
-    let host = '';
-    try { host = new URL(feed.url).hostname; } catch { /* stored URLs are validated */ }
-    const body = `${safeDiagnostic(feed.name)}\n目标：${host}\n发现时间：${warning.checkedAt}\n${warning.reasons.map(reason => `· ${safeDiagnostic(reason.message)}`).join('\n')}\n抓取仍记为成功。请在订阅面板中重新识别规则，或忽略此警告。`;
-    this.db.prepare("INSERT INTO fetch_alerts(id,feed_id,status,body,next_attempt_at,kind) VALUES (?,?,'pending',?,?,'health')").run(id, feed.id, body, now);
-    return { id, disabled: false };
   }
 
   private save(feedId: string, signature: string, warning: RuleHealthWarning | null, alertedAt: number | null): void {

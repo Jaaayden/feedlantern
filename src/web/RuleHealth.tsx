@@ -77,7 +77,7 @@ export function RuleHealthNotice({ feed, updated, notify }: { feed: Feed; update
   const previewMerged = () => run('正在预览所选组合', async () => { setPreview({ signature: mergedSignature, value: await api.ruleHealth.preview(feed.id, merged) }); });
   const apply = () => run('正在替换规则', async () => {
     const origins = Object.fromEntries(changed.filter(key => replace[key]).map(key => [key, 'auto' as const]));
-    await api.feeds.update(feed.id, { sourceType: feed.sourceType, translationMode: feed.translationMode, name: feed.name, url: feed.url, rules: merged, ruleOrigins: origins, credentialId: feed.credentialId, intervalMinutes: feed.intervalMinutes, waitMs: feed.waitMs, waitForSelector: feed.waitForSelector });
+    await api.feeds.update(feed.id, { sourceType: feed.sourceType, translationMode: feed.translationMode, targetLanguage: feed.targetLanguage, translationProvider: feed.translationProvider, name: feed.name, url: feed.url, rules: merged, ruleOrigins: origins, credentialId: feed.credentialId, intervalMinutes: feed.intervalMinutes, waitMs: feed.waitMs, waitForSelector: feed.waitForSelector });
     setResult(null); updated(); notify('匹配规则已更新');
   });
 

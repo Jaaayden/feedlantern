@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { api } from './api';
+import { translationProviderLabels, type TranslationProviderId } from '../shared/types';
 export interface TranslationProgressData {
-  worker: { activeArticles: number; activeRequests: number; queuedSegments: number; cooldownUntil: number | null; stopped: boolean };
+  worker: { provider?: TranslationProviderId | null; activeArticles: number; activeRequests: number; queuedSegments: number; cooldownUntil: number | null; stopped: boolean };
   tasks: { id: string; title: string; status: string; attempts: number; nextAt: number; error: string | null }[];
   logs: { id: number; at: number; message: string; itemId: string }[];
 }
@@ -27,7 +28,7 @@ export function TranslationProgress({ id, enabled }: { id: string; enabled: bool
     <strong>翻译进度 · 每 2 秒更新</strong>
     {error && <p role="alert">{error}</p>}
     {!data ? <p>正在读取翻译状态…</p> : <>
-      <p role="status">{!enabled ? '订阅已暂停' : data.worker.stopped ? '翻译服务已暂停' : data.worker.cooldownUntil ? `Google 请求受限，${time(data.worker.cooldownUntil)} 后恢复调度` : data.tasks.some(t => t.status === 'running') ? '翻译已启动，正在处理' : data.tasks.some(t => t.status === 'pending') ? '等待调度或自动重试' : data.tasks.length ? '本轮翻译已结束' : '等待 RSS 抓取完成'}。全站当前 {data.worker.activeRequests} 个翻译请求，{data.worker.queuedSegments} 个片段排队。</p>
+      <p role="status">{!enabled ? '订阅已暂停' : data.worker.stopped ? '翻译服务已暂停' : data.worker.cooldownUntil ? `${data.worker.provider ? translationProviderLabels[data.worker.provider] : '翻译服务'}请求受限，${time(data.worker.cooldownUntil)} 后恢复调度` : data.tasks.some(t => t.status === 'running') ? '翻译已启动，正在处理' : data.tasks.some(t => t.status === 'pending') ? '等待调度或自动重试' : data.tasks.length ? '本轮翻译已结束' : '等待 RSS 抓取完成'}。{data.worker.provider ? `${translationProviderLabels[data.worker.provider]}当前` : '全站当前'} {data.worker.activeRequests} 个翻译请求，{data.worker.queuedSegments} 个片段排队。</p>
       <details><summary>文章状态（{data.tasks.length}）</summary>
         {data.tasks.map(task => <p key={task.id}><strong>{task.title}</strong>：{states[task.status] ?? task.status}{task.status === 'pending' && task.nextAt > Date.now() && `，下次尝试 ${time(task.nextAt)}`}{task.error && `；${task.error}`}</p>)}
       </details>

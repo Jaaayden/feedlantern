@@ -250,6 +250,22 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  // Local stand-ins for DeepL and OpenAI-compatible translation APIs.
+  if (request.method === 'POST' && /^\/deepl\/(free|pro)\/v2\/translate$/.test(requestUrl.pathname)) {
+    const body = JSON.parse(await readBody(request)) as { text: string[]; target_lang: string };
+    if (!String(request.headers.authorization ?? '').startsWith('DeepL-Auth-Key ')) { sendJson(response, 403, { message: 'Forbidden' }); return; }
+    sendJson(response, 200, { translations: body.text.map(text => ({ detected_source_language: 'EN', text: `DeepL ${body.target_lang}：${text.trim()}` })) });
+    return;
+  }
+  if (request.method === 'POST' && requestUrl.pathname === '/openai/v1/chat/completions') {
+    const body = JSON.parse(await readBody(request)) as { model: string; messages: Array<{ role: string; content: string }> };
+    const user = body.messages.find(message => message.role === 'user')?.content ?? '';
+    const language = body.messages[0]?.content.match(/into ([A-Za-z ]+)\./)?.[1] ?? '?';
+    const content = [...user.matchAll(/<seg id="(\d+)">([\s\S]*?)<\/seg>/g)].map(match => `<seg id="${match[1]}">${language} ${body.model}：${match[2].trim()}</seg>`).join('\n');
+    sendJson(response, 200, { choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }] });
+    return;
+  }
+
   if (requestUrl.pathname === '/assets/fixture-one.svg' || requestUrl.pathname === '/assets/fixture-two.svg' || requestUrl.pathname === '/assets/fixture-three.svg') {
     const label = requestUrl.pathname.includes('one') ? 'one' : requestUrl.pathname.includes('two') ? 'two' : 'three';
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="160" height="90" viewBox="0 0 160 90"><rect width="160" height="90" fill="#d9e6f2"/><text x="80" y="48" text-anchor="middle" fill="#25405a">${label}</text></svg>`;

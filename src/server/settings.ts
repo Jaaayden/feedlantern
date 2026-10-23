@@ -4,27 +4,50 @@ import ipaddr from 'ipaddr.js';
 import { defaultApplicationSettings, type ApplicationSettings } from '../shared/types.js';
 import type { ServerConfig } from './config.js';
 
+const rate = { concurrency: z.number().int().min(1).max(16), requestIntervalMs: z.number().int().min(0).max(5000) };
+// Keys travel in an HTTP header: printable ASCII only, so CR/LF can never reach it.
+const apiKey = z.string().max(500).regex(/^[\x21-\x7e]*$/, 'API Key 格式无效').default('');
+/** `apiKeyConfigured` is a read-only flag the API returns instead of the key; accept and drop it. */
+const withoutFlag = <T extends { apiKeyConfigured?: boolean }>({ apiKeyConfigured: _flag, ...rest }: T) => rest;
+const defaults = defaultApplicationSettings.translation;
+export const translationSettingsSchema = z.object({
+  ...rate,
+  defaultProvider: z.enum(['google', 'deepl', 'openai']).default('google'),
+  deepl: z.object({ ...rate, apiKey, apiKeyConfigured: z.boolean().optional(), plan: z.enum(['auto', 'free', 'pro']).default('auto') })
+    .strict().transform(withoutFlag).default(defaults.deepl),
+  openai: z.object({
+    ...rate, apiKey, apiKeyConfigured: z.boolean().optional(),
+    baseUrl: z.string().max(2048).refine(value => {
+      if (!value) return true;
+      try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash; } catch { return false; }
+    }, 'OpenAI 兼容接口地址必须是不含查询参数的 HTTP(S) 地址').transform(value => value.replace(/\/+$/, '')).default(''),
+    model: z.string().max(200).regex(/^[^\u0000-\u001f\u007f]*$/, '模型名称无效').transform(value => value.trim()).default(''),
+    systemPrompt: z.string().max(4000).default(''),
+  }).strict().transform(withoutFlag).default(defaults.openai),
+}).strict();
+/** Bark fields plus the alert policy (threshold, retries, cooldown) that every channel shares. */
+export const barkObjectSchema = z.object({
+  enabled: z.boolean(),
+  url: z.string().max(2048).transform((value, ctx) => {
+    try { return validateBarkUrl(value) ?? ''; }
+    catch { ctx.addIssue({ code: 'custom', message: 'Bark 地址必须是包含设备密钥的 HTTPS 地址' }); return z.NEVER; }
+  }),
+  failureThreshold: z.number().int().min(1).max(1000).default(defaultApplicationSettings.bark.failureThreshold),
+  timeoutSeconds: z.number().int().min(1).max(60),
+  maxAttempts: z.number().int().min(1).max(5),
+  retryDelaySeconds: z.number().int().min(1).max(3600),
+  laterRetryDelaySeconds: z.number().int().min(1).max(3600),
+  cooldownMinutes: z.number().int().min(1).max(1440),
+  /** Also alert when a feed's rules may have stopped matching (deduplicated apart from failures). */
+  ruleHealthAlerts: z.boolean().default(defaultApplicationSettings.bark.ruleHealthAlerts),
+}).strict();
+const barkSchema = barkObjectSchema.refine(value => !value.enabled || !!value.url, '启用 Bark 时请填写推送地址');
+
 export const applicationSettingsSchema = z.object({
-  translation: z.object({
-    concurrency: z.number().int().min(1).max(16),
-    requestIntervalMs: z.number().int().min(0).max(5000),
-  }).strict().default(defaultApplicationSettings.translation),
+  translation: translationSettingsSchema.default(defaults),
   feedView: z.enum(['list', 'cards']),
   logRetentionDays: z.number().int().min(1).max(365),
-  bark: z.object({
-    enabled: z.boolean(),
-    url: z.string().max(2048).transform((value, ctx) => {
-      try { return validateBarkUrl(value) ?? ''; }
-      catch { ctx.addIssue({ code: 'custom', message: 'Bark 地址必须是包含设备密钥的 HTTPS 地址' }); return z.NEVER; }
-    }),
-    failureThreshold: z.number().int().min(1).max(1000).default(defaultApplicationSettings.bark.failureThreshold),
-    timeoutSeconds: z.number().int().min(1).max(60),
-    maxAttempts: z.number().int().min(1).max(5),
-    retryDelaySeconds: z.number().int().min(1).max(3600),
-    laterRetryDelaySeconds: z.number().int().min(1).max(3600),
-    cooldownMinutes: z.number().int().min(1).max(1440),
-    ruleHealthAlerts: z.boolean().default(defaultApplicationSettings.bark.ruleHealthAlerts),
-  }).strict().refine(value => !value.enabled || !!value.url, '启用 Bark 时请填写推送地址'),
+  bark: barkSchema,
   server: z.object({
     backgroundConcurrency: z.number().int().min(1).max(4),
     allowedHosts: z.array(z.string().max(300).refine(value => {

@@ -15,12 +15,12 @@ test('多选修改模式和间隔、保留未指定字段及失败选择', async
     const form = page.getByRole('form', { name: '批量修改订阅设置' });
     const save = form.getByRole('button', { name: '应用到所选订阅' });
     await expect(save).toBeDisabled();
-    await form.getByLabel('翻译输出模式').selectOption('chinese');
+    await form.getByLabel('翻译输出模式').selectOption('translated');
     await save.click(); await expect(page.getByRole('status')).toContainText('已完成 2 项');
     const read = async (id: string) => (await (await page.request.get(`/api/feeds/${id}`)).json()).feed;
     expect((await read(ids[0])).intervalMinutes).toBe(60);
     expect((await read(ids[1])).intervalMinutes).toBe(120);
-    expect((await read(ids[0])).translationMode).toBe('chinese');
+    expect((await read(ids[0])).translationMode).toBe('translated');
     expect((await read(ids[2])).translationMode).toBe('original');
     await page.reload(); await page.getByLabel('搜索订阅').fill('批量设置验收');
     await page.getByRole('button', { name: '卡片', exact: true }).click();
@@ -33,7 +33,7 @@ test('多选修改模式和间隔、保留未指定字段及失败选择', async
     await expect(page.getByLabel('选择订阅 批量设置验收 0', { exact: true })).toBeChecked();
     await page.unroute('**/api/feeds/bulk');
     await save.click(); await expect(form).toHaveCount(0);
-    for (const id of ids.slice(0, 2)) { expect((await read(id)).intervalMinutes).toBe(15); expect((await read(id)).translationMode).toBe('chinese'); }
+    for (const id of ids.slice(0, 2)) { expect((await read(id)).intervalMinutes).toBe(15); expect((await read(id)).translationMode).toBe('translated'); }
     expect((await read(ids[2])).intervalMinutes).toBe(180);
     for (const i of [0, 1]) await page.getByLabel(`选择订阅 批量设置验收 ${i}`, { exact: true }).check();
     await page.getByRole('button', { name: '批量修改设置', exact: true }).click();

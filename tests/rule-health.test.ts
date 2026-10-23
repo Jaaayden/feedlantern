@@ -6,6 +6,8 @@ import { test } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import { createApp, Store, type BrowserServiceLike } from '../src/server/app.js';
 import { RULE_HEALTH, evaluateHealth, measureItems } from '../src/server/rule-health.js';
+import { NotificationWorker, alertTitle, type NotificationMessage } from '../src/server/notify.js';
+import { notificationChannelsSchema } from '../src/server/notify.js';
 import type { DetectionResult, ExtractedItem } from '../src/shared/types.js';
 
 /** A list page before a redesign: unique titles/links with dates, images and summaries. */
@@ -73,7 +75,7 @@ test('警告记录在订阅和日志上，每次出现只通知一次，恢复�
     const second = fetch(before(2));
     assert.equal(second.warning?.detectedAt, first.warning?.detectedAt);
     assert.equal(store.history.list(feed.id).logs[0].notification, null);
-    store.history.cancelAlert(alert.id);
+    store.history.cancelAlert(alert.alertId);
     assert.equal(alerts(), null);
     // Suspicious fetches never become the baseline; a healthy fetch clears the warning.
     assert.equal(fetch(before()).warning, null);
@@ -84,6 +86,36 @@ test('警告记录在订阅和日志上，每次出现只通知一次，恢复�
     const third = fetch(before(3));
     assert.ok(third.warning);
   } finally { close(); }
+});
+
+test('规则预警发到所有已启用渠道，事件为 rules.warning；关闭开关后取消已排队的投递', async () => {
+  const { store, feed, fetch, close } = fixture();
+  const sent: NotificationMessage[] = [];
+  const senders = { bark: async (_c: unknown, m: NotificationMessage) => { sent.push(m); }, webhook: async (_c: unknown, m: NotificationMessage) => { sent.push(m); } };
+  const worker = new NotificationWorker(store.history, { target: id => store.notificationTarget(id), senders });
+  try {
+    store.setNotificationChannels('admin', notificationChannelsSchema.parse({ webhook: { enabled: true, url: 'https://hooks.example.test/x', secret: '', headers: [] } }));
+    for (let i = 0; i < RULE_HEALTH.minSamples; i++) fetch(before());
+    assert.ok(fetch(before(3)).warning);
+    worker.start();
+    for (let i = 0; i < 400 && sent.length < 2; i++) await new Promise(resolve => setTimeout(resolve, 5));
+    assert.deepEqual(sent.map(m => [m.event, m.title]).sort(), [['rules.warning', alertTitle('rules.warning')], ['rules.warning', '订阅灯：规则可能失效']]);
+    assert.equal(sent[0].error, '条目数从约 20 条降到 3 条');
+    assert.deepEqual(store.history.list(feed.id).logs[0].notification?.channels?.map(c => c.status), ['sent', 'sent']);
+    await worker.stop();
+    // Within the cooldown a new episode is not pushed again.
+    fetch(before());
+    assert.ok(fetch(before(2)).warning);
+    assert.equal(store.history.list(feed.id).logs[0].notification, null);
+    // After the cooldown a new episode is queued; the switch is turned off before delivery.
+    fetch(before());
+    assert.ok(fetch(before(2), Date.now() + 31 * 60_000).warning);
+    store.setBark('admin', { ruleHealthAlerts: false });
+    sent.length = 0; worker.start();
+    for (let i = 0; i < 40; i++) await new Promise(resolve => setTimeout(resolve, 5));
+    assert.equal(sent.length, 0);
+    assert.equal(store.history.list(feed.id).logs[0].notification?.status, 'canceled');
+  } finally { await worker.stop(); close(); }
 });
 
 test('忽略警告重置基线，修改规则清除旧统计，关闭开关不通知，RSS 订阅不统计', () => {
