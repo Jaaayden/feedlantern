@@ -1,5 +1,7 @@
 import type { TranslationProgressData } from './TranslationProgress';
 import type {
+  ApiTokenScope,
+  ApiTokenSummary,
   UserSummary,
   NotificationChannel,
   NotificationSummary,
@@ -65,7 +67,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   const generation = sessionGeneration;
   const headers = new Headers(options.headers);
   headers.set('X-FeedLantern', '1');
-  if (workspaceUser && !/^\/api\/(auth|users|backups|settings)(?:\/|$)/.test(path)) headers.set('X-FeedLantern-User', workspaceUser);
+  if (workspaceUser && !/^\/api\/(auth|users|backups|settings|tokens)(?:\/|$)/.test(path)) headers.set('X-FeedLantern-User', workspaceUser);
   if (csrfToken) headers.set('X-CSRF-Token', csrfToken);
   if (options.body !== undefined) headers.set('Content-Type', 'application/json');
 
@@ -97,6 +99,11 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 }
 
 export const api = {
+  tokens: {
+    list: () => request<ApiTokenSummary[]>('/api/tokens'),
+    create: (body: { name: string; scope: ApiTokenScope; expiresInDays: number | null }) => request<{ token: ApiTokenSummary; secret: string }>('/api/tokens', { method: 'POST', body }),
+    revoke: (id: string) => request<{ ok: boolean }>(`/api/tokens/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  },
   backups: {
     export: (currentPassword: string, password: string) => request<unknown>('/api/backups/export', { method: 'POST', body: { currentPassword, password } }),
     restore: (body: unknown, preview: boolean) => request<Record<string, unknown>>(`/api/backups/${preview ? 'preview' : 'restore'}`, { method: 'POST', body }),

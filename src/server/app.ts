@@ -44,6 +44,7 @@ import {
   AppError,
   LoginRateLimiter,
   authState,
+  bearerToken,
   clearSessionCookie,
   issueCsrf,
   requireAuth,
@@ -59,6 +60,15 @@ import { classifyItems, ItemFilterError, parseItemFilter } from './feed-output.j
 import { etagMatches, renderRssPreview, wantsHtmlPreview } from './rss-preview.js';
 import { asInteger, describeError, asNonEmptyString, asOptionalString, asRecord, cookieMetadata, frameError, friendlyError, logHiddenError, parseCredentialInput, parseFeedInput, parseHttpUrl, parsePartialRules, parseRules } from './validation.js';
 import { Store, type CredentialValue } from './store.js';
+import { API_TOKEN_LIMIT_PER_USER, API_TOKEN_MAX_DAYS, READ_METHODS, tokenAllowedRoute } from './api-tokens.js';
+import { buildOpenApi } from './openapi.js';
+
+export interface RegisteredRoute { method: string; url: string }
+const appRoutes = new WeakMap<FastifyInstance, RegisteredRoute[]>();
+/** Every route registered by createApp, for checking the OpenAPI document against the router. */
+export function registeredRoutes(app: FastifyInstance): RegisteredRoute[] {
+  return [...(appRoutes.get(app) ?? [])];
+}
 
 export interface BrowserServiceLike {
   discover?(options: { url: string; signal?: AbortSignal; cookies?: Cookie[]; waitMs: number }): Promise<{ title: string; detection: DetectionResult }>;
@@ -95,6 +105,11 @@ function authHeaders(request: FastifyRequest): { marker: boolean; csrf?: string 
   const marker = request.headers['x-feedlantern'];
   const csrf = request.headers['x-csrf-token'];
   return { marker: marker === '1', csrf: Array.isArray(csrf) ? csrf[0] : csrf };
+}
+
+/** Judged by the matched route too: an encoded path such as `/%61pi/feeds` still routes to `/api/feeds`. */
+function isApiRequest(request: FastifyRequest): boolean {
+  return request.url.startsWith('/api/') || !!request.routeOptions.url?.startsWith('/api/');
 }
 
 function feedUrl(config: ServerConfig, store: Store, id: string): string {
@@ -146,6 +161,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     console.error(`未处理的服务器错误 ${request.method} ${request.routeOptions.url ?? ''}：${describeError(error)}`);
     return reply.code(500).send({ error: '服务器内部错误' });
   });
+  const routes: RegisteredRoute[] = [];
+  appRoutes.set(app, routes);
+  app.addHook('onRoute', route => {
+    for (const method of [route.method].flat()) routes.push({ method, url: route.url });
+  });
   await app.register(cookie);
   const allowedApiHosts = new Set([
     new URL(config.publicOrigin).host.toLowerCase(),
@@ -178,6 +198,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
 
   const limiter = new LoginRateLimiter();
+  // Failed bearer tokens are limited per client address, separately from logins.
+  const tokenLimiter = new LoginRateLimiter(20);
   let schedulerRunning = false;
   let scheduler: NodeJS.Timeout | undefined;
   let closing = false;
@@ -322,9 +344,25 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return browser.scrape({ ...input, signal, cookies: credential ? cookiesForTarget(credential, input.url) : [] });
   }, error => friendlyError(error, '识别失败：请检查网址、网络或 Cookie，然后重试或手动调整。'), config.backgroundConcurrency, (entry, signal) => getRss(entry.url, { signal }), () => translations.wake());
 
-  app.addHook('onRequest', async (request) => {
+  app.addHook('onRequest', async (request, reply) => {
     if (maintenance) throw new AppError(503, '服务维护中，请稍后重试');
-    if (!request.url.startsWith('/api/')) return;
+    if (!isApiRequest(request)) return;
+    const bearer = bearerToken(request);
+    if (bearer !== undefined) {
+      // Token requests skip the browser checks below (Host, Origin, X-FeedLantern
+      // and CSRF): those only defend cookies a browser attaches by itself.
+      if (!tokenLimiter.allowed(request.ip)) throw new AppError(429, '访问令牌验证失败次数过多，请稍后再试');
+      const owner = store.tokens.find(bearer);
+      if (!owner) {
+        tokenLimiter.registerFailure(request.ip);
+        reply.header('WWW-Authenticate', 'Bearer error="invalid_token"');
+        throw new AppError(401, '访问令牌无效、已过期或已被吊销');
+      }
+      const route = request.routeOptions.url;
+      if (route && !tokenAllowedRoute(request.method, route)) throw new AppError(403, '此接口只能在网页登录后使用，访问令牌无权调用');
+      if (owner.scope === 'read' && !READ_METHODS.has(request.method)) throw new AppError(403, '只读令牌不能执行写操作');
+      return;
+    }
     const requestHost = Array.isArray(request.headers.host) ? request.headers.host[0] : request.headers.host;
     if (!requestHost || !allowedApiHosts.has(requestHost.toLowerCase()) && requestHost.toLowerCase() !== new URL(currentConfig().publicOrigin).host.toLowerCase()) throw new AppError(403, '请求主机不被允许');
     const origin = Array.isArray(request.headers.origin) ? request.headers.origin[0] : request.headers.origin;
@@ -335,7 +373,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
 
   app.addHook('onSend', async (request, reply, payload) => {
-    if (request.url.startsWith('/api/')) {
+    if (isApiRequest(request)) {
       reply.header('Cache-Control', 'no-store');
       reply.header('Referrer-Policy', 'no-referrer');
       reply.header('X-Content-Type-Options', 'nosniff');
@@ -351,9 +389,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   app.get('/api/auth/status', async (request): Promise<AuthState> => {
     const session = currentSession(request);
     const context = session;
-    const csrf = context ? issueCsrf(store, context) : undefined;
+    const csrf = context && !context.token ? issueCsrf(store, context) : undefined;
     return authState(store, config, context, csrf);
   });
+
+  // Public: the document describes the API shape only, as the source does, so
+  // scripts and agents can read it before they are given a token.
+  app.get('/api/openapi.json', async () => buildOpenApi(currentConfig().publicOrigin, config.version));
 
   app.post('/api/auth/setup', async (request, reply) => {
     if (store.hasAdmin()) throw new AppError(409, '管理员已经完成初始化');
@@ -441,6 +483,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   };
   const resourceGuard = (request: FastifyRequest, table?: 'feeds' | 'credentials' | 'import_jobs') => {
     const context = authenticated(request);
+    // The request hook already enforces this; repeated here so no route depends on that alone.
+    if (context.token && !tokenAllowedRoute(request.method, request.routeOptions.url ?? '')) throw new AppError(403, '此接口只能在网页登录后使用，访问令牌无权调用');
     if (request.method !== 'GET' && request.method !== 'HEAD') requireCsrf(request, store, context);
     const id = asRecord(request.params).id;
     if (table && typeof id === 'string') requireOwned(request, table, id);
@@ -458,6 +502,29 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   };
   const credentialsGuard = (request: FastifyRequest) => { const actor = resourceGuard(request, 'credentials'); workspace(request, request.method === 'POST'); return actor; };
+
+  // Token management needs the browser session: a token can never mint or revoke tokens.
+  const sessionGuard = (request: FastifyRequest) => {
+    const context = resourceGuard(request);
+    if (context.token) throw new AppError(403, '此接口只能在网页登录后使用，访问令牌无权调用');
+    return context;
+  };
+  app.get('/api/tokens', async request => store.tokens.list(sessionGuard(request).userId));
+  app.post('/api/tokens', async request => {
+    const { userId } = sessionGuard(request);
+    const body = asRecord(request.body);
+    const name = asNonEmptyString(typeof body.name === 'string' ? body.name.trim() : body.name, '令牌名称', 100);
+    if (body.scope !== 'read' && body.scope !== 'write') throw new AppError(400, '令牌权限必须是 read 或 write');
+    const days = body.expiresInDays === undefined || body.expiresInDays === null ? null : body.expiresInDays;
+    if (days !== null && (typeof days !== 'number' || !Number.isInteger(days) || days < 1 || days > API_TOKEN_MAX_DAYS)) throw new AppError(400, `有效期必须是 1 到 ${API_TOKEN_MAX_DAYS} 天的整数，或留空表示永不过期`);
+    if (store.tokens.count(userId) >= API_TOKEN_LIMIT_PER_USER) throw new AppError(409, `每个账号最多保留 ${API_TOKEN_LIMIT_PER_USER} 个令牌，请先吊销不用的令牌`);
+    return store.tokens.create(userId, { name, scope: body.scope, expiresAt: days === null ? null : new Date(Date.now() + days * 86_400_000).toISOString() });
+  });
+  app.delete('/api/tokens/:id', async request => {
+    const { userId } = sessionGuard(request);
+    if (!store.tokens.revoke(userId, String(asRecord(request.params).id))) throw new AppError(404, '令牌不存在');
+    return { ok: true };
+  });
 
   app.get('/api/users', async request => { adminGuard(request); return store.listUsersWithStats(); });
   app.post('/api/users', async request => {
@@ -1196,7 +1263,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
   const cleanup = setInterval(() => {
     for (const [id, owner] of browserOwners) if (Date.now() - owner.touchedAt > 10 * 60_000) browserOwners.delete(id);
-    try { store.purgeExpiredSessions(); store.history.prune(); store.translations.prune(); store.compact(); } catch { console.error('抓取日志清理失败，将自动重试'); }
+    try { store.purgeExpiredSessions(); store.tokens.purgeExpired(); store.history.prune(); store.translations.prune(); store.compact(); } catch { console.error('抓取日志清理失败，将自动重试'); }
   }, 60 * 60_000);
   cleanup.unref();
   app.addHook('onReady', async () => { jobs.recover(); notifier.start(); translations.start(); });

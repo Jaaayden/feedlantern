@@ -1512,3 +1512,18 @@ button.user-failing:hover { text-decoration: underline; text-underline-offset: 3
 .preview-item.is-hidden > :not(.preview-number) { opacity: .55; }
 .preview-item.is-hidden .output-badge { opacity: 1; }
 .output-badge { justify-self: start; height: 20px; margin-bottom: 4px; font-size: 11px; background: var(--warning-soft); color: var(--warning); border-color: transparent; }
+/* Personal access tokens */
+.api-token-form { display: grid; grid-template-columns: minmax(180px, 2fr) minmax(130px, 1fr) minmax(120px, 1fr) auto; gap: 12px; align-items: end; }
+.api-token-created { display: grid; gap: 10px; padding: 14px; border-radius: var(--r-md); background: var(--glow-soft); border: 1px solid var(--glow-line); color: var(--accent-ink); }
+.api-token-created > .button { justify-self: start; }
+.api-token-created input { font-family: var(--font-mono); font-size: 12.5px; }
+.api-token-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.api-token-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border-radius: var(--r-md); background: var(--surface-2); border: 1px solid var(--line); }
+.api-token-main { display: grid; gap: 4px; min-width: 0; }
+.api-token-main code { font-family: var(--font-mono); font-size: 12.5px; color: var(--ink-2); }
+.api-token-main small { overflow-wrap: anywhere; }
+@media (max-width: 760px) {
+  .api-token-form { grid-template-columns: 1fr; }
+  .api-token-row { flex-direction: column; align-items: stretch; }
+  .api-token-row > .button { align-self: flex-start; }
+}
