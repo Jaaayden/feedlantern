@@ -28,6 +28,7 @@ import {
   createRestrictedForwardProxy,
   installNetworkPolicy,
   NetworkPolicy,
+  policyOptionsFor,
   type NetworkPolicyOptions,
   type RestrictedForwardProxy,
 } from './network';
@@ -479,7 +480,7 @@ export class BrowserService {
   }
 
   private async createContext(cookies: Cookie[] | undefined, url: string, network?: FetchNetworkOptions): Promise<BrowserContext> {
-    const policy = new NetworkPolicy(this.networkOptions);
+    const policy = new NetworkPolicy(policyOptionsFor(this.networkOptions, network?.proxy));
     await policy.assertAllowed(url);
     // Fail early, and clearly, when the proxy itself is not allowed.
     if (network?.proxy) await policy.resolveProxy(network.proxy);
@@ -500,7 +501,7 @@ export class BrowserService {
     }
     this.activeContexts.add(context);
     try {
-      await installNetworkPolicy(context, this.networkOptions, network?.headers?.length ? { scopeUrl: url, headers: network.headers } : undefined);
+      await installNetworkPolicy(context, policyOptionsFor(this.networkOptions, network?.proxy), network?.headers?.length ? { scopeUrl: url, headers: network.headers } : undefined);
       if (cookies && cookies.length > 0) {
         const filtered = cookiesForUrl(cookies, url);
         if (filtered.length > 0) await context.addCookies(toPlaywrightCookies(filtered));
@@ -837,7 +838,7 @@ export class BrowserService {
     return this.withSession(id, async session => {
       const href = session.map ? linkFor(session.map, node) : undefined;
       if (!href) throw new BrowserServiceError('这里不是可以打开的链接');
-      await new NetworkPolicy(this.networkOptions).assertAllowed(href);
+      await new NetworkPolicy(policyOptionsFor(this.networkOptions, session.network?.proxy)).assertAllowed(href);
       await this.preparePage(session.page, { url: href, waitMs: session.waitMs, network: session.network && { ...session.network, referer: undefined } });
       return this.frame(session);
     });
@@ -880,7 +881,8 @@ export class BrowserService {
 
   /** Page 1 is open in `page`; collect it and any further pages in the same tab. */
   private collect(page: Page, options: BrowserScrapeOptions): Promise<CollectResult> {
-    const policy = new NetworkPolicy(this.networkOptions);
+    // Every page of a proxied feed resolves names through the same proxy.
+    const policy = new NetworkPolicy(policyOptionsFor(this.networkOptions, options.network?.proxy));
     return collectPages(page, {
       rules: options.rules,
       pagination: options.pagination,

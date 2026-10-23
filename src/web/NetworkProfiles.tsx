@@ -114,19 +114,50 @@ function ProfileForm({ editing, done, cancel }: { editing?: NetworkProfileSummar
   </form>;
 }
 
+/**
+ * Used when no feed uses the profile and it was never tested here. It is the
+ * IANA-reserved example domain: neutral (no third-party service or tracking),
+ * HTTPS, answers 200 without a redirect, and is stable over years.
+ */
+export const NEUTRAL_TEST_URL = 'https://example.com/';
+const lastTestKey = (id: string) => `feedlantern:network-test:${id}`;
+
+/** The first (oldest) feed using the profile, then the last URL tested in this browser, then the neutral address. */
+async function defaultTestUrl(profile: NetworkProfileSummary): Promise<{ url: string; source: string }> {
+  if (profile.feedCount > 0) {
+    try {
+      const feed = (await api.feeds.list()).filter(item => item.networkProfileId === profile.id).sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
+      if (feed) return { url: feed.url, source: `订阅“${feed.name}”的来源地址` };
+    } catch { /* fall through */ }
+  }
+  try {
+    const saved = localStorage.getItem(lastTestKey(profile.id));
+    if (saved) return { url: saved, source: '上次测试的网址' };
+  } catch { /* per-browser convenience only */ }
+  return { url: NEUTRAL_TEST_URL, source: '通用的连通性检查地址' };
+}
+
 function TestForm({ profile, close }: { profile: NetworkProfileSummary; close: () => void }) {
   const [url, setUrl] = useState('');
+  const [source, setSource] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [result, setResult] = useState('');
+  useEffect(() => {
+    let current = true;
+    // Never replace what the user has started typing.
+    void defaultTestUrl(profile).then(found => { if (current) { setUrl(previous => previous || found.url); setSource(found.source); } });
+    return () => { current = false; };
+  }, [profile]);
   async function submit(event: FormEvent) {
     event.preventDefault(); setBusy(true); setError(''); setResult('');
+    try { localStorage.setItem(lastTestKey(profile.id), url); } catch { /* per-browser convenience only */ }
     try { const response = await api.networkProfiles.test(profile.id, url); setResult(`连接成功：目标网站返回 HTTP ${response.status}`); }
     catch (error) { setError(messageOf(error)); } finally { setBusy(false); }
   }
   return <form onSubmit={submit} className="modal-body">
     <p className="muted">用这组网络配置请求一次网址，检查代理是否可达、认证是否正确。不会跟随重定向。</p>
-    <Field label="测试网址"><input required type="url" value={url} onChange={e => setUrl(e.target.value)} placeholder="https://example.com/" /></Field>
+    <Field label="测试网址" hint={source ? `默认填入${source}，可以修改。` : undefined}><input required type="url" value={url} onChange={e => { setUrl(e.target.value); setSource(''); }} placeholder={NEUTRAL_TEST_URL} /></Field>
     <ErrorNote error={error} />{result && <div className="notice" role="status">{result}</div>}
     <div className="modal-actions"><button type="button" className="button" onClick={close}>关闭</button><button className="button primary" disabled={busy}>{busy ? <Busy label="正在测试" /> : '测试连接'}</button></div>
   </form>;

@@ -11,7 +11,7 @@
 | `COOKIE_SECURE` | HTTPS 反代请求自动启用；可显式强制开启 |
 | `TRUSTED_PROXIES` | 默认空，不信任转发 IP；允许明确 IP/CIDR，逗号分隔。仅首次初始化时导入，且 Compose 不会把它传进容器；Docker 部署请在「设置 → 服务器与网络」里填写，步骤见 [Nginx](nginx.md) |
 | `ALLOWED_TARGET_HOSTS` | 默认空；确有需求时精确放行内网 `host:port`，逗号分隔。同样适用于网络配置中的代理地址，例如局域网代理 `192.168.1.10:1080` |
-| `DNS_OVER_HTTPS` | 默认 false，Fake-IP DNS 环境可显式 true，查询仍执行地址安全校验 |
+| `DNS_OVER_HTTPS` | 默认 false，Fake-IP DNS 环境可显式 true，查询仍执行地址安全校验；使用网络配置代理的订阅经同一代理查询 |
 | `BACKGROUND_CONCURRENCY` | 默认 1，允许整数 1–4；刷新与批量识别共享容量。同一来源 hostname（跨协议、端口）串行，编辑会话独立 |
 | `BROWSER_EXECUTABLE_PATH` | 默认使用随 Playwright 安装的 Chromium |
 | `PLAYWRIGHT_BROWSERS_PATH` | Docker 固定 `/ms-playwright`；源码测试与安装必须使用同一值 |

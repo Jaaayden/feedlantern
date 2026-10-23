@@ -62,6 +62,8 @@ Chromium 侧：有代理的配置会为该浏览器上下文单独创建一个�
 
 ### 抓取超时文案
 
+使用网络配置代理的抓取会把代理交给 `NetworkPolicy`（`policy.forProxy(proxy)` 或 `policyOptionsFor(options, proxy)`）：开启 DNS over HTTPS 时，`lookupCached` 改用 `resolveDnsOverHttpsViaProxy`，经 `openResolverTunnel` 让代理按主机名连接解析服务，HTTPS 端到端校验证书。这是“代理只收已检查的 IP”规则唯一的例外，因为解析服务是固定的公共端点，不是用户填写的目标。解析结果照常检查后，才通过 `openTunnel`（只接受 IP）连接目标。代理服务器本身的地址仍直连解析（`directPolicy`）。每个策略实例有自己的 DNS 缓存，带代理的策略总是单独的实例，因此经代理和直连的结果不会混用。用到它的地方包括 `fetchSource`、`probeTarget`、`createRestrictedForwardProxy`（`upstream`）、`BrowserService.createContext` 与 `installNetworkPolicy`、翻页的 `collect` 和编辑器的 `follow`。
+
 `fetch-errors.ts` 的 `withFetchTimeout` 给一次抓取加上自己的超时信号，只有它触发时才抛出 `FetchTimeoutError`（“连接 主机 超时（N 秒未响应）”加代理提示）；调用方的取消信号（用户取消、停用账号、服务停止）原样抛出，`refreshOnce` 记为“中断”。RSS 来源（`fetchSource`、网络配置的“测试连接”）超时 20 秒；网页由 Playwright 的导航超时（30 秒）转换，等待元素超时单独提示。错误只含主机名，`friendlyError` 直接透传；其他英文的 `AbortError`／`TimeoutError` 会被换成中文。
 
 ### 完整恢复与服务器设置
