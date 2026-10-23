@@ -35,7 +35,7 @@ test('规则可能失效：列表与筛选提示、日志标记、重新识别�
     const dialog = page.getByRole('dialog');
     const notice = dialog.getByRole('region', { name: '规则可能失效' });
     await expect(notice).toContainText('条目数从约 10 条降到 2 条');
-    await dialog.getByRole('button', { name: '抓取日志', exact: true }).click();
+    await dialog.getByRole('button', { name: '运行日志', exact: true }).click();
     const logs = dialog.getByRole('region', { name: '抓取日志' });
     await expect(logs.locator('article').first()).toContainText('成功');
     await expect(logs.locator('article').first()).toContainText('规则可能失效');

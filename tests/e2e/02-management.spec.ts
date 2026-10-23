@@ -29,6 +29,8 @@ test('列表偏好、统一订阅名称、批量创建及加密备份入口', as
   await expect(page.getByText(/已创建/).first()).toBeVisible({ timeout: 30000 });
   await expect(page.getByRole('button', { name: '打开并调整匹配' }).first()).toBeVisible();
   await page.getByRole('button', { name: '设置', exact: true }).click();
+  await page.getByRole('navigation', { name: '设置分组' }).getByRole('button', { name: '备份与迁移', exact: true }).click();
+  await expect(page).toHaveURL(/#\/settings\/backup$/);
   await page.getByRole('button', { name: '完整备份', exact: true }).click();
   const panel = page.locator('section').filter({ has: page.getByRole('heading', { name: '备份与迁移' }) });
   await panel.getByLabel('当前管理员密码').fill(TEST_ACCOUNT.password);

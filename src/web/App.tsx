@@ -3,9 +3,10 @@ import { NotificationsPanel } from './NotificationsPanel';
 import { UsersPanel } from './UsersPanel';
 import { feedFormatUrl, ITEM_FILTER_LIMITS, OUTPUT_LIMIT, RETENTION_LIMIT, translationEnabled } from '../shared/types';
 import type { FeedFormat, ItemFilter, ItemOutputStatus } from '../shared/types';
-import { TranslationProgress } from './TranslationProgress';
+import { TranslationLog } from './TranslationProgress';
+import { ItemPreview } from './ItemList';
 import { LanguageOptions, ProviderOptions, useTranslationProviders } from './TranslationFields';
-import { RssEditor, RssContent } from './RssEditor';
+import { RssEditor } from './RssEditor';
 import { ApplicationSettingsPanel } from './ApplicationSettingsPanel';
 import { BackupPanel } from './BackupPanel';
 import { ApiTokensPanel } from './ApiTokensPanel';
@@ -20,11 +21,11 @@ import { levelsBetween, liftNode } from '../shared/element-map';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type React from 'react';
 import type { FormEvent, ReactNode } from 'react';
-import { Archive, ChevronRight, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bell, Check, ChevronDown, CircleHelp, Cookie, Copy, ExternalLink, Globe2, Info, KeyRound, KeySquare, Languages, Layers, ListPlus, LoaderCircle, LogOut, Monitor, Moon, Network, MousePointer2, Pencil, Plus, Radio, RefreshCw, Rss, Search, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Sun, Trash2 } from 'lucide-react';
+import { Archive, ChevronRight, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bell, Check, ChevronDown, CircleHelp, Cookie, Copy, ExternalLink, Globe2, Info, KeyRound, KeySquare, Languages, Layers, ListPlus, LoaderCircle, LogOut, Monitor, Moon, Network, MousePointer2, Pencil, Plus, Radio, RefreshCw, Rss, Search, Server, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Sun, Trash2 } from 'lucide-react';
 import { Modal } from './Modal';
 import { NetworkProfileSelect, NetworkProfilesView, useNetworkProfiles } from './NetworkProfiles';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
-import { absoluteTime, copyText, relativeTime, sameAddress, summaryText } from './format';
+import { absoluteTime, copyText, relativeTime, sameAddress } from './format';
 import type { StatusFilter } from './FeedCollection';
 import { readTheme, saveTheme, themeLabels } from './theme';
 import type { Theme } from './theme';
@@ -67,15 +68,6 @@ function AuthScreen({ state, authenticated }: { state: AuthState; authenticated:
     <Field label="密码" hint={state.setupRequired ? '至少 8 个字符。请使用独立的长密码。' : undefined}><input required type="password" autoFocus={!state.setupRequired && !!username} minLength={8} maxLength={1024} value={password} onChange={e => setPassword(e.target.value)} autoComplete={state.setupRequired ? 'new-password' : 'current-password'} /></Field>
     <ErrorNote error={error} /><button className="button primary full" disabled={busy}>{busy ? <Busy /> : <>{state.setupRequired ? '创建管理员' : '登录'}<ArrowRight size={17} /></>}</button>
   </form><p className="auth-note"><KeyRound size={14} />{state.setupRequired ? '只有持有本机设置码的人可以创建管理员。' : '普通用户忘记密码请联系管理员；管理员可在服务主机运行 pnpm admin:reset。'}</p>{state.setupRequired && <BackupPanel setup onRestored={() => location.reload()} />}<span className="version">{state.version} · <a href="https://github.com/Jaaayden/feedlantern" target="_blank" rel="noreferrer">GitHub · Jaaayden/feedlantern</a></span></div></section></div>;
-}
-
-const hiddenLabels: Partial<Record<ItemOutputStatus, string>> = { excluded: '已过滤：命中排除关键词', 'not-included': '已过滤：未命中包含关键词', 'over-limit': '超出输出条数' };
-
-function ItemPreview({ items, empty = '还没有可预览的条目', status }: { items: ExtractedItem[]; empty?: string; status?: (item: ExtractedItem) => ItemOutputStatus | undefined }) {
-  const [expanded, setExpanded] = useState(false);
-  if (!items.length) return <div className="empty-preview"><Search size={24} /><p>{empty}</p></div>;
-  const shown = expanded ? items : items.slice(0, 20);
-  return <><div className="item-list">{shown.map((item, index) => { const hidden = hiddenLabels[status?.(item) ?? 'published']; return <article className={`preview-item${hidden ? ' is-hidden' : ''}`} key={`${item.link}-${index}`} data-output={status?.(item)}><div className="preview-number">{String(index + 1).padStart(2, '0')}</div><div className="preview-text">{hidden && <span className="badge output-badge">{hidden}</span>}<a href={item.link} target="_blank" rel="noreferrer">{item.title || '（未匹配到标题）'}<ExternalLink size={13} /></a>{item.description && <p>{summaryText(item.description)}</p>}{item.contentHtml !== undefined && <RssContent title={`订阅正文 ${index + 1}`} html={item.contentHtml} />}{item.translationError && <p className="card-error">{item.translationError}</p>}<div className="item-meta"><span>{hostLabel(item.link)}</span>{item.publishedAt && <time>{dateLabel(item.publishedAt)}{item.publishedAtSource === 'relative' ? '（估算）' : ''}</time>}</div></div>{item.image && <img src={item.image} alt="" loading="lazy" referrerPolicy="no-referrer" onError={e => { e.currentTarget.style.display = 'none'; }} />}</article>; })}</div>{items.length > 20 && !expanded && <button className="button small show-all" onClick={() => setExpanded(true)}>显示全部 {items.length} 条</button>}</>;
 }
 
 function CredentialForm({ editing, done, cancel }: { editing?: CredentialSummary; done: () => void; cancel: () => void }) {
@@ -412,12 +404,32 @@ function OutputSummary({ preview, stored }: { preview: OutputPreview; stored: nu
   return <p className="output-summary" aria-live="polite">已存储 {stored} 条，输出 {counts.published} 条{counts.filtered ? `，过滤 ${counts.filtered} 条` : ''}{counts.overLimit ? `，超出输出条数 ${counts.overLimit} 条` : ''}{counts.untranslated ? `，${counts.untranslated} 条翻译完成后输出` : ''}{preview.filterTimedOut ? '。正则过滤运行超时，暂未生效，请简化规则' : ''}</p>;
 }
 
-function FeedStatus({ feed }: { feed: Feed }) {
-  return <><div className="detail-status"><span>每 {feed.intervalMinutes} 分钟刷新</span><span title={absoluteTime(feed.lastSuccessAt)}>最近成功：{feed.lastSuccessAt ? relativeTime(feed.lastSuccessAt) : '尚未更新'}</span><span title={feed.enabled ? absoluteTime(feed.nextFetchAt) : undefined}>{feed.enabled ? `下次检查：${feed.nextFetchAt ? relativeTime(feed.nextFetchAt) : '尚未安排'}` : '已暂停自动刷新'}</span></div><ErrorNote error={feed.lastError ?? undefined} />{feed.translation && <p role="status" className="translation-summary">翻译：{feed.translation.success} 条完成 · {feed.translation.pending} 条等待 · {feed.translation.failed} 条失败</p>}</>;
+function FeedStatus({ feed, retry, busy }: { feed: Feed; retry: () => void; busy: boolean }) {
+  const unfinished = (feed.translation?.pending ?? 0) + (feed.translation?.failed ?? 0);
+  return <><div className="detail-status"><span>每 {feed.intervalMinutes} 分钟刷新</span><span title={absoluteTime(feed.lastSuccessAt)}>最近成功：{feed.lastSuccessAt ? relativeTime(feed.lastSuccessAt) : '尚未更新'}</span><span title={feed.enabled ? absoluteTime(feed.nextFetchAt) : undefined}>{feed.enabled ? `下次检查：${feed.nextFetchAt ? relativeTime(feed.nextFetchAt) : '尚未安排'}` : '已暂停自动刷新'}</span></div><ErrorNote error={feed.lastError ?? undefined} />{translationEnabled(feed) && feed.translation && <div className="translation-summary"><p role="status">翻译：{feed.translation.success} 条完成 · {feed.translation.pending} 条等待 · <span className={feed.translation.failed ? 'has-failed' : undefined}>{feed.translation.failed} 条失败</span></p>{unfinished > 0 && <button type="button" className="button small" disabled={busy || !feed.enabled} title={feed.enabled ? '立即重新翻译等待中和失败的文章' : '订阅已暂停'} onClick={retry}><RefreshCw size={13} className={busy ? 'spin' : undefined} />重试未完成翻译</button>}</div>}</>;
 }
 
 type PanelTab = 'items' | 'logs' | 'settings';
-const panelTabs: Array<[PanelTab, string]> = [['items', '订阅内容'], ['logs', '抓取日志'], ['settings', '订阅设置']];
+const panelTabs: Array<[PanelTab, string]> = [['items', '订阅内容'], ['logs', '运行日志'], ['settings', '订阅设置']];
+
+/**
+ * 运行日志: fetch runs and, for translated feeds, translation activity. They
+ * are two segments rather than one merged timeline: fetch runs page through a
+ * long history by status, translation events are a short rolling window with
+ * a live article queue, and each keeps its own refresh pace.
+ */
+function ActivityTab({ feed, revision }: { feed: Feed; revision: number }) {
+  const translated = translationEnabled(feed);
+  const [view, setView] = useState<'fetch' | 'translation'>('fetch');
+  const failed = feed.translation?.failed ?? 0;
+  return <div className="activity">
+    {translated && <div className="detail-actions activity-switch" role="group" aria-label="日志类型">
+      <button type="button" className="button small" aria-pressed={view === 'fetch'} onClick={() => setView('fetch')}>抓取记录</button>
+      <button type="button" className="button small" aria-pressed={view === 'translation'} onClick={() => setView('translation')}>翻译记录{failed > 0 && <span className="count bad" aria-label={`${failed} 条失败`}>{failed}</span>}</button>
+    </div>}
+    {translated && view === 'translation' ? <TranslationLog id={feed.id} enabled={feed.enabled} /> : <FetchLogs id={feed.id} revision={revision} />}
+  </div>;
+}
 type FeedDetailData = { feed: Feed; items: FeedItem[]; feedUrl: string } & OutputPreview;
 
 // One panel for everything about a feed: the address and status stay on top,
@@ -439,6 +451,10 @@ function FeedPanel({ id, tab, onTab, close, edit, changed, notify }: { id: strin
     if (busy) return;
     if (!dirty.current || confirm('有未保存的设置，确定放弃修改？')) { dirty.current = false; next(); }
   }
+  function retryTranslation() {
+    setBusy('重试翻译'); setError('');
+    void api.feeds.retryTranslation(id).then(load).then(() => notify('已重新安排翻译')).catch(e => setError(messageOf(e))).finally(() => setBusy(''));
+  }
   async function refresh() {
     setBusy('刷新'); setError('');
     try { await api.feeds.refresh(id); await load(); setRevision(v => v + 1); changed(); notify('刷新完成'); }
@@ -450,17 +466,15 @@ function FeedPanel({ id, tab, onTab, close, edit, changed, notify }: { id: strin
       <div className="feed-panel-head">
         <div className="feed-panel-source"><div className="detail-source"><Globe2 size={16} /><a href={feed.url} target="_blank" rel="noreferrer">{feed.url}</a></div><button className="button small" disabled={!!busy} onClick={() => void refresh()}><RefreshCw size={14} className={busy === '刷新' ? 'spin' : undefined} />{busy === '刷新' ? '正在刷新' : '立即刷新'}</button></div>
         <FeedAddress feedUrl={detail.feedUrl} notify={notify} onError={setError} />
-        <FeedStatus feed={feed} />
+        <FeedStatus feed={feed} retry={retryTranslation} busy={busy === '重试翻译'} />
         <RuleHealthNotice key={feed.id} feed={feed} notify={notify} updated={() => { void load().catch(e => setError(messageOf(e))); setRevision(v => v + 1); changed(); }} />
       </div>
       <div className="detail-actions feed-tabs" aria-label="详情内容">{panelTabs.map(([key, label]) => <button key={key} className="button small" aria-pressed={tab === key} onClick={() => { if (tab !== key) guard(() => onTab(key)); }}>{label}</button>)}</div>
       {tab === 'items' && <>
-        {translationEnabled(feed) && <TranslationProgress id={id} enabled={feed.enabled} />}
-        {translationEnabled(feed) && <button className="button small retry-translation" disabled={!!busy || !feed.enabled} onClick={() => { setBusy('重试翻译'); void api.feeds.retryTranslation(id).then(load).catch(e => setError(messageOf(e))).finally(() => setBusy('')); }}>重试未完成翻译</button>}
         {(feed.itemFilter || Object.values(detail.outputStatus).includes('over-limit')) && <OutputSummary preview={detail} stored={detail.items.length} />}
-        <ItemPreview items={detail.items} status={item => detail.outputStatus[(item as FeedItem).id]} />
+        <ItemPreview items={detail.items} mode={translationEnabled(feed) ? feed.translationMode : undefined} status={item => detail.outputStatus[(item as FeedItem).id]} />
       </>}
-      {tab === 'logs' && <FetchLogs id={id} revision={revision} />}
+      {tab === 'logs' && <ActivityTab feed={feed} revision={revision} />}
       {tab === 'settings' && <FeedSettingsTab feed={feed} busy={busy} setBusy={setBusy} setError={setError} dirty={dirty} reload={load} items={detail.items} saved={result => { setDetail(previous => previous && { ...previous, ...result }); void load().catch(e => setError(messageOf(e))); }} changed={changed} notify={notify} edit={() => guard(() => edit(feed))} removed={close} />}
     </>}
   </div></Modal>;
@@ -603,51 +617,67 @@ function FeedSettingsTab({ feed, items, busy, setBusy, setError, dirty, reload, 
 
 type SettingsSection = { id: string; label: string; icon: typeof Bell };
 
-function SettingsView({ auth, logout, notify, target }: { auth: AuthState; logout: () => void; notify: Notify; target?: UserSummary | null }) {
+/** Settings sections available to this viewer, in navigation order. Admin-only groups stay admin-only. */
+function settingsSections(admin: boolean, target?: UserSummary | null): SettingsSection[] {
+  const instance = admin && !target;
+  return [
+    ...(instance ? [{ id: 'display', label: '日志与显示', icon: SlidersHorizontal }, { id: 'translation', label: '翻译服务', icon: Languages }, { id: 'server', label: '服务器与网络', icon: Server }] : []),
+    { id: 'notifications', label: '通知', icon: Bell },
+    { id: 'credentials', label: 'Cookie 凭据', icon: Cookie },
+    { id: 'network', label: '网络配置', icon: Network },
+    ...(!target ? [{ id: 'account', label: '账号与密码', icon: KeyRound }] : []),
+    { id: 'tokens', label: '访问令牌', icon: KeySquare },
+    ...(instance ? [{ id: 'backup', label: '备份与迁移', icon: Archive }] : []),
+    { id: 'about', label: '关于', icon: Info },
+  ];
+}
+
+// One settings group per page; the group is part of the address (#/settings/translation).
+function SettingsView({ auth, logout, notify, target, section, onSection, dirty }: { auth: AuthState; logout: () => void; notify: Notify; target?: UserSummary | null; section: string | null; onSection: (id: string) => void; dirty: React.MutableRefObject<boolean> }) {
   const [settingsRevision, setSettingsRevision] = useState(0);
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-  const admin = auth.role === 'admin' && !target;
-  const sections: SettingsSection[] = [
-    ...(admin ? [{ id: 'general', label: '应用设置', icon: SlidersHorizontal }] : []),
-    { id: 'notifications', label: '通知', icon: Bell },
-    { id: 'credentials', label: 'Cookie 凭据', icon: Cookie },
-    { id: 'network', label: '网络配置', icon: Network },
-    ...(!target ? [{ id: 'account', label: '账号与密码', icon: KeyRound }, { id: 'tokens', label: '访问令牌', icon: KeySquare }] : []),
-    ...(admin ? [{ id: 'backup', label: '备份与迁移', icon: Archive }] : []),
-    { id: 'about', label: '关于', icon: Info },
-  ];
-  const sectionKey = sections.map(section => section.id).join();
-  const [active, setActive] = useState(sections[0].id);
+  const sections = settingsSections(auth.role === 'admin', target);
+  const active = sections.find(item => item.id === section) ?? sections[0];
+  const navRef = useRef<HTMLElement>(null);
   useEffect(() => {
-    // Highlight the group currently near the top of the viewport.
-    const nodes = sectionKey.split(',').map(id => document.getElementById(`settings-${id}`)).filter((node): node is HTMLElement => !!node);
-    if (typeof IntersectionObserver === 'undefined') return;
-    const observer = new IntersectionObserver(entries => {
-      const visible = entries.filter(entry => entry.isIntersecting).sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
-      if (visible) setActive(visible.target.id.replace('settings-', ''));
-    }, { rootMargin: '-90px 0px -55% 0px' });
-    nodes.forEach(node => observer.observe(node));
-    return () => observer.disconnect();
-  }, [sectionKey]);
-  function jump(id: string) { setActive(id); document.getElementById(`settings-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+    // On phones the navigation scrolls sideways: keep the current group in view.
+    const nav = navRef.current, button = nav?.querySelector<HTMLElement>('[aria-current="page"]');
+    if (nav && button && nav.scrollWidth > nav.clientWidth) nav.scrollTo({ left: button.offsetLeft - (nav.clientWidth - button.offsetWidth) / 2 });
+  }, [active.id]);
+  useEffect(() => {
+    // Leaving the page with unsaved settings asks first.
+    const warn = (event: BeforeUnloadEvent) => { if (dirty.current) { event.preventDefault(); event.returnValue = ''; } };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [dirty]);
+  function jump(id: string) {
+    if (id === active.id) return;
+    if (dirty.current && !confirm('当前分组有未保存的设置，确定放弃修改？')) return;
+    dirty.current = false;
+    onSection(id);
+    window.scrollTo({ top: 0 });
+  }
+  const markDirty = useCallback((value: boolean) => { dirty.current = value; }, [dirty]);
   async function submit(event: FormEvent) { event.preventDefault(); if (newPassword !== confirmPassword) { setError('两次输入的新密码不一致'); return; } setBusy(true); setError(''); try { await api.auth.password({ currentPassword, newPassword }); setCurrentPassword(''); setNewPassword(''); setConfirmPassword(''); notify('密码已修改，请重新登录'); logout(); } catch (error) { setError(messageOf(error)); } finally { setBusy(false); } }
   return <>
-    <div className="page-heading"><div><span className="section-kicker">MAKE IT YOURS</span><h1>设置</h1><p>{auth.role === 'admin' ? '管理通知、抓取、网络与个人账号。' : '管理你的个人通知与登录密码。'}</p></div></div>
+    <div className="page-heading"><div><span className="section-kicker">MAKE IT YOURS</span><h1>设置</h1><p>{auth.role === 'admin' && !target ? '管理整个实例的显示、翻译、网络，以及你的通知与账号。' : '管理通知、Cookie 凭据、网络配置、访问令牌与账号。'}</p></div></div>
     <div className="settings-layout">
-      <nav className="settings-nav" aria-label="设置分组">{sections.map(section => <button key={section.id} className={active === section.id ? 'selected' : ''} aria-current={active === section.id ? 'true' : undefined} onClick={() => jump(section.id)}><section.icon size={16} />{section.label}</button>)}</nav>
+      <nav className="settings-nav" aria-label="设置分组" ref={navRef}>{sections.map(item => <button key={item.id} className={active.id === item.id ? 'selected' : ''} aria-current={active.id === item.id ? 'page' : undefined} onClick={() => jump(item.id)}><item.icon size={16} />{item.label}</button>)}</nav>
       <div className="settings-sections">
-        {admin && <div id="settings-general" className="settings-section"><ApplicationSettingsPanel revision={settingsRevision} /></div>}
-        <div id="settings-notifications" className="settings-section"><NotificationsPanel key={settingsRevision} username={target?.username ?? auth.username!} enabled={target?.enabled !== false} /></div>
-        <div id="settings-credentials" className="settings-section"><CredentialsView notify={notify} /></div>
-        <div id="settings-network" className="settings-section"><NetworkProfilesView notify={notify} /></div>
-        {!target && <div id="settings-account" className="settings-section"><form className="panel settings-form" onSubmit={submit}><div className="panel-heading"><h2>修改密码</h2><KeyRound size={19} /></div><p className="muted">当前用户：{auth.username}。修改后会退出此账号的所有现有会话，并吊销全部访问令牌。</p><Field label="当前密码"><input required type="password" value={currentPassword} onChange={e => setCurrentPassword(e.target.value)} autoComplete="current-password" /></Field><div className="form-row"><Field label="新密码"><input required type="password" minLength={8} maxLength={1024} value={newPassword} onChange={e => setNewPassword(e.target.value)} autoComplete="new-password" /></Field><Field label="确认新密码"><input required type="password" minLength={8} value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} autoComplete="new-password" /></Field></div><ErrorNote error={error} /><button className="button primary" disabled={busy}>{busy ? <Busy /> : '更新密码'}</button></form></div>}
-        {!target && <div id="settings-tokens" className="settings-section"><ApiTokensPanel notify={notify} /></div>}
-        {admin && <div id="settings-backup" className="settings-section"><BackupPanel onRestored={logout} onImported={() => setSettingsRevision(v => v + 1)} /></div>}
-        <div id="settings-about" className="settings-section"><section className="panel about-panel"><Brand /><p>自动找到网页上的新内容，汇入你的 RSS 阅读器。</p><div className="about-row"><span>版本</span><code>{auth.version}</code></div><div className="about-row"><span>许可证</span><span>MIT</span></div><a className="text-link" href="https://github.com/Jaaayden/feedlantern" target="_blank" rel="noreferrer">查看开源项目<ExternalLink size={14} /></a><div className="notice">服务主机需要保持运行，定时更新才会继续。支持网页列表订阅与 RSS 翻译；RSS 全文以源内提供的内容为准，不自动补抓全文或翻页。</div></section></div>
+        <div id={`settings-${active.id}`} className="settings-section" key={active.id}>
+          {(active.id === 'display' || active.id === 'translation' || active.id === 'server') && <ApplicationSettingsPanel group={active.id} revision={settingsRevision} onDirty={markDirty} />}
+          {active.id === 'notifications' && <NotificationsPanel key={settingsRevision} username={target?.username ?? auth.username!} enabled={target?.enabled !== false} />}
+          {active.id === 'credentials' && <CredentialsView notify={notify} />}
+          {active.id === 'network' && <NetworkProfilesView notify={notify} />}
+          {active.id === 'account' && <form className="panel settings-form" onSubmit={submit} aria-label="账号与密码"><div className="panel-heading"><h2>账号与密码</h2><KeyRound size={19} /></div><p className="muted">当前账号 {auth.username}（{auth.role === 'admin' ? '管理员' : '普通用户'}）。修改密码后会退出此账号的所有现有会话，并吊销全部访问令牌。</p><h3 className="settings-subheading">修改密码</h3><Field label="当前密码"><input required type="password" value={currentPassword} onChange={e => setCurrentPassword(e.target.value)} autoComplete="current-password" /></Field><div className="form-row"><Field label="新密码"><input required type="password" minLength={8} maxLength={1024} value={newPassword} onChange={e => setNewPassword(e.target.value)} autoComplete="new-password" /></Field><Field label="确认新密码"><input required type="password" minLength={8} value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} autoComplete="new-password" /></Field></div><ErrorNote error={error} /><button className="button primary" disabled={busy}>{busy ? <Busy /> : '更新密码'}</button></form>}
+          {active.id === 'tokens' && <ApiTokensPanel notify={notify} target={target} />}
+          {active.id === 'backup' && <BackupPanel onRestored={logout} onImported={() => setSettingsRevision(v => v + 1)} />}
+          {active.id === 'about' && <section className="panel about-panel" aria-label="关于"><div className="panel-heading"><h2>关于</h2><Info size={19} /></div><Brand /><p>自动找到网页上的新内容，汇入你的 RSS 阅读器。</p><div className="about-row"><span>版本</span><code>{auth.version}</code></div><div className="about-row"><span>许可证</span><span>MIT</span></div><a className="text-link" href="https://github.com/Jaaayden/feedlantern" target="_blank" rel="noreferrer">查看开源项目<ExternalLink size={14} /></a><div className="notice">服务主机需要保持运行，定时更新才会继续。支持网页列表订阅与 RSS 翻译；RSS 全文以源内提供的内容为准，不自动补抓全文或翻页。</div></section>}
+        </div>
       </div>
     </div>
   </>;
@@ -695,17 +725,18 @@ function NewFeedMenu({ create, batch, bundle }: { create: (source: NewSource) =>
 }
 
 type Page = 'feeds' | 'settings' | 'batch' | 'users';
-type Route = { page: Page; panel: { id: string; tab: PanelTab } | null; create: NewSource | null; workspace: string | null };
+type Route = { page: Page; panel: { id: string; tab: PanelTab } | null; create: NewSource | null; workspace: string | null; section?: string | null };
 
 // Hash routes keep the current screen across reloads and make back/forward work:
-// #/ · #/settings · #/users · #/batch · #/new · #/new/rss · #/feed/<id>[/logs|/settings]
+// #/ · #/settings[/<group>] · #/users · #/batch · #/new · #/new/rss · #/feed/<id>[/logs|/settings]
 // An admin working in another account's workspace gets a #/u/<userId> prefix.
 function parseRoute(hash: string): Route {
   let parts = hash.replace(/^#\/?/, '').split('/').filter(Boolean).map(decodeURIComponent);
   let workspace: string | null = null;
   if (parts[0] === 'u' && parts[1]) { workspace = parts[1]; parts = parts.slice(2); }
   const empty: Route = { page: 'feeds', panel: null, create: null, workspace };
-  if (parts[0] === 'settings' || parts[0] === 'users' || parts[0] === 'batch') return { ...empty, page: parts[0] };
+  if (parts[0] === 'settings') return { ...empty, page: 'settings', section: parts[1] ?? null };
+  if (parts[0] === 'users' || parts[0] === 'batch') return { ...empty, page: parts[0] };
   if (parts[0] === 'new') return { ...empty, create: parts[1] === 'rss' ? 'rss' : 'website' };
   if (parts[0] === 'feed' && parts[1]) return { ...empty, panel: { id: parts[1], tab: parts[2] === 'logs' || parts[2] === 'settings' ? parts[2] : 'items' } };
   return empty;
@@ -715,6 +746,7 @@ function routeHash(route: Route): string {
   const prefix = route.workspace ? `#/u/${encodeURIComponent(route.workspace)}` : '#';
   if (route.panel) return `${prefix}/feed/${encodeURIComponent(route.panel.id)}${route.panel.tab === 'items' ? '' : `/${route.panel.tab}`}`;
   if (route.create) return `${prefix}${route.create === 'rss' ? '/new/rss' : '/new'}`;
+  if (route.page === 'settings' && route.section) return `${prefix}/settings/${encodeURIComponent(route.section)}`;
   return route.page === 'feeds' ? `${prefix}/` : `${prefix}/${route.page}`;
 }
 
@@ -749,8 +781,10 @@ export default function App() {
   const targetRef = useRef<string | null>(null);
   // True while a route's workspace is being resolved; the address bar must not be rewritten meanwhile.
   const resolvingRoute = useRef(false);
+  const [settingsSection, setSettingsSection] = useState<string | null>(null);
+  const settingsDirty = useRef(false);
   const showRoute = useCallback((route: Route) => {
-    setPage(route.page); setPanel(route.panel); setEditorReturnId(null);
+    setPage(route.page); setPanel(route.panel); setEditorReturnId(null); setSettingsSection(route.section ?? null);
     if (route.create) { setEditorSource(route.create); setEditor(null); } else setEditor(undefined);
   }, []);
   // Switch the workspace (null = my own) and show the given screen inside it.
@@ -797,7 +831,7 @@ export default function App() {
   // Keep the address bar in step with the screen; back/forward replays it.
   const authenticated = !!auth?.authenticated;
   const editingExisting = editor !== undefined && editor !== null;
-  const currentHash = routeHash({ page, panel, create: editor === null ? editorSource : null, workspace: target?.id ?? null });
+  const currentHash = routeHash({ page, panel, create: editor === null ? editorSource : null, workspace: target?.id ?? null, section: page === 'settings' ? settingsSection : null });
   const lastHash = useRef(currentHash);
   useEffect(() => {
     if (!authenticated || editingExisting || resolvingRoute.current) return;
@@ -835,11 +869,15 @@ export default function App() {
   if (!auth.authenticated) return <><AuthScreen state={auth} authenticated={acceptAuth} />{toast && <div className="toast" role="status"><Check size={16} />{toast}</div>}</>;
   const filtered = feeds.filter(feed => `${feed.name} ${feed.url}`.toLowerCase().includes(query.toLowerCase()));
   const attention = feeds.filter(needsAttention).length;
-  function navigate(next: Page) { setPage(next); setEditor(undefined); setPanel(null); setEditorReturnId(null); }
+  function navigate(next: Page) {
+    if (page === 'settings' && next !== 'settings' && settingsDirty.current && !confirm('设置有未保存的修改，确定离开？')) return;
+    if (next !== 'settings') settingsDirty.current = false;
+    setPage(next); setEditor(undefined); setPanel(null); setEditorReturnId(null);
+  }
   function create(source: NewSource) { setEditorSource(source); setEditor(null); }
   return <div className={`app-layout ${target ? 'managing' : ''}`}><aside className="sidebar"><Brand />{auth.role === 'admin' ? <WorkspaceSwitcher me={{ id: auth.userId!, username: auth.username! }} users={users} target={target} open={user => changeWorkspace(user)} manageUsers={() => navigate('users')} refresh={refreshUsers} /> : <div className="workspace-label">个人工作台</div>}<nav aria-label="主导航"><button className={page === 'feeds' || page === 'batch' ? 'selected' : ''} onClick={() => navigate('feeds')}><Rss size={19} />订阅管理<span>{feeds.length}</span></button><button className={page === 'settings' ? 'selected' : ''} onClick={() => navigate('settings')}><Settings2 size={19} />设置</button>{auth.role === 'admin' && <button className={page === 'users' ? 'selected' : ''} onClick={() => navigate('users')}><ShieldCheck size={19} />用户管理</button>}</nav><div className="sidebar-bottom"><div className="local-label"><span /> 自托管 · 独立运行</div><div className="account"><span className="avatar">{auth.username?.slice(0, 1).toUpperCase()}</span><div><strong>{auth.username}</strong><small>{auth.role === 'admin' ? '管理员' : '普通用户'}</small></div><button className="icon-button" aria-label="退出登录" onClick={() => void logout()}><LogOut size={17} /></button></div><span className="version">{auth.version}</span></div></aside><div className="main-shell"><header className="topbar"><span><span className="muted">工作台</span><span className="slash">/</span>{crumb}</span><span className="topbar-actions">{target && <span className="managing-chip" title="当前操作作用于此用户的订阅、凭据和个人设置">正在管理 {target.username}</span>}<ThemeToggle /><span className="topbar-status"><ShieldCheck size={14} /> 已安全登录 <button className="icon-button mobile-logout" aria-label="退出登录" onClick={() => void logout()}><LogOut size={15} /></button></span></span></header><main className="main-content" key={target?.id ?? auth.userId}>
     {target && <div className="workspace-banner" role="status"><div><strong>正在管理：{target.username}</strong><p>{target.enabled ? '修改将作用于此用户的订阅、凭据和个人设置。' : '此用户已停用，可以查看和修改静态配置；执行任务前请先启用。'}</p></div><button className="button small" onClick={() => changeWorkspace(null)}>返回我的工作台</button></div>}
-    {page === 'users' && auth.role === 'admin' ? <UsersPanel currentUserId={auth.userId!} manage={(user, attention) => { changeWorkspace(user); if (attention) setStatus('attention'); }} changed={refreshUsers} identityChanged={() => void api.auth.status().then(acceptAuth)} /> : page === 'batch' ? <BatchView notify={notify} changed={() => void loadFeeds()} back={() => navigate('feeds')} /> : page === 'settings' ? <SettingsView target={target} auth={auth} logout={forgetAuth} notify={notify} /> : editor !== undefined ? <FeedEditor key={editor?.id ?? `new-${editorSource}`} initial={editor ?? undefined} source={editorSource} existing={feeds} cancel={() => { setEditor(undefined); if (editorReturnId) setPanel({ id: editorReturnId, tab: 'settings' }); setEditorReturnId(null); }} saved={id => { setEditor(undefined); setPanel({ id, tab: editorReturnId ? 'settings' : 'items' }); setEditorReturnId(null); notify('订阅已保存'); void loadFeeds(); }} /> : <>
+    {page === 'users' && auth.role === 'admin' ? <UsersPanel currentUserId={auth.userId!} manage={(user, attention) => { changeWorkspace(user); if (attention) setStatus('attention'); }} changed={refreshUsers} identityChanged={() => void api.auth.status().then(acceptAuth)} /> : page === 'batch' ? <BatchView notify={notify} changed={() => void loadFeeds()} back={() => navigate('feeds')} /> : page === 'settings' ? <SettingsView target={target} auth={auth} logout={forgetAuth} notify={notify} section={settingsSection} onSection={setSettingsSection} dirty={settingsDirty} /> : editor !== undefined ? <FeedEditor key={editor?.id ?? `new-${editorSource}`} initial={editor ?? undefined} source={editorSource} existing={feeds} cancel={() => { setEditor(undefined); if (editorReturnId) setPanel({ id: editorReturnId, tab: 'settings' }); setEditorReturnId(null); }} saved={id => { setEditor(undefined); setPanel({ id, tab: editorReturnId ? 'settings' : 'items' }); setEditorReturnId(null); notify('订阅已保存'); void loadFeeds(); }} /> : <>
       <div className="page-heading"><div><span className="section-kicker">LESS CHECKING. MORE READING.</span><h1>你的订阅，持续点亮。</h1><p>把关注的网页汇集在这里，新内容会自动抵达。</p></div><NewFeedMenu create={create} batch={() => navigate('batch')} bundle={() => setBundleEditor({})} /></div>
       {feeds.length > 0 && <div className="stats-row"><div><span>全部订阅</span><strong>{feeds.length}<small>个来源</small></strong></div><div><span>正在关注</span><strong>{feeds.filter(feed => feed.enabled).length}<small>自动更新</small></strong></div><div><span>已收集内容</span><strong>{feeds.reduce((sum, feed) => sum + feed.itemCount, 0)}<small>条记录</small></strong></div>{attention ? <button className={`attention ${status === 'attention' ? 'active' : ''}`} aria-pressed={status === 'attention'} title={status === 'attention' ? '取消筛选，显示全部订阅' : '只看需要检查的订阅'} onClick={() => { const next = status === 'attention' ? 'all' : 'attention'; setStatus(next); if (next === 'attention') requestAnimationFrame(() => document.querySelector('.list-toolbar')?.scrollIntoView({ behavior: 'smooth', block: 'start' })); }}><span>需要检查</span><strong>{attention}<small>{status === 'attention' ? '已筛选' : '点击筛选'}</small><ChevronRight size={15} className="stat-arrow" /></strong></button> : <div><span>需要检查</span><strong>0<small>一切正常</small></strong></div>}</div>}
       {bundles.length > 0 && <BundleSection bundles={bundles} feeds={feeds} create={() => setBundleEditor({})} edit={bundle => setBundleEditor({ initial: bundle })} changed={() => void loadFeeds()} notify={notify} />}

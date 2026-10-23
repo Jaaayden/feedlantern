@@ -38,15 +38,15 @@ test('点选“下一页”、试抓多页并保存，抓取日志显示每页�
   await expect(report).toContainText('第 3 页', { timeout: 60_000 });
   await expect(report).toContainText('第 3 页没有找到下一页链接或按钮，翻页结束');
   await expect(page.getByText('Paged 3-3').first()).toBeVisible();
-  const order = await page.locator('.preview-item .preview-text > a').allTextContents();
+  const order = await page.locator('.preview-item .item-title a').allTextContents();
   expect(order.slice(0, 9)).toEqual(['1', '2', '3'].flatMap(n => [1, 2, 3].map(i => `Paged ${n}-${i}`)));
   await page.screenshot({ path: 'test-results/visual-qa/editor-pagination.png', fullPage: true });
 
   await page.locator('.save-panel .field input').first().fill('多页采集验收');
   await page.getByRole('button', { name: '保存订阅', exact: true }).click();
   const dialog = page.getByRole('dialog');
-  await expect(dialog.getByRole('button', { name: '抓取日志', exact: true })).toBeVisible({ timeout: 60_000 });
-  await dialog.getByRole('button', { name: '抓取日志', exact: true }).click();
+  await expect(dialog.getByRole('button', { name: '运行日志', exact: true })).toBeVisible({ timeout: 60_000 });
+  await dialog.getByRole('button', { name: '运行日志', exact: true }).click();
   const logs = dialog.getByRole('region', { name: '抓取日志' });
   await expect(logs.locator('article').first()).toContainText('翻页：共 3 页（3 + 3 + 3 条）');
   await expect(logs.locator('article').first()).toContainText('有效 9 条');

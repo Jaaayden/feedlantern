@@ -304,6 +304,26 @@ const server = createServer(async (request, response) => {
     sendHtml(response, 200, staticPage().replace('</main>', '<div style="height:1600px">Scroll fixture spacer</div></main>'));
     return;
   }
+  if (/^\/assets\/cover-[1-3]\.svg$/.test(requestUrl.pathname)) {
+    const hue = [148, 38, 200][Number(requestUrl.pathname.match(/(\d)\.svg$/)![1]) - 1];
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="240" viewBox="0 0 320 240"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="hsl(${hue} 45% 62%)"/><stop offset="1" stop-color="hsl(${hue + 40} 50% 32%)"/></linearGradient></defs><rect width="320" height="240" fill="url(#g)"/><circle cx="236" cy="78" r="34" fill="hsl(${hue} 80% 88%)" opacity=".8"/><path d="M0 190 L90 120 L160 170 L230 110 L320 180 V240 H0Z" fill="hsl(${hue + 20} 40% 22%)" opacity=".7"/></svg>`;
+    response.writeHead(200, { 'content-type': 'image/svg+xml', 'content-length': Buffer.byteLength(svg) });
+    response.end(svg);
+    return;
+  }
+  // A small reader-style feed: images, long and short bodies, and a bilingual-friendly structure.
+  if (requestUrl.pathname === '/reader.xml') {
+    const origin = `http://${host}:${port}`;
+    const item = (id: string, title: string, html: string, date: string) => `<item><guid>${id}</guid><title>${title}</title><link>${origin}/article/${id}</link><description><![CDATA[${html}]]></description><pubDate>${date}</pubDate></item>`;
+    response.writeHead(200, { 'Content-Type': 'application/rss+xml' });
+    response.end(`<rss version="2.0"><channel><title>Lantern Reader fixture</title>${[
+      item('reader-1', 'Night trains are back across Europe', `<p><img src="${origin}/assets/cover-1.svg" alt="Train at dusk"></p><p>Sleeper services that disappeared a decade ago are returning, as operators bet that travellers will trade a short flight for a quiet cabin and an early arrival downtown.</p><p>The new routes connect twelve cities and run three times a week through the winter season.</p><blockquote>Rail is the slow lane that gets you there rested.</blockquote><p>Bookings opened on Monday and the first departures sold out within hours.</p>`, 'Thu, 22 Oct 2026 20:00:00 GMT'),
+      item('reader-2', 'A field guide to reading less, but better', '<p>Short notes on keeping a calm reading list.</p>', 'Thu, 22 Oct 2026 08:30:00 GMT'),
+      item('reader-3', 'Unstable connection report', '<p>Measurements from a week of flaky home internet, with charts and a short list of fixes that actually helped.</p><ul><li>Move the router</li><li>Change the channel</li></ul>', 'Tue, 20 Oct 2026 12:00:00 GMT'),
+      item('reader-4', 'Designing a lantern you can read by', `<p><img src="${origin}/assets/cover-2.svg" alt="Lantern"></p><p>Warm light, soft shadows and a glass that does not glare: the small decisions behind a lamp made for long evenings with a book.</p><pre>lumens = 180</pre>`, 'Mon, 12 Oct 2026 09:00:00 GMT'),
+    ].join('')}</channel></rss>`);
+    return;
+  }
   if (requestUrl.pathname === '/feed.xml') {
     if (request.headers['if-none-match'] === 'rss-fixture-v1') { response.writeHead(304); response.end(); return; }
     response.writeHead(200, { 'Content-Type': 'application/rss+xml', ETag: 'rss-fixture-v1' });

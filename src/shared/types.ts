@@ -134,6 +134,9 @@ export interface ExtractedItem {
   contentHtml?: string;
   translationStatus?: 'pending' | 'success' | 'failed';
   translationError?: string;
+  /** Translated items: the title in each language (`title` is what the feed publishes). */
+  translatedTitle?: string;
+  sourceTitle?: string;
   title: string;
   link: string;
   description?: string;
@@ -294,7 +297,18 @@ export interface TranslationProvidersInfo { defaultProvider: TranslationProvider
 export interface AuthState { userId?: string; role?: "admin" | "user"; setupRequired: boolean; authenticated: boolean; username?: string; csrfToken?: string; version: string; /** Set when the request was authenticated with a personal access token. */ tokenScope?: ApiTokenScope }
 export type ApiTokenScope = 'read' | 'write';
 /** A personal access token as listed to its owner; the secret itself is only returned on creation. */
-export interface ApiTokenSummary { id: string; name: string; scope: ApiTokenScope; prefix: string; createdAt: string; expiresAt: string | null; lastUsedAt: string | null }
+export interface ApiTokenSummary { id: string; name: string; scope: ApiTokenScope; prefix: string; createdAt: string; expiresAt: string | null; lastUsedAt: string | null; /** Calls and failed calls (status >= 400) recorded in the last 24 hours. */ usage24h?: { calls: number; failures: number } }
+/** Filter for a token's call log: success (< 400), denied (401, 403, 429) or error (any other status >= 400). */
+export type ApiTokenCallFilter = 'success' | 'denied' | 'error';
+/** One API call made with a personal access token. The secret and query strings are never stored. */
+export interface ApiTokenCall {
+  id: number; tokenId: string; tokenName: string; tokenPrefix: string;
+  at: string; method: string;
+  /** Route template such as `/api/feeds/:id`; null when the path matched no route. */
+  route: string | null;
+  status: number; durationMs: number; ip: string | null;
+}
+export interface ApiTokenCallPage { calls: ApiTokenCall[]; nextCursor: string | null; retentionDays: number; perTokenLimit: number }
 
 // JSON API: errors always { error: string }; all mutations require X-FeedLantern: 1.
 // GET /api/auth/status -> AuthState; POST /api/auth/setup {setupToken,username,password}

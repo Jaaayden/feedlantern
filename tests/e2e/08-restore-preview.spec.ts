@@ -9,6 +9,7 @@ test('完整恢复预览列出服务器与网络设置，默认不勾选恢复�
   const archive = await exported.json();
   await page.goto('/');
   await page.getByRole('button', { name: '设置', exact: true }).click();
+  await page.getByRole('navigation', { name: '设置分组' }).getByRole('button', { name: '备份与迁移', exact: true }).click();
   await page.getByRole('button', { name: '完整恢复', exact: true }).click();
   await page.getByLabel('当前管理员密码').fill(TEST_ACCOUNT.password);
   await page.getByLabel(/备份密码/).fill('e2e-backup-password');

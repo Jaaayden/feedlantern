@@ -7,6 +7,7 @@ import { normalizeLink } from './links.js';
 import { RuleHealth } from './rule-health.js';
 import { BUNDLE_SCHEMA, BundleStore } from './bundle-store.js';
 import { ApiTokens } from './api-tokens.js';
+import { ApiTokenLog, API_TOKEN_LOG_SCHEMA } from './api-token-log.js';
 import { AppError } from './auth.js';
 import { applicationSettingsSchema } from './settings.js';
 import { clampOutputLimit, clampRetentionLimit, parseItemFilter, retentionProblem, storedItemLimit } from './feed-output.js';
@@ -176,6 +177,7 @@ export class Store {
   readonly translations: RssTranslations;
   readonly bundles: BundleStore;
   readonly tokens: ApiTokens;
+  readonly tokenLog: ApiTokenLog;
   readonly dataDir: string;
   readonly dbPath: string;
   readonly masterKeyPath: string;
@@ -396,6 +398,13 @@ export class Store {
       const current = Number((this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
       this.db.exec(`BEGIN; ALTER TABLE feeds ADD COLUMN retention_limit INTEGER; PRAGMA user_version=${Math.max(18, current)}; COMMIT;`);
     }
+    // Call log of personal access tokens (derived diagnostics, not part of backups).
+    // 19 is reserved for this migration; like 13–17 it checks for its own table.
+    if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='api_token_logs'").get()) {
+      const current = Number((this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
+      this.db.exec(`BEGIN; ${API_TOKEN_LOG_SCHEMA} PRAGMA user_version=${Math.max(19, current)}; COMMIT;`);
+    }
+    this.tokenLog = new ApiTokenLog(this.db, () => this.getSettings().logRetentionDays);
     this.ruleHealth = new RuleHealth(this.db, () => this.getSettings(), this.history);
     this.migrateBark();
     this.ensureSetupToken();
@@ -427,6 +436,7 @@ export class Store {
 
   close(): void {
     for (const controller of this.userControllers.values()) controller.abort();
+    this.tokenLog.close();
     this.db.close();
   }
 
@@ -959,7 +969,7 @@ export class Store {
     this.userControllers.clear();
     this.transaction(() => {
       // Like sessions, access tokens are not part of a backup; a restore revokes them all.
-      for (const table of ['sessions', 'api_tokens', 'import_jobs', 'bundle_feeds', 'bundles', 'translations', 'rss_sources', 'translation_cache', 'feed_items', 'feeds', 'credentials', 'network_profiles', 'user_notifications', 'users', 'settings']) this.db.exec(`DELETE FROM ${table}`);
+      for (const table of ['sessions', 'api_token_logs', 'api_tokens', 'import_jobs', 'bundle_feeds', 'bundles', 'translations', 'rss_sources', 'translation_cache', 'feed_items', 'feeds', 'credentials', 'network_profiles', 'user_notifications', 'users', 'settings']) this.db.exec(`DELETE FROM ${table}`);
       for (const table of ['users', 'user_notifications', 'credentials', 'network_profiles', 'feeds', 'feed_items', 'settings', 'rss_sources', 'translations', 'translation_cache', 'bundles', 'bundle_feeds'] as const) {
         for (const value of tables[table] ?? []) {
           const row: Record<string, string | number | null> = { ...value };

@@ -71,6 +71,8 @@ import { registerRuleHealthRoutes } from './rule-health-routes.js';
 import { exportConfigBundles, importConfigBundles, parseConfigBundles, previewConfigBundles, registerBundleRoutes } from './bundle-routes.js';
 import { API_TOKEN_LIMIT_PER_USER, API_TOKEN_MAX_DAYS, READ_METHODS, tokenAllowedRoute } from './api-tokens.js';
 import { buildOpenApi } from './openapi.js';
+import type { TokenIdentity } from './api-token-log.js';
+import type { ApiTokenCallFilter } from '../shared/types.js';
 
 export interface RegisteredRoute { method: string; url: string }
 const appRoutes = new WeakMap<FastifyInstance, RegisteredRoute[]>();
@@ -391,6 +393,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return browser.scrape({ ...input, signal, cookies: credential ? cookiesForTarget(credential, input.url) : [], ...(network ? { network } : {}) });
   }, error => friendlyError(error, '识别失败：请检查网址、网络或 Cookie，然后重试或手动调整。'), config.backgroundConcurrency, (entry, signal) => { const network = networkFor(entry.networkProfileId); return getRss(entry.url, { signal, ...(network ? { network } : {}) }); }, () => translations.wake());
 
+  // Requests made with a token, for its call log. Browser (cookie) sessions are not logged.
+  const tokenCalls = new WeakMap<FastifyRequest, TokenIdentity>();
   app.addHook('onRequest', async (request, reply) => {
     if (maintenance) throw new AppError(503, '服务维护中，请稍后重试');
     if (!isApiRequest(request)) return;
@@ -398,9 +402,17 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (bearer !== undefined) {
       // Token requests skip the browser checks below (Host, Origin, X-FeedLantern
       // and CSRF): those only defend cookies a browser attaches by itself.
-      if (!tokenLimiter.allowed(request.ip)) throw new AppError(429, '访问令牌验证失败次数过多，请稍后再试');
+      if (!tokenLimiter.allowed(request.ip)) {
+        const known = store.tokens.identify(bearer);
+        if (known) tokenCalls.set(request, known);
+        throw new AppError(429, '访问令牌验证失败次数过多，请稍后再试');
+      }
       const owner = store.tokens.find(bearer);
+      if (owner) tokenCalls.set(request, { tokenId: owner.tokenId, userId: owner.userId, name: owner.name, prefix: owner.prefix });
       if (!owner) {
+        // An expired token still shows the rejected call in its own log.
+        const known = store.tokens.identify(bearer);
+        if (known) tokenCalls.set(request, known);
         tokenLimiter.registerFailure(request.ip);
         reply.header('WWW-Authenticate', 'Bearer error="invalid_token"');
         throw new AppError(401, '访问令牌无效、已过期或已被吊销');
@@ -417,6 +429,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (request.method !== 'GET' && request.method !== 'HEAD' && request.method !== 'OPTIONS' && !authHeaders(request).marker) {
       throw new AppError(400, '缺少 X-FeedLantern: 1 请求头');
     }
+  });
+
+  app.addHook('onResponse', async (request, reply) => {
+    const identity = tokenCalls.get(request);
+    if (!identity) return;
+    const durationMs = reply.elapsedTime;
+    // Only the route template is kept, never the raw path or query string.
+    store.tokenLog.record({ ...identity, at: new Date(Date.now() - durationMs).toISOString(), method: request.method, route: request.routeOptions.url ?? null, status: reply.statusCode, durationMs, ip: request.ip || null });
   });
 
   app.addHook('onSend', async (request, reply, payload) => {
@@ -562,9 +582,36 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (context.token) throw new AppError(403, '此接口只能在网页登录后使用，访问令牌无权调用');
     return context;
   };
-  app.get('/api/tokens', async request => store.tokens.list(sessionGuard(request).userId));
+  // An administrator can read another account's tokens and their call logs in
+  // that account's workspace, but can only create or revoke their own.
+  const tokenWorkspace = (request: FastifyRequest) => { sessionGuard(request); return workspace(request).userId; };
+  const ownTokens = (request: FastifyRequest) => {
+    const context = sessionGuard(request);
+    if (workspace(request).userId !== context.userId) throw new AppError(403, '只能创建或吊销自己的访问令牌');
+    return context;
+  };
+  app.get('/api/tokens', async request => {
+    const userId = tokenWorkspace(request);
+    const usage = store.tokenLog.usage(userId, Date.now() - 86_400_000);
+    return store.tokens.list(userId).map(token => ({ ...token, usage24h: usage.get(token.id) ?? { calls: 0, failures: 0 } }));
+  });
+  app.get('/api/tokens/:id/logs', async request => {
+    const userId = tokenWorkspace(request);
+    const id = String(asRecord(request.params).id);
+    if (!store.tokens.exists(userId, id)) throw new AppError(404, '令牌不存在');
+    const query = asRecord(request.query);
+    if (query.status !== undefined && !['success', 'denied', 'error'].includes(String(query.status))) throw new AppError(400, '调用状态筛选无效');
+    const integer = (value: unknown, fallback: number, max: number): number => {
+      if (value === undefined) return fallback;
+      if (typeof value !== 'string' || !/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) > max) throw new AppError(400, '日志分页参数无效');
+      return Number(value);
+    };
+    const limit = integer(query.limit, 20, 100);
+    const cursor = query.cursor === undefined ? undefined : integer(query.cursor, 0, Number.MAX_SAFE_INTEGER);
+    return store.tokenLog.list(userId, id, query.status as ApiTokenCallFilter | undefined, cursor, limit);
+  });
   app.post('/api/tokens', async request => {
-    const { userId } = sessionGuard(request);
+    const { userId } = ownTokens(request);
     const body = asRecord(request.body);
     const name = asNonEmptyString(typeof body.name === 'string' ? body.name.trim() : body.name, '令牌名称', 100);
     if (body.scope !== 'read' && body.scope !== 'write') throw new AppError(400, '令牌权限必须是 read 或 write');
@@ -574,7 +621,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return store.tokens.create(userId, { name, scope: body.scope, expiresAt: days === null ? null : new Date(Date.now() + days * 86_400_000).toISOString() });
   });
   app.delete('/api/tokens/:id', async request => {
-    const { userId } = sessionGuard(request);
+    const { userId } = ownTokens(request);
     if (!store.tokens.revoke(userId, String(asRecord(request.params).id))) throw new AppError(404, '令牌不存在');
     return { ok: true };
   });
@@ -1485,7 +1532,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
   const cleanup = setInterval(() => {
     for (const [id, owner] of browserOwners) if (Date.now() - owner.touchedAt > 10 * 60_000) browserOwners.delete(id);
-    try { store.purgeExpiredSessions(); store.tokens.purgeExpired(); store.history.prune(); store.ruleHealth.prune(); store.translations.prune(); store.compact(); } catch { console.error('抓取日志清理失败，将自动重试'); }
+    try { store.purgeExpiredSessions(); store.tokens.purgeExpired(); store.tokenLog.prune(); store.history.prune(); store.ruleHealth.prune(); store.translations.prune(); store.compact(); } catch { console.error('抓取日志清理失败，将自动重试'); }
   }, 60 * 60_000);
   cleanup.unref();
   app.addHook('onReady', async () => { jobs.recover(); notifier.start(); translations.start(); });
@@ -1503,6 +1550,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     await translations.stop();
     await notifier.stop();
     await browser.dispose();
+    store.tokenLog.flush();
     if (!options.store) store.close();
   });
   return app;
