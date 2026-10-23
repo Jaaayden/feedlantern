@@ -1,4 +1,5 @@
 import { API_TOKEN_MAX_DAYS, tokenAllowedRoute } from './api-tokens.js';
+import { BUNDLE_ITEM_LIMIT, BUNDLE_MAX_FEEDS } from '../shared/types.js';
 
 /**
  * Hand-written OpenAPI 3.1 description of `/api/*`. tests/openapi.test.ts fails
@@ -83,6 +84,16 @@ const schemas: Record<string, Schema> = {
     firstSeenAt: dateTime, contentHtml: str(), translationStatus: str({ enum: ['pending', 'success', 'failed'] }), translationError: str(),
   }, ['title', 'link']),
   FeedPayload: object({ feed: ref('Feed'), feedUrl: str({ format: 'uri', description: '带密钥的 RSS 地址' }) }, ['feed', 'feedUrl']),
+  Bundle: object({
+    id: str(), name: str(), feedIds: array(str(), { description: '成员订阅 ID，按添加顺序' }),
+    itemLimit: int({ minimum: BUNDLE_ITEM_LIMIT.min, maximum: BUNDLE_ITEM_LIMIT.max }), createdAt: dateTime, updatedAt: dateTime,
+  }, ['id', 'name', 'feedIds', 'itemLimit', 'createdAt', 'updatedAt']),
+  BundleInput: object({
+    name: str({ minLength: 1, maxLength: 200 }),
+    feedIds: array(str(), { maxItems: BUNDLE_MAX_FEEDS, description: '只能是同一账号的订阅；重复项自动去掉' }),
+    itemLimit: int({ minimum: BUNDLE_ITEM_LIMIT.min, maximum: BUNDLE_ITEM_LIMIT.max, default: BUNDLE_ITEM_LIMIT.default }),
+  }, ['name', 'feedIds']),
+  BundlePayload: object({ bundle: ref('Bundle'), bundleUrl: str({ format: 'uri', description: '带密钥的聚合 RSS 地址；把 .xml 换成 .atom 或 .json 得到 Atom / JSON Feed' }) }, ['bundle', 'bundleUrl']),
   FeedDetail: { allOf: [ref('FeedPayload'), ref('OutputStatus'), object({ items: array(ref('FeedItem')) }, ['items'])] },
   FetchLogPage: object({ logs: array({ type: 'object' }), nextCursor: nullable(str()), retentionDays: int() }, ['logs', 'nextCursor', 'retentionDays']),
   CredentialInput: object({ name: str({ minLength: 1 }), url: str({ format: 'uri' }), format: str({ enum: ['header', 'json'] }), value: { description: 'Cookie 请求头文本或 Cookie JSON' } }, ['name', 'url', 'format', 'value']),
@@ -136,7 +147,7 @@ const operations: Operation[] = [
   { method: 'POST', path: '/api/users', tag: 'users', summary: '创建普通用户', admin: true, body: object({ username: str(), password: str({ minLength: 8 }) }, ['username', 'password']), response: ref('UserSummary') },
   { method: 'PATCH', path: '/api/users/:id', tag: 'users', summary: '修改用户名、启用状态或角色', description: '停用或身份变化会撤销目标账号的会话和访问令牌。', admin: true, body: object({ username: str(), enabled: bool, role: str({ enum: ['admin', 'user'] }) }), response: ref('UserSummary') },
   { method: 'POST', path: '/api/users/:id/password', tag: 'users', summary: '重置其他用户的密码', admin: true, body: object({ password: str({ minLength: 8 }) }, ['password']), response: ok },
-  { method: 'GET', path: '/api/users/:id/deletion-preview', tag: 'users', summary: '删除用户前的影响预览', admin: true, response: object({ user: ref('UserSummary'), feeds: int(), credentials: int(), jobs: int() }) },
+  { method: 'GET', path: '/api/users/:id/deletion-preview', tag: 'users', summary: '删除用户前的影响预览', admin: true, response: object({ user: ref('UserSummary'), feeds: int(), bundles: int(), credentials: int(), jobs: int() }) },
   { method: 'DELETE', path: '/api/users/:id', tag: 'users', summary: '删除用户及其全部数据', admin: true, body: object({ username: str({ description: '输入目标用户名确认' }) }, ['username']), response: ok },
   // Notifications
   { method: 'GET', path: '/api/notifications/bark', tag: 'notifications', summary: '个人 Bark 通知设置', workspace: true, response: ref('BarkSummary') },
@@ -172,6 +183,14 @@ const operations: Operation[] = [
   { method: 'POST', path: '/api/feeds/:id/translation/retry', tag: 'feeds', summary: '重试失败的翻译', workspace: true, response: ref('FeedPayload') },
   { method: 'POST', path: '/api/feeds/:id/output-preview', tag: 'feeds', summary: '按未保存的过滤和条数预览输出', description: '不修改订阅；仍是 POST，因此需要 write 令牌。', workspace: true, body: object({ itemFilter: nullable(ref('ItemFilter')), outputLimit: int({ minimum: 10, maximum: 500 }) }), response: ref('OutputStatus') },
   { method: 'POST', path: '/api/rss/preview', tag: 'feeds', summary: '预览 RSS 源的前 3 条', workspace: true, body: object({ url: str({ format: 'uri' }) }, ['url']), response: object({ title: str(), items: array(ref('ExtractedItem')) }) },
+  // Bundles
+  { method: 'GET', path: '/api/bundles', tag: 'bundles', summary: '列出聚合订阅', workspace: true, response: array(ref('BundlePayload')) },
+  { method: 'POST', path: '/api/bundles', tag: 'bundles', summary: '创建聚合订阅', description: '把同一账号的多个订阅合并成一个地址；只读取已存储的条目，不触发抓取。每个账号最多 200 个。', workspace: true, body: ref('BundleInput'), response: ref('BundlePayload') },
+  { method: 'GET', path: '/api/bundles/:id', tag: 'bundles', summary: '聚合订阅详情', workspace: true, response: ref('BundlePayload') },
+  { method: 'PUT', path: '/api/bundles/:id', tag: 'bundles', summary: '修改聚合订阅', description: '只修改提供的字段；feedIds 整体替换成员。', workspace: true, body: object({ name: str({ minLength: 1, maxLength: 200 }), feedIds: array(str(), { maxItems: BUNDLE_MAX_FEEDS }), itemLimit: int({ minimum: BUNDLE_ITEM_LIMIT.min, maximum: BUNDLE_ITEM_LIMIT.max }) }), response: ref('BundlePayload') },
+  { method: 'DELETE', path: '/api/bundles/:id', tag: 'bundles', summary: '删除聚合订阅', description: '成员订阅不受影响。', workspace: true, response: ok },
+  { method: 'POST', path: '/api/bundles/:id/feeds', tag: 'bundles', summary: '向聚合订阅追加成员', description: '已有成员保持原位，重复项忽略。', workspace: true, body: object({ feedIds: array(str(), { maxItems: BUNDLE_MAX_FEEDS }) }, ['feedIds']), response: ref('BundlePayload') },
+  { method: 'POST', path: '/api/bundles/:id/rotate-token', tag: 'bundles', summary: '更换聚合地址密钥', description: '旧的 RSS、Atom、JSON Feed 聚合地址立即失效。', workspace: true, response: ref('BundlePayload') },
   // Import jobs
   { method: 'GET', path: '/api/import-jobs', tag: 'import-jobs', summary: '列出批量添加任务', workspace: true, response: array(ref('ImportJob')) },
   { method: 'POST', path: '/api/import-jobs', tag: 'import-jobs', summary: '创建批量添加任务', workspace: true, body: object({
@@ -272,7 +291,7 @@ export function buildOpenApi(origin: string, version: string): Record<string, un
       license: { name: 'MIT', identifier: 'MIT' },
     },
     servers: [{ url: origin }],
-    tags: ['auth', 'meta', 'tokens', 'users', 'notifications', 'credentials', 'feeds', 'import-jobs', 'settings', 'backups', 'browser'].map(name => ({ name })),
+    tags: ['auth', 'meta', 'tokens', 'users', 'notifications', 'credentials', 'feeds', 'bundles', 'import-jobs', 'settings', 'backups', 'browser'].map(name => ({ name })),
     paths,
     components: {
       schemas,

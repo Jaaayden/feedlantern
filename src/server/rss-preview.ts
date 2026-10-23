@@ -1,7 +1,9 @@
 import { randomBytes } from 'node:crypto';
 import { DomUtils, parseDocument } from 'htmlparser2';
 import { translationEnabled, translationLabel } from '../shared/types.js';
-import type { Feed, FeedItem } from '../shared/types.js';
+import type { Bundle, Feed, FeedItem } from '../shared/types.js';
+import type { BundleMember } from './bundles.js';
+import { mergeBundleItems } from './bundles.js';
 import { escapeXml, publishedItems } from './rss.js';
 
 type HeaderValue = string | string[] | undefined;
@@ -61,22 +63,47 @@ function host(value: string): string {
 
 export interface PreviewPage { html: string; csp: string }
 
+interface PreviewContent {
+  name: string; kicker: string; meta: string; feedUrl: string; rotateHint: string; empty: string;
+  entries: Array<{ feed: Feed; item: FeedItem }>; showSource: boolean;
+}
+
 export function renderRssPreview(feed: Feed, items: FeedItem[], feedUrl: string): PreviewPage {
-  const nonce = randomBytes(16).toString('base64');
-  const list = publishedItems(feed, items).slice(0, 30);
   const source = safeLink(feed.url);
-  const rawUrl = `${feedUrl}?format=xml`;
   const updated = dateText(feed.lastSuccessAt);
   const kind = feed.sourceType === 'rss'
     ? translationEnabled(feed) ? `RSS ${translationLabel(feed)}` : 'RSS 转发'
     : translationEnabled(feed) ? `网页订阅 · ${translationLabel(feed)}` : '网页订阅';
-  const rows = list.map(item => {
+  const meta = `${escape(kind)}${source ? ` · 来自 <a href="${escape(source)}" rel="noreferrer noopener" target="_blank">${escape(host(source))}</a>` : ''} · 每 ${feed.intervalMinutes} 分钟检查更新${updated ? ` · 最近更新 <time datetime="${escape(new Date(feed.lastSuccessAt!).toISOString())}">${escape(updated)}</time>` : ''}`;
+  return renderPreviewPage({
+    name: feed.name, kicker: 'RSS 订阅', meta, feedUrl, rotateHint: '订阅设置', empty: '还没有内容。首次抓取或翻译完成后会出现在这里。',
+    entries: publishedItems(feed, items).slice(0, 30).map(item => ({ feed, item })), showSource: false,
+  });
+}
+
+/** The same page for a bundle; each item names the member it came from. */
+export function renderBundlePreview(bundle: Bundle, members: BundleMember[], bundleUrl: string): PreviewPage {
+  const updated = members.map(member => member.feed.lastSuccessAt).filter((value): value is string => !!value).sort().at(-1);
+  const names = members.map(member => member.feed.name);
+  const shown = names.length > 6 ? `${names.slice(0, 6).join('、')} 等 ${names.length} 个订阅` : names.join('、');
+  const meta = `聚合 ${members.length} 个订阅${shown ? `：${escape(shown)}` : ''}${updated ? ` · 最近更新 <time datetime="${escape(new Date(updated).toISOString())}">${escape(dateText(updated))}</time>` : ''}`;
+  return renderPreviewPage({
+    name: bundle.name, kicker: '聚合订阅', meta, feedUrl: bundleUrl, rotateHint: '聚合订阅', empty: members.length ? '还没有内容。成员订阅抓取或翻译完成后会出现在这里。' : '这个聚合订阅还没有成员。',
+    entries: mergeBundleItems(members, bundle.itemLimit).slice(0, 30), showSource: true,
+  });
+}
+
+function renderPreviewPage({ name, kicker, meta, feedUrl, rotateHint, empty, entries, showSource }: PreviewContent): PreviewPage {
+  const nonce = randomBytes(16).toString('base64');
+  const rawUrl = `${feedUrl}?format=xml`;
+  const list = entries;
+  const rows = list.map(({ feed, item }) => {
     const link = safeLink(item.link);
     const summary = plainText(item, feed);
     const iso = item.publishedAt ?? item.firstSeenAt;
     const when = dateText(iso);
     const title = escape(item.title || '（无标题）');
-    return `<li><div class="item-head">${link ? `<a href="${escape(link)}" rel="noreferrer noopener" target="_blank">${title}</a>` : `<span>${title}</span>`}${when ? `<time datetime="${escape(new Date(iso).toISOString())}">${escape(when)}</time>` : ''}</div>${summary ? `<p>${escape(summary)}</p>` : ''}</li>`;
+    return `<li><div class="item-head">${link ? `<a href="${escape(link)}" rel="noreferrer noopener" target="_blank">${title}</a>` : `<span>${title}</span>`}${when ? `<time datetime="${escape(new Date(iso).toISOString())}">${escape(when)}</time>` : ''}</div>${showSource ? `<span class="source">${escape(feed.name)}</span>` : ''}${summary ? `<p>${escape(summary)}</p>` : ''}</li>`;
   }).join('');
   const html = `<!doctype html>
 <html lang="zh-CN">
@@ -86,8 +113,8 @@ export function renderRssPreview(feed: Feed, items: FeedItem[], feedUrl: string)
 <meta name="robots" content="noindex, nofollow">
 <meta name="referrer" content="no-referrer">
 <meta name="color-scheme" content="light dark">
-<title>${escape(feed.name)} · RSS 订阅</title>
-<link rel="alternate" type="application/rss+xml" title="${escape(feed.name)}" href="${escape(feedUrl)}">
+<title>${escape(name)} · ${escape(kicker)}</title>
+<link rel="alternate" type="application/rss+xml" title="${escape(name)}" href="${escape(feedUrl)}">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <style nonce="${nonce}">
 :root{--bg:#f4f3ec;--surface:#fff;--ink:#14231d;--ink-2:#3d4d45;--muted:#74837b;--line:#e5e4da;--brand:#1e392f;--brand-ink:#f3f7e8;--glow:#d8e88f;--glow-soft:#eef4d3;--accent:#4b651a;--warn:#9a5b0c;--warn-soft:#fbf0db;color-scheme:light}
@@ -113,6 +140,7 @@ li{padding:16px 20px;border-top:1px solid var(--line)}li:first-child{border-top:
 .item-head a,.item-head span{font-weight:650;text-decoration:none}.item-head a:hover{color:var(--accent);text-decoration:underline}
 li time{flex:none;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
 li p{margin:4px 0 0;color:var(--muted);font-size:14px}
+li .source{display:inline-block;margin-top:4px;padding:1px 8px;border-radius:999px;background:var(--glow-soft);color:var(--accent);font-size:12px;font-weight:600}
 .empty{padding:28px;text-align:center;color:var(--muted)}
 footer{margin-top:28px;text-align:center;font-size:12px;color:var(--muted)}
 @media (max-width:560px){main{padding:20px 14px 40px}.hero{padding:22px}.copy{flex-direction:column}.item-head{flex-direction:column;gap:2px}}
@@ -121,18 +149,18 @@ footer{margin-top:28px;text-align:center;font-size:12px;color:var(--muted)}
 <body>
 <main>
 <header class="hero">
-<span class="kicker"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M4 11a9 9 0 0 1 9 9"/><path d="M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1.2" fill="currentColor"/></svg>RSS 订阅</span>
-<h1>${escape(feed.name)}</h1>
-<p class="meta">${escape(kind)}${source ? ` · 来自 <a href="${escape(source)}" rel="noreferrer noopener" target="_blank">${escape(host(source))}</a>` : ''} · 每 ${feed.intervalMinutes} 分钟检查更新${updated ? ` · 最近更新 <time datetime="${escape(new Date(feed.lastSuccessAt!).toISOString())}">${escape(updated)}</time>` : ''}</p>
+<span class="kicker"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M4 11a9 9 0 0 1 9 9"/><path d="M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1.2" fill="currentColor"/></svg>${escape(kicker)}</span>
+<h1>${escape(name)}</h1>
+<p class="meta">${meta}</p>
 </header>
 <section class="how">
 <p>这是一个 RSS 订阅地址，供阅读器使用。把下面的地址添加到你常用的阅读器（例如 NetNewsWire、Reeder、Inoreader、Feedly），新内容就会自动送达。</p>
 <div class="copy"><input id="feed-url" readonly value="${escape(feedUrl)}" aria-label="RSS 订阅地址"><button id="copy" type="button">复制地址</button></div>
 <p class="small">阅读器从这个地址读取的是标准 RSS，这个页面只在浏览器中直接打开时显示。<a href="${escape(rawUrl)}">查看原始 XML</a></p>
-<p class="warn">持有这个地址就能读取订阅内容，请不要公开分享。需要撤销时，可在 FeedLantern 的订阅设置中轮换密钥。</p>
+<p class="warn">持有这个地址就能读取订阅内容，请不要公开分享。需要撤销时，可在 FeedLantern 的${escape(rotateHint)}中轮换密钥。</p>
 </section>
 <h2>最近 ${list.length} 条内容</h2>
-${list.length ? `<ol>${rows}</ol>` : '<ol><li class="empty">还没有内容。首次抓取或翻译完成后会出现在这里。</li></ol>'}
+${list.length ? `<ol>${rows}</ol>` : `<ol><li class="empty">${escape(empty)}</li></ol>`}
 <footer>由 FeedLantern · 订阅灯 生成</footer>
 </main>
 <script nonce="${nonce}">

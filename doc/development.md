@@ -32,6 +32,8 @@ SQLite `PRAGMA user_version` 记录迁移：版本 1 增加频道名称与设置
 
 多用户迁移版本为 7：统一 `users` 表替代 `admin`，会话引用用户 ID，订阅、凭据和批量任务记录 `owner_id`。原数据迁移到稳定 ID `admin`，旧会话清空。HTTP 层所有资源入口检查归属，批量操作逐项校验；队列执行时重新检查。用户停用递增 `generation`、撤销会话及发出取消信号，后台结果只有代次仍一致时可落库；翻译同时使用任务 revision。
 
+聚合订阅迁移版本为 14（按 `bundles` 表是否存在判断，与合并顺序无关）：新增 `bundles`（所有者、名称、条数上限、加密密钥与哈希）和 `bundle_feeds`（成员与顺序）。`bundle_feeds.feed_id` 外键 `ON DELETE CASCADE`，删除订阅自动移出所有聚合；删除用户同时删除其聚合。存取在 `src/server/bundle-store.ts`，合并与 RSS 输出在 `src/server/bundles.ts`：每个成员先经 `publishedItems`（与单个订阅 RSS 相同的条目选择），再合并去重；条目复用 `renderRssItem`、`renderAtomEntry`、`jsonFeedItem`，聚合只追加来源（RSS/Atom 的 category、JSON Feed 的 tags）。聚合只读已存条目，不进入抓取任务池。
+
 Store 的无 owner 参数列表方法保留给整站后台调度和备份使用，HTTP 工作台必须传入认证的用户 ID。客户端提交的 ownerId 不决定归属。普通用户不读取全局设置，列表偏好存储在浏览器中。
 
 ## API 摘要
@@ -61,6 +63,11 @@ Store 的无 owner 参数列表方法保留给整站后台调度和备份使用�
 | `/feeds/:id/:token.atom`、`.json` | 同一密钥授权的 Atom 1.0、JSON Feed 1.1 |
 | `PATCH /api/feeds/:id` | 名称、间隔、翻译模式，以及 `itemFilter`（`null` 清除）和 `outputLimit` |
 | `POST /api/feeds/:id/output-preview` | `{itemFilter?,outputLimit?}` 预览未保存设置下每个条目的输出状态 |
+| `GET/POST /api/bundles` | 列出／以 `{name, feedIds, itemLimit?}` 创建聚合订阅，返回 `{bundle, bundleUrl}`；成员必须属于同一账号，最多 200 个，`itemLimit` 为 10–500（默认 100） |
+| `GET/PUT/DELETE /api/bundles/:id` | 读取／局部修改 `{name?, feedIds?, itemLimit?}`（`feedIds` 整体替换成员）／删除聚合，不影响成员订阅 |
+| `POST /api/bundles/:id/feeds` | `{feedIds}` 追加成员，已有成员保持原位 |
+| `POST /api/bundles/:id/rotate-token` | 轮换聚合密钥，旧地址立即失效 |
+| `/bundles/:id/:token.xml`、`.atom`、`.json` | 同一密钥授权的聚合 RSS 2.0、Atom 1.0、JSON Feed 1.1，`.xml` 在浏览器直接打开时显示预览页；只读已存条目，不触发抓取 |
 
 ### 输出选择
 

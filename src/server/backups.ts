@@ -2,7 +2,7 @@ import { randomBytes, scryptSync, createCipheriv, createDecipheriv } from 'node:
 import { z } from 'zod';
 import { isApplicationSettingsJson } from './settings.js';
 import { storedNotificationSchema } from './notify.js';
-import { OUTPUT_LIMIT } from '../shared/types.js';
+import { BUNDLE_ITEM_LIMIT, BUNDLE_MAX_FEEDS, OUTPUT_LIMIT } from '../shared/types.js';
 /** The translation cache is disposable; both pruning and backups keep only this many newest entries. */
 export const TRANSLATION_CACHE_LIMIT = 20_000;
 const text = z.string().max(1_000_000);
@@ -24,6 +24,9 @@ export const backupTables = {
     // Backups made before 0.7 call the translation-only mode `chinese`.
     .transform(row => ({ ...row, translation_mode: row.translation_mode === 'chinese' ? 'translated' as const : row.translation_mode ?? (row.source_type === 'rss' ? 'bilingual' as const : 'original' as const) }))).max(10000),
   feed_items: z.array(z.object({ id: short, feed_id: short, normalized_key: short, title: text, link: url, description: nullable, image: nullable, published_at: date.nullable(), published_at_source: z.enum(['absolute', 'relative']).nullable().default(null), first_seen_at: date }).strict()).max(2_000_000),
+  // Optional so that backups made before feed bundles still restore.
+  bundles: z.array(z.object({ id: short, owner_id: short, name: z.string().min(1).max(200), item_limit: z.number().int().min(BUNDLE_ITEM_LIMIT.min).max(BUNDLE_ITEM_LIMIT.max), created_at: date, updated_at: date, token_ciphertext: z.string().regex(/^[A-Za-z0-9_-]{43}$/), token_hash: z.string().regex(/^[a-f0-9]{64}$/) }).strict()).max(10000).default([]),
+  bundle_feeds: z.array(z.object({ bundle_id: short, feed_id: short, position: z.number().int().min(0).max(BUNDLE_MAX_FEEDS) }).strict()).max(200_000).default([]),
   settings: z.array(z.union([
     z.object({ key: z.literal('feedView'), value: z.enum(['list', 'cards']) }).strict(),
     z.object({ key: z.literal('application'), value: text.refine(isApplicationSettingsJson, '应用设置无效') }).strict(),
@@ -61,10 +64,16 @@ export const snapshotSchema = z.preprocess(value => {
   }
   return snapshot;
 }, currentSnapshotSchema).superRefine((snapshot, context) => {
-  const { users, feeds, credentials, user_notifications } = snapshot.tables;
+  const { users, feeds, credentials, user_notifications, bundles, bundle_feeds } = snapshot.tables;
   const owners = new Set(users.map(u => u.id)), creds = new Map(credentials.map(c => [c.id, c.owner_id]));
   if (new Set(user_notifications.map(n => n.user_id)).size !== user_notifications.length || user_notifications.some(n => !owners.has(n.user_id)) || feeds.some(f => !owners.has(f.owner_id) || f.credential_id && creds.get(f.credential_id) !== f.owner_id) || credentials.some(c => !owners.has(c.owner_id))) {
     context.addIssue({ code: 'custom', message: '备份中的数据归属无效' });
+  }
+  // A bundle only holds its owner's feeds, each at most once.
+  const feedOwners = new Map(feeds.map(f => [f.id, f.owner_id])), bundleOwners = new Map(bundles.map(b => [b.id, b.owner_id]));
+  if (bundleOwners.size !== bundles.length || bundles.some(b => !owners.has(b.owner_id)) || new Set(bundle_feeds.map(m => `${m.bundle_id}\n${m.feed_id}`)).size !== bundle_feeds.length
+    || bundle_feeds.some(m => !bundleOwners.has(m.bundle_id) || feedOwners.get(m.feed_id) !== bundleOwners.get(m.bundle_id))) {
+    context.addIssue({ code: 'custom', message: '备份中的聚合订阅无效' });
   }
 });
 export type Snapshot = z.infer<typeof snapshotSchema>;

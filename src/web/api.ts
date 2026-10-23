@@ -3,6 +3,8 @@ import type {
   ApiTokenScope,
   ApiTokenSummary,
   UserSummary,
+  BundleInput,
+  BundlePayload,
   NotificationChannel,
   NotificationSummary,
   NotificationUpdate,
@@ -128,7 +130,7 @@ export const api = {
   },
   users: {
     update: (id: string, body: Partial<Pick<UserSummary, 'username' | 'enabled' | 'role'>>) => request<UserSummary>(`/api/users/${encodeURIComponent(id)}`, { method: 'PATCH', body }),
-    deletionPreview: (id: string) => request<{ user: UserSummary; feeds: number; credentials: number; jobs: number }>(`/api/users/${encodeURIComponent(id)}/deletion-preview`),
+    deletionPreview: (id: string) => request<{ user: UserSummary; feeds: number; bundles?: number; credentials: number; jobs: number }>(`/api/users/${encodeURIComponent(id)}/deletion-preview`),
     delete: (id: string, username: string) => request<{ ok: boolean }>(`/api/users/${encodeURIComponent(id)}`, { method: 'DELETE', body: { username } }),
     list: () => request<UserSummary[]>('/api/users'),
     create: (username: string, password: string) => request<UserSummary>('/api/users', { method: 'POST', body: { username, password } }),
@@ -213,6 +215,14 @@ export const api = {
     rotate: (id: string) =>
       request<{ feedUrl: string }>(`/api/feeds/${encodeURIComponent(id)}/rotate-token`, { method: 'POST', body: {} }),
     remove: (id: string) => request<void>(`/api/feeds/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  },
+  bundles: {
+    list: () => request<BundlePayload[]>('/api/bundles'),
+    create: (body: BundleInput) => request<BundlePayload>('/api/bundles', { method: 'POST', body }),
+    update: (id: string, body: Partial<BundleInput>) => request<BundlePayload>(`/api/bundles/${encodeURIComponent(id)}`, { method: 'PUT', body }),
+    addFeeds: (id: string, feedIds: string[]) => request<BundlePayload>(`/api/bundles/${encodeURIComponent(id)}/feeds`, { method: 'POST', body: { feedIds } }),
+    rotate: (id: string) => request<BundlePayload>(`/api/bundles/${encodeURIComponent(id)}/rotate-token`, { method: 'POST', body: {} }),
+    remove: (id: string) => request<{ ok: true }>(`/api/bundles/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   },
   browser: {
     open: (body: { url: string; credentialId: string | null; waitMs: number; waitForSelector?: string }) =>

@@ -3,6 +3,7 @@ import { isTargetLanguage, isTranslationProvider, translationEnabled } from '../
 import { RssTranslations } from './rss-translation.js';
 import { TRANSLATION_CACHE_LIMIT, type Tables } from './backups.js';
 import { FetchHistory } from './fetch-history.js';
+import { BUNDLE_SCHEMA, BundleStore } from './bundle-store.js';
 import { ApiTokens } from './api-tokens.js';
 import { AppError } from './auth.js';
 import { applicationSettingsSchema } from './settings.js';
@@ -178,6 +179,7 @@ function rowToItem(row: Record<string, unknown>): FeedItem {
 export class Store {
   readonly history: FetchHistory;
   readonly translations: RssTranslations;
+  readonly bundles: BundleStore;
   readonly tokens: ApiTokens;
   readonly dataDir: string;
   readonly dbPath: string;
@@ -339,6 +341,13 @@ export class Store {
         UPDATE feeds SET translation_mode='translated' WHERE translation_mode='chinese';
         PRAGMA user_version=${Math.max(13, current)}; COMMIT;`);
     }
+    // Feed bundles. 14 is reserved for this migration; like 13 it checks for its own
+    // tables, so it also runs when it was not merged last.
+    if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='bundles'").get()) {
+      const current = Number((this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
+      this.db.exec(`BEGIN; ${BUNDLE_SCHEMA} PRAGMA user_version=${Math.max(14, current)}; COMMIT;`);
+    }
+    this.bundles = new BundleStore(this.db, value => encrypt(this.masterKey, value), value => decrypt(this.masterKey, value), id => this.isUserActive(id));
     this.migrateBark();
     this.ensureSetupToken();
   }
@@ -457,7 +466,7 @@ export class Store {
   deletionPreview(id: string) {
     const user = this.getUser(id);
     if (!user) throw new AppError(404, '用户不存在');
-    return { user, feeds: this.listFeeds(id).length, credentials: this.listCredentialSummaries(id).length, jobs: this.listImportJobs(id).length };
+    return { user, feeds: this.listFeeds(id).length, bundles: this.bundles.list(id).length, credentials: this.listCredentialSummaries(id).length, jobs: this.listImportJobs(id).length };
   }
 
   deleteUser(actorId: string, id: string, confirmation: string): void {
@@ -468,7 +477,7 @@ export class Store {
       if (confirmation !== user.username) throw new AppError(400, '请输入目标用户名确认删除');
       if (user.role === 'admin' && user.enabled && !this.listUsers().some(u => u.id !== id && u.role === 'admin' && u.enabled)) throw new AppError(409, '必须保留至少一名启用的管理员');
       this.revokeUser(id);
-      for (const table of ['import_jobs', 'feeds', 'credentials']) this.db.prepare(`DELETE FROM ${table} WHERE owner_id=?`).run(id);
+      for (const table of ['import_jobs', 'bundles', 'feeds', 'credentials']) this.db.prepare(`DELETE FROM ${table} WHERE owner_id=?`).run(id);
       // The shared translation cache can contain this user's source fragments.
       this.db.prepare('DELETE FROM translation_cache').run();
       this.db.prepare('DELETE FROM user_notifications WHERE user_id=?').run(id);
@@ -534,7 +543,7 @@ export class Store {
     });
   }
 
-  owns(table: 'feeds' | 'credentials' | 'import_jobs', id: string, userId: string): boolean {
+  owns(table: 'feeds' | 'credentials' | 'import_jobs' | 'bundles', id: string, userId: string): boolean {
     return !!this.db.prepare(`SELECT 1 FROM ${table} WHERE id=? AND owner_id=?`).get(id, userId);
   }
 
@@ -777,7 +786,7 @@ export class Store {
 
   exportTables(): Tables {
     const tables: Record<string, unknown> = {};
-    for (const table of ['users', 'user_notifications', 'credentials', 'feeds', 'feed_items', 'settings', 'rss_sources', 'translations', 'translation_cache']) {
+    for (const table of ['users', 'user_notifications', 'credentials', 'feeds', 'feed_items', 'settings', 'rss_sources', 'translations', 'translation_cache', 'bundles', 'bundle_feeds']) {
       // The cache is pruned hourly, so it can briefly exceed the limit the backup format allows.
       const rows = table === 'translation_cache'
         ? this.db.prepare('SELECT * FROM translation_cache ORDER BY touched_at DESC LIMIT ?').all(TRANSLATION_CACHE_LIMIT)
@@ -785,7 +794,7 @@ export class Store {
       tables[table] = rows.map(row => {
         if (table === 'user_notifications') return { ...row, value: decrypt(this.masterKey, String(row.value)) };
         if (table === 'credentials') return { ...row, encrypted_value: decrypt(this.masterKey, String(row.encrypted_value)) };
-        if (table === 'feeds') return { ...row, token_ciphertext: decrypt(this.masterKey, String(row.token_ciphertext)) };
+        if (table === 'feeds' || table === 'bundles') return { ...row, token_ciphertext: decrypt(this.masterKey, String(row.token_ciphertext)) };
         if (table === 'settings' && row.key === 'application') return { ...row, value: decrypt(this.masterKey, String(row.value)) };
         return { ...row };
       });
@@ -799,13 +808,14 @@ export class Store {
     this.userControllers.clear();
     this.transaction(() => {
       // Like sessions, access tokens are not part of a backup; a restore revokes them all.
-      for (const table of ['sessions', 'api_tokens', 'import_jobs', 'translations', 'rss_sources', 'translation_cache', 'feed_items', 'feeds', 'credentials', 'user_notifications', 'users', 'settings']) this.db.exec(`DELETE FROM ${table}`);
-      for (const table of ['users', 'user_notifications', 'credentials', 'feeds', 'feed_items', 'settings', 'rss_sources', 'translations', 'translation_cache'] as const) {
+      for (const table of ['sessions', 'api_tokens', 'import_jobs', 'bundle_feeds', 'bundles', 'translations', 'rss_sources', 'translation_cache', 'feed_items', 'feeds', 'credentials', 'user_notifications', 'users', 'settings']) this.db.exec(`DELETE FROM ${table}`);
+      for (const table of ['users', 'user_notifications', 'credentials', 'feeds', 'feed_items', 'settings', 'rss_sources', 'translations', 'translation_cache', 'bundles', 'bundle_feeds'] as const) {
         for (const value of tables[table] ?? []) {
           const row: Record<string, string | number | null> = { ...value };
           if (table === 'user_notifications') row.value = encrypt(this.masterKey, String(row.value));
           if (table === 'credentials') row.encrypted_value = encrypt(this.masterKey, String(row.encrypted_value));
           if (table === 'settings' && row.key === 'application') row.value = encrypt(this.masterKey, JSON.stringify(applicationSettingsSchema.parse(JSON.parse(String(row.value)))));
+          if (table === 'bundles') { row.token_hash = hashToken(String(row.token_ciphertext)); row.token_ciphertext = encrypt(this.masterKey, String(row.token_ciphertext)); }
           if (table === 'feeds') { row.name = String(row.channel_title ?? '').trim() || row.name; row.channel_title = row.name; row.token_hash = hashToken(String(row.token_ciphertext)); row.token_ciphertext = encrypt(this.masterKey, String(row.token_ciphertext)); }
           const keys = Object.keys(row);
           this.db.prepare(`INSERT INTO ${table}(${keys.join(',')}) VALUES (${keys.map(() => '?').join(',')})`).run(...keys.map(k => row[k]));
