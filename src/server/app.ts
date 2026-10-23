@@ -1,4 +1,4 @@
-import { defaultApplicationSettings, translationEnabled } from '../shared/types.js';
+import { defaultApplicationSettings, OUTPUT_LIMIT, translationEnabled } from '../shared/types.js';
 import { fetchSource, type SourceFetcher } from './rss-source.js';
 import { NetworkPolicy } from './network.js';
 import { TranslationWorker, type Translator } from './rss-translation.js';
@@ -29,6 +29,9 @@ import type {
   FetchStatus,
   FeedInput,
   FeedSettingsInput,
+  FeedFormat,
+  FeedItem,
+  ItemOutputStatus,
   PickRequest,
   PickResult,
   ScreenFrame,
@@ -50,7 +53,8 @@ import {
   validateUsername,
 } from './auth.js';
 import { getConfig, ensureDataDir, hasDist, isAllowedOrigin, type ConfigInput, type ServerConfig } from './config.js';
-import { renderRss, rssEtag } from './rss.js';
+import { renderAtom, renderJsonFeed, renderRss, rssEtag } from './rss.js';
+import { classifyItems, ItemFilterError, parseItemFilter } from './feed-output.js';
 import { etagMatches, renderRssPreview, wantsHtmlPreview } from './rss-preview.js';
 import { asInteger, describeError, asNonEmptyString, asOptionalString, asRecord, cookieMetadata, frameError, friendlyError, logHiddenError, parseCredentialInput, parseFeedInput, parseHttpUrl, parsePartialRules, parseRules } from './validation.js';
 import { Store, type CredentialValue } from './store.js';
@@ -609,6 +613,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     let snapshot;
     try {
       snapshot = openBackup(body.archive, asNonEmptyString(body.password, '备份密码', 1024));
+      for (const row of snapshot.tables.feeds) if (row.item_filter_json) parseItemFilter(JSON.parse(row.item_filter_json));
       for (const row of snapshot.tables.feeds) parseFeedInput({ sourceType: row.source_type, translationMode: row.translation_mode, name: row.name, url: row.url, rules: JSON.parse(row.rules_json), ruleOrigins: row.rule_origins_json ? JSON.parse(row.rule_origins_json) : undefined, intervalMinutes: row.interval_minutes, waitMs: row.wait_ms, waitForSelector: row.wait_for_selector });
       for (const row of snapshot.tables.credentials) {
         const metadata = cookieMetadata(parseCookies(JSON.parse(row.encrypted_value), row.format, row.url), row.url);
@@ -642,7 +647,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
   app.get('/api/backups/config', async request => {
     adminGuard(request);
-    return { format: 'feedlantern-config', version: 2, settings: { ...store.getSettings(), bark: store.getBark(authenticated(request).userId) }, feeds: store.listFeeds(authenticated(request).userId).map(f => ({ sourceType: f.sourceType, translationMode: f.translationMode, name: f.name, channelTitle: f.channelTitle, url: f.url, rules: f.rules, ruleOrigins: f.ruleOrigins, intervalMinutes: f.intervalMinutes, waitMs: f.waitMs, waitForSelector: f.waitForSelector, enabled: f.enabled, requiresCredential: !!f.credentialId })) };
+    return { format: 'feedlantern-config', version: 2, settings: { ...store.getSettings(), bark: store.getBark(authenticated(request).userId) }, feeds: store.listFeeds(authenticated(request).userId).map(f => ({ sourceType: f.sourceType, translationMode: f.translationMode, name: f.name, channelTitle: f.channelTitle, url: f.url, rules: f.rules, ruleOrigins: f.ruleOrigins, intervalMinutes: f.intervalMinutes, waitMs: f.waitMs, waitForSelector: f.waitForSelector, enabled: f.enabled, requiresCredential: !!f.credentialId, ...(f.itemFilter ? { itemFilter: f.itemFilter } : {}), outputLimit: f.outputLimit })) };
   });
   app.post('/api/backups/config', { bodyLimit: 10_000_000 }, async request => {
     adminGuard(request);
@@ -652,7 +657,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const importedSettings = archive.settings === undefined ? undefined : parseSettings(archive.settings);
     const entries = archive.feeds.map(raw => {
       const value = asRecord(raw);
-      return { input: parseFeedInput({ ...value, credentialId: null }), title: asOptionalString(value.channelTitle, '频道名称', 200), enabled: value.enabled !== false, needsCookie: value.requiresCredential === true };
+      const output = parseFeedSettings({ ...(value.itemFilter !== undefined ? { itemFilter: value.itemFilter } : {}), ...(value.outputLimit !== undefined ? { outputLimit: value.outputLimit } : {}) }, true);
+      return { input: parseFeedInput({ ...value, credentialId: null }), output, title: asOptionalString(value.channelTitle, '频道名称', 200), enabled: value.enabled !== false, needsCookie: value.requiresCredential === true };
     });
     const signature = (f: FeedInput) => JSON.stringify([f.sourceType ?? 'website', f.translationMode ?? 'bilingual', normalizeSource(f.url), ...['item', 'title', 'link', 'description', 'image', 'date'].map(k => f.rules[k as keyof SelectionRules] ?? '')]);
     if (body.confirm !== true) {
@@ -670,6 +676,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         if (seen.has(key)) { skipped++; continue; }
         const { feed } = store.createFeed(entry.input, authenticated(request).userId);
         if (entry.title) store.setChannelTitle(feed.id, entry.title);
+        if (Object.keys(entry.output).length) store.updateFeedSettings(feed.id, entry.output);
         if (!entry.enabled || entry.needsCookie) store.toggleFeed(feed.id);
         if (entry.needsCookie) store.markFetchFailure(feed.id, '请绑定 Cookie 凭据后恢复订阅', feed.nextFetchAt);
         seen.add(key); created++;
@@ -745,8 +752,18 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       bark.wake(); return globalSettings();
     });
   });
-  function parseFeedSettings(body: Record<string, unknown>): FeedSettingsInput {
+  function parseFeedSettings(body: Record<string, unknown>, allowEmpty = false): FeedSettingsInput {
     const input: FeedSettingsInput = {};
+    if ('itemFilter' in body) {
+      try { input.itemFilter = parseItemFilter(body.itemFilter); }
+      catch (error) { if (error instanceof ItemFilterError) throw new AppError(400, error.message); throw error; }
+    }
+    if ('outputLimit' in body) {
+      if (typeof body.outputLimit !== 'number' || !Number.isInteger(body.outputLimit) || body.outputLimit < OUTPUT_LIMIT.min || body.outputLimit > OUTPUT_LIMIT.max) {
+        throw new AppError(400, `输出条数必须是 ${OUTPUT_LIMIT.min} 到 ${OUTPUT_LIMIT.max} 之间的整数`);
+      }
+      input.outputLimit = body.outputLimit;
+    }
     if ('translationMode' in body) {
       if (typeof body.translationMode !== 'string' || !['original','chinese','bilingual'].includes(body.translationMode)) throw new AppError(400, '翻译输出模式无效');
       input.translationMode = body.translationMode as 'original' | 'chinese' | 'bilingual';
@@ -758,19 +775,40 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       }
       input.intervalMinutes = body.intervalMinutes;
     }
-    if (!Object.keys(input).length) throw new AppError(400, '请提供需要修改的订阅设置');
+    if (!allowEmpty && !Object.keys(input).length) throw new AppError(400, '请提供需要修改的订阅设置');
     return input;
   }
+  /** Reject a regex filter that already runs out of time on the feed's stored items. */
+  function checkFilterBudget(feed: Feed, items: FeedItem[], input: FeedSettingsInput): void {
+    if (!input.itemFilter?.regex) return;
+    if (classifyItems(feed, items, { itemFilter: input.itemFilter }).timedOut) throw new AppError(400, '正则表达式在现有条目上运行超时，请简化规则');
+  }
+  const outputStatus = (feed: Feed, items: FeedItem[], override?: Parameters<typeof classifyItems>[2]) => {
+    const { statuses, timedOut } = classifyItems(feed, items, override);
+    return { outputStatus: Object.fromEntries(items.map((item, index) => [item.id, statuses[index]])) as Record<string, ItemOutputStatus>, ...(timedOut ? { filterTimedOut: true } : {}) };
+  };
   app.patch('/api/feeds/:id', async request => {
     feedsGuard(request);
     const input = parseFeedSettings(asRecord(request.body));
     return enqueueRefresh(() => {
       feedsGuard(request);
-      const feed = store.updateFeedSettings(String((request.params as { id: string }).id), input);
+      const id = String((request.params as { id: string }).id);
+      const current = store.getFeed(id);
+      if (!current) throw new AppError(404, 'Feed 不存在');
+      checkFilterBudget(current, store.getItems(id), input);
+      const feed = store.updateFeedSettings(id, input);
       if (!feed) throw new AppError(404, 'Feed 不存在');
       translations.wake();
       return feedPayload(feed);
     });
+  });
+  app.post('/api/feeds/:id/output-preview', async request => {
+    feedsGuard(request);
+    const feed = store.getFeed(String((request.params as { id: string }).id));
+    if (!feed) throw new AppError(404, 'Feed 不存在');
+    const body = asRecord(request.body);
+    const input = parseFeedSettings({ ...('itemFilter' in body ? { itemFilter: body.itemFilter } : {}), ...('outputLimit' in body ? { outputLimit: body.outputLimit } : {}) }, true);
+    return outputStatus(feed, store.getItems(feed.id), input);
   });
   app.post('/api/feeds/bulk', async request => {
     feedsGuard(request);
@@ -779,7 +817,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const action = body.action;
     if (!['copy', 'pause', 'resume', 'refresh', 'delete', 'settings'].includes(String(action))) throw new AppError(400, '操作无效');
     const settingsBody = asRecord(body.settings);
-    if (action === 'settings' && Object.keys(settingsBody).some(key => !['translationMode', 'intervalMinutes'].includes(key))) throw new AppError(400, '批量设置仅支持翻译输出模式和刷新间隔');
+    if (action === 'settings' && Object.keys(settingsBody).some(key => !['translationMode', 'intervalMinutes', 'outputLimit', 'itemFilter'].includes(key))) throw new AppError(400, '批量设置仅支持翻译输出模式、刷新间隔、输出条数和条目过滤');
     const settingsInput = action === 'settings' ? parseFeedSettings(settingsBody) : undefined;
     if (action === 'refresh') {
       const results = await Promise.all([...new Set(body.ids as string[])].map(async id => {
@@ -801,6 +839,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
           if (!feed) throw new AppError(404, '订阅不存在');
           if (action === 'copy') return { id, ok: true, feedUrl: feedUrl(currentConfig(), store, id) };
           if (settingsInput) {
+            checkFilterBudget(feed, store.getItems(id), settingsInput);
             store.transaction(() => store.updateFeedSettings(id, settingsInput));
             translations.wake();
           }
@@ -868,7 +907,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     feedsGuard(request);
     const feed = store.getFeed(String((request.params as { id: string }).id));
     if (!feed) throw new AppError(404, 'Feed 不存在');
-    return { ...feedPayload(feed), items: store.getItems(feed.id, 200) };
+    const items = store.getItems(feed.id);
+    return { ...feedPayload(feed), items, ...outputStatus(feed, items) };
   });
   app.put('/api/feeds/:id', async (request) => {
     feedsGuard(request);
@@ -1019,22 +1059,25 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return { ok: true };
   });
 
-  app.get('/feeds/:id/:token.xml', async (request, reply) => {
+  const publicFeed = (format: FeedFormat) => async (request: FastifyRequest, reply: FastifyReply) => {
     const params = request.params as { id: string; token: string };
-    const token = params.token.endsWith('.xml') ? params.token.slice(0, -4) : params.token;
+    const extension = format === 'rss' ? '.xml' : format === 'atom' ? '.atom' : '.json';
+    const token = params.token.endsWith(extension) ? params.token.slice(0, -extension.length) : params.token;
+    // One token guards every format, so rotating it revokes all three addresses.
     if (!store.checkFeedToken(params.id, token)) throw new AppError(404, 'Feed 不存在');
     const feed = store.getFeed(params.id);
     if (!feed) throw new AppError(404, 'Feed 不存在');
-    const items = store.getItems(feed.id, 100);
-    const publicUrl = `${currentConfig().publicOrigin}/feeds/${encodeURIComponent(feed.id)}/${encodeURIComponent(token)}.xml`;
+    const items = store.getItems(feed.id);
+    const publicUrl = `${currentConfig().publicOrigin}/feeds/${encodeURIComponent(feed.id)}/${encodeURIComponent(token)}${extension}`;
     const query = request.query as Record<string, unknown> | undefined;
-    const preview = wantsHtmlPreview(request.headers, query);
-    const etag = preview ? rssEtag(feed, items).replace(/"$/, '-html"') : rssEtag(feed, items);
+    // Only the RSS address has the human-readable browser page.
+    const preview = format === 'rss' && wantsHtmlPreview(request.headers, query);
+    const etag = preview ? rssEtag(feed, items).replace(/"$/, '-html"') : rssEtag(feed, items, format);
     reply.header('Cache-Control', 'private, max-age=60');
     reply.header('Referrer-Policy', 'no-referrer');
     reply.header('X-Robots-Tag', 'noindex, nofollow');
     reply.header('X-Content-Type-Options', 'nosniff');
-    reply.header('Vary', 'Accept, Sec-Fetch-Dest, Sec-Fetch-Mode');
+    reply.header('Vary', format === 'rss' ? 'Accept, Sec-Fetch-Dest, Sec-Fetch-Mode' : 'Sec-Fetch-Dest');
     reply.header('ETag', etag);
     if (etagMatches(request.headers['if-none-match'], etag)) return reply.code(304).send();
     if (preview) {
@@ -1043,10 +1086,19 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       reply.header('X-Frame-Options', 'DENY');
       return reply.type('text/html; charset=utf-8').send(page.html);
     }
+    const document = request.headers['sec-fetch-dest'] === 'document';
+    if (format === 'json') {
+      // Browsers display application/json instead of downloading the feed type.
+      return reply.type(document ? 'application/json; charset=utf-8' : 'application/feed+json; charset=utf-8').send(renderJsonFeed(feed, items, publicUrl));
+    }
+    if (format === 'atom') return reply.type(document ? 'application/xml; charset=utf-8' : 'application/atom+xml; charset=utf-8').send(renderAtom(feed, items, publicUrl));
     // A browser asking for the raw document gets an XML type it can display instead of downloading.
-    const raw = typeof query?.format === 'string' && request.headers['sec-fetch-dest'] === 'document';
+    const raw = typeof query?.format === 'string' && document;
     return reply.type(raw ? 'application/xml; charset=utf-8' : 'application/rss+xml; charset=utf-8').send(renderRss(feed, items, publicUrl));
-  });
+  };
+  app.get('/feeds/:id/:token.xml', publicFeed('rss'));
+  app.get('/feeds/:id/:token.atom', publicFeed('atom'));
+  app.get('/feeds/:id/:token.json', publicFeed('json'));
 
   if (hasDist(config.distDir)) await app.register(fastifyStatic, { root: config.distDir, wildcard: false });
   app.setNotFoundHandler(async (request, reply) => {
