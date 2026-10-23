@@ -24,7 +24,12 @@ test('应用设置加密、跨密钥备份往返、旧备份兼容、日志保�
     for (const path of [a.dbPath, `${a.dbPath}-wal`]) assert.ok(!readFileSync(path).includes(Buffer.from(key)));
     const snapshot = snapshotSchema.parse({ format: 'feedlantern-backup', version: 2, appVersion: 'test', createdAt: new Date().toISOString(), security: { allowedHosts: [], dnsOverHttps: false }, tables: a.exportTables() });
     const sealed = sealBackup(snapshot, 'long-backup-password');
-    assert.ok(!JSON.stringify(sealed).includes(key)); b.restoreTables(openBackup(sealed, 'long-backup-password').tables);
+    assert.ok(!JSON.stringify(sealed).includes(key));
+    // By default the restoring instance keeps its own server and network settings.
+    const localServer = b.getSettings().server;
+    b.restoreTables(openBackup(sealed, 'long-backup-password').tables);
+    assert.deepEqual(b.getSettings(), { ...value, server: localServer });
+    b.restoreTables(openBackup(sealed, 'long-backup-password').tables, { restoreServer: true });
     assert.deepEqual(b.getSettings(), value);
     const feed = b.createFeed({ name: 'test', url: 'https://example.test', rules: { item: 'article', title: 'h2', link: 'a' }, credentialId: null, intervalMinutes: 60, waitMs: 0 }).feed;
     const id = b.history.start(feed.id, 'manual', new Date(Date.now() - 8 * 86400_000).toISOString());

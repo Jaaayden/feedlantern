@@ -41,9 +41,12 @@ test('历史保留 200 条、RSS 输出 100 条，重复刷新保留条目 ID �
     const { feed } = store.createFeed({ name: 'retention', url: 'https://example.test', rules: { item: 'article', title: 'h2', link: 'a' }, credentialId: null, intervalMinutes: 60, waitMs: 0 });
     const input = Array.from({ length: 250 }, (_, index) => ({ title: `Article ${index}`, link: `https://example.test/${index}` }));
     store.upsertItems(feed, input);
+    // Items the fetch just saw are all kept, so the next fetch does not store them again as new.
+    assert.equal(store.getItems(feed.id).length, 250);
+    store.upsertItems(feed, [{ ...input[0], title: 'Updated first title' }]);
     const before = store.getItems(feed.id);
     assert.equal(before.length, 200);
-    assert.equal(before[0].title, 'Article 0');
+    assert.equal(before[0].link, 'https://example.test/0');
     const first = before[0];
     store.upsertItems(feed, [{ ...input[0], title: 'Updated first title' }]);
     const same = store.getItems(feed.id).find(item => item.link === first.link)!;

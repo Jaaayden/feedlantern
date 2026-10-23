@@ -9,7 +9,7 @@ import { BUNDLE_SCHEMA, BundleStore } from './bundle-store.js';
 import { ApiTokens } from './api-tokens.js';
 import { AppError } from './auth.js';
 import { applicationSettingsSchema } from './settings.js';
-import { clampOutputLimit, parseItemFilter, storedItemLimit } from './feed-output.js';
+import { clampOutputLimit, clampRetentionLimit, parseItemFilter, retentionProblem, storedItemLimit } from './feed-output.js';
 import { defaultApplicationSettings, defaultNotificationChannels, type ApplicationSettings, type NotificationChannelSettings } from '../shared/types.js';
 import { activeChannels, notificationChannelsSchema, storedNotificationSchema, type ChannelConfigs, type NotificationTarget } from './notify.js';
 import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
@@ -153,6 +153,7 @@ function rowToFeed(row: Record<string, unknown>): Feed {
     itemCount: Number(row.item_count ?? 0),
     ...(itemFilter ? { itemFilter } : {}),
     outputLimit: clampOutputLimit(row.output_limit === undefined || row.output_limit === null ? undefined : Number(row.output_limit)),
+    retentionLimit: clampRetentionLimit(row.retention_limit === undefined || row.retention_limit === null ? null : Number(row.retention_limit)),
   };
 }
 
@@ -388,6 +389,12 @@ export class Store {
         CREATE INDEX IF NOT EXISTS network_profiles_owner ON network_profiles(owner_id);
         ${hasProfileColumn ? '' : 'ALTER TABLE feeds ADD COLUMN network_profile_id TEXT REFERENCES network_profiles(id) ON DELETE RESTRICT;'}
         PRAGMA user_version=${Math.max(17, current)}; COMMIT;`);
+    }
+    // Per-feed item retention (NULL = automatic). 18 is reserved for this
+    // migration; like 13–17 it checks for its own column.
+    if (!this.db.prepare('PRAGMA table_info(feeds)').all().some(column => column.name === 'retention_limit')) {
+      const current = Number((this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
+      this.db.exec(`BEGIN; ALTER TABLE feeds ADD COLUMN retention_limit INTEGER; PRAGMA user_version=${Math.max(18, current)}; COMMIT;`);
     }
     this.ruleHealth = new RuleHealth(this.db, () => this.getSettings(), this.history);
     this.migrateBark();
@@ -895,6 +902,10 @@ export class Store {
   updateFeedSettings(id: string, input: FeedSettingsInput): Feed | null {
     const feed = this.getFeed(id);
     if (!feed) return null;
+    // Checked before any write: the saved retention may not drop below the new output limit.
+    const retention = input.retentionLimit !== undefined ? input.retentionLimit : feed.retentionLimit ?? null;
+    const problem = retentionProblem(retention, input.outputLimit ?? feed.outputLimit);
+    if (problem) throw new AppError(400, problem);
     if (input.translationMode && input.translationMode !== feed.translationMode) this.translations.invalidate(id);
     if (input.translationMode) this.db.prepare('UPDATE feeds SET translation_mode=? WHERE id=?').run(input.translationMode, id);
     if (input.networkProfileId !== undefined) {
@@ -912,6 +923,8 @@ export class Store {
     // stored items until the next fetch trims them (see storedItemLimit).
     if (input.itemFilter !== undefined) this.db.prepare('UPDATE feeds SET item_filter_json = ? WHERE id = ?').run(input.itemFilter ? JSON.stringify(input.itemFilter) : null, id);
     if (input.outputLimit !== undefined) this.db.prepare('UPDATE feeds SET output_limit = ? WHERE id = ?').run(clampOutputLimit(input.outputLimit), id);
+    // Lowering retention also waits for the next fetch, like the output limit.
+    if (input.retentionLimit !== undefined) this.db.prepare('UPDATE feeds SET retention_limit = ? WHERE id = ?').run(clampRetentionLimit(input.retentionLimit), id);
     this.translations.syncWebsite(this.getFeed(id)!);
     return this.getFeed(id);
   }
@@ -934,7 +947,13 @@ export class Store {
     return tables as Tables;
   }
 
-  restoreTables(tables: Tables): void {
+  /**
+   * Replace all data with a backup. The backup's server and network settings
+   * (listen address, public origin, proxies, allowlist, DoH, ...) belong to
+   * the machine it came from, so this instance keeps its own unless
+   * `restoreServer` asks for the backup's.
+   */
+  restoreTables(tables: Tables, { restoreServer = false }: { restoreServer?: boolean } = {}): void {
     const previousServer = this.getSettings().server;
     for (const controller of this.userControllers.values()) controller.abort();
     this.userControllers.clear();
@@ -947,7 +966,11 @@ export class Store {
           if (table === 'user_notifications') row.value = encrypt(this.masterKey, String(row.value));
           if (table === 'credentials') row.encrypted_value = encrypt(this.masterKey, String(row.encrypted_value));
           if (table === 'network_profiles') Object.assign(row, Store.profileColumns(JSON.parse(String(row.encrypted_value)) as NetworkProfileValue), { encrypted_value: encrypt(this.masterKey, String(row.encrypted_value)) });
-          if (table === 'settings' && row.key === 'application') row.value = encrypt(this.masterKey, JSON.stringify(applicationSettingsSchema.parse(JSON.parse(String(row.value)))));
+          if (table === 'settings' && row.key === 'application') {
+            const restored = applicationSettingsSchema.parse(JSON.parse(String(row.value)));
+            if (!restoreServer) restored.server = structuredClone(previousServer);
+            row.value = encrypt(this.masterKey, JSON.stringify(restored));
+          }
           if (table === 'bundles') { row.token_hash = hashToken(String(row.token_ciphertext)); row.token_ciphertext = encrypt(this.masterKey, String(row.token_ciphertext)); }
           if (table === 'feeds') { row.name = String(row.channel_title ?? '').trim() || row.name; row.channel_title = row.name; row.token_hash = hashToken(String(row.token_ciphertext)); row.token_ciphertext = encrypt(this.masterKey, String(row.token_ciphertext)); }
           const keys = Object.keys(row);
@@ -1177,7 +1200,8 @@ export class Store {
           inserted++;
         }
       }
-      const keep = storedItemLimit(this.getFeed(feed.id) ?? feed);
+      // Never delete an item this fetch still saw: the next fetch would store it again as new and readers would get it twice.
+      const keep = Math.max(storedItemLimit(this.getFeed(feed.id) ?? feed), unique.size);
       this.db.prepare(`DELETE FROM feed_items WHERE feed_id = ? AND id NOT IN (SELECT id FROM feed_items WHERE feed_id = ? ORDER BY first_seen_at DESC, rowid ASC LIMIT ?)`).run(feed.id, feed.id, keep);
       this.translations.syncWebsite(this.getFeed(feed.id)!);
       this.db.exec('RELEASE items');

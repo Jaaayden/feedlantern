@@ -50,6 +50,21 @@ Store 的无 owner 参数列表方法保留给整站后台调度和备份使用�
 
 Chromium 侧：有代理的配置会为该浏览器上下文单独创建一个只监听 127.0.0.1 的受限代理（`createRestrictedForwardProxy({ upstream, requireAuth })`），它沿用全局的网络策略选项（`allowedHosts`、`dnsOverHttps`），对每个请求先校验目标、再校验代理地址，然后经上游代理以已校验的 IP 建立隧道（HTTP/HTTPS 代理用 CONNECT，SOCKS5 用 IPv4/IPv6 地址类型）。这个本机代理要求每个上下文独立的随机 Basic 登录，交给 Chromium 的只是这组随机登录，用户真实的代理密码始终留在 Node 进程中；另一个上下文或本机其他进程无法借用。上下文关闭时随之关闭。User-Agent 用上下文选项设置，Referer 只用于首次导航，额外请求头在请求路由中按站点范围加入。浏览器只启动一次，沙箱、`--disable-quic` 和 WebRTC 限制不变。RSS 侧在 `rss-source.ts` 中用同样的隧道和规则。
 
+### 保留条数（迁移 18）
+
+`feeds.retention_limit`（可为 NULL，NULL 表示自动）记录每个订阅在数据库中最多保存的条目数。`feed-output.ts` 的 `storedItemLimit` 计算实际保留量：自动时网页 200、RSS 100，任何情况下不少于输出条数；`retentionProblem` 校验 10–1000 且不少于输出条数，`Store.updateFeedSettings` 在写入任何字段之前用合并后的输出条数再检查一次，所以单个修改、批量设置和配置导入都不会留下低于输出条数的值。清理只在抓取写入时发生（`Store.upsertItems`、`RssTranslations.upsert`），调小不会立即删除。
+
+网页订阅判断新条目靠 `feed_items.normalized_key`，所以 `upsertItems` 保留量取 `max(storedItemLimit, 本次抓到的去重条目数)`：网页上仍能看到的条目不会被删掉后又以新 ID 入库、被阅读器当作新条目重复推送。RSS 订阅还有 `rss_sources.seen_json`（上次来源中出现过的键），`incoming()` 会跳过已见过但已清理的条目，因此不需要这一下限。被清理条目的翻译任务随 `ON DELETE CASCADE` 一起删除。规则健康统计只用每次抓取的原始结果，与保留量无关。
+
+迁移 18 和 13–17 一样按列是否存在判断，写入 `max(18, 当前版本)`。完整备份的 `feeds.retention_limit` 为可选字段，旧备份恢复为自动；轻量配置导出只在设置了固定值时带 `retentionLimit`。
+
+### 抓取超时文案
+
+`fetch-errors.ts` 的 `withFetchTimeout` 给一次抓取加上自己的超时信号，只有它触发时才抛出 `FetchTimeoutError`（“连接 主机 超时（N 秒未响应）”加代理提示）；调用方的取消信号（用户取消、停用账号、服务停止）原样抛出，`refreshOnce` 记为“中断”。RSS 来源（`fetchSource`、网络配置的“测试连接”）超时 20 秒；网页由 Playwright 的导航超时（30 秒）转换，等待元素超时单独提示。错误只含主机名，`friendlyError` 直接透传；其他英文的 `AbortError`／`TimeoutError` 会被换成中文。
+
+### 完整恢复与服务器设置
+
+`Store.restoreTables(tables, { restoreServer })` 默认把备份中应用设置的 `server` 整组替换为恢复前本机的值，只有 `POST /api/backups/restore` 传入 `restoreServerSettings: true` 时才使用备份的值。`POST /api/backups/preview` 返回 `serverChanges`（`key`、`label`、`current`、`backup`），预览中的 `settings` 不再包含 `server`。
 ## API 摘要
 
 所有管理接口要求登录（网页会话 Cookie 或个人访问令牌，见下节）；账号管理、全局设置及备份仅管理员可用，跨用户资源与不存在资源均返回 404。网页会话的写操作需要 `X-FeedLantern: 1` 和 `X-CSRF-Token`，并校验 Host/Origin。错误返回 `{error:string}`，响应不缓存。完整的接口说明见 `GET /api/openapi.json`（OpenAPI 3.1）。

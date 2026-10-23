@@ -139,9 +139,10 @@ test('存储保留量随输出条数增大；调小后不立即删除，下次�
     const batch = (prefix: string, count: number) => Array.from({ length: count }, (_, i) => ({ title: `${prefix}${i}`, link: `https://example.test/${prefix}${i}` }));
     store.updateFeedSettings(created.id, { outputLimit: 300 });
     store.upsertItems(store.getFeed(created.id)!, batch('a', 320));
-    assert.equal(store.getItems(created.id).length, 300);
+    // Every item the fetch just saw is kept, or the next fetch would store it again as new.
+    assert.equal(store.getItems(created.id).length, 320);
     store.updateFeedSettings(created.id, { outputLimit: 20, itemFilter: { include: ['a1'], exclude: [], regex: false } });
-    assert.equal(store.getItems(created.id).length, 300, 'lowering the limit keeps data until the next fetch');
+    assert.equal(store.getItems(created.id).length, 320, 'lowering the limit keeps data until the next fetch');
     const saved = store.getFeed(created.id)!;
     assert.deepEqual(saved.itemFilter, { include: ['a1'], exclude: [], regex: false });
     assert.equal(publishedItems(saved, store.getItems(created.id)).length, 20);

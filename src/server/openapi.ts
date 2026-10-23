@@ -84,13 +84,13 @@ const schemas: Record<string, Schema> = {
     stoppedAt: int(), stop: str({ enum: ['single', 'max', 'end', 'repeat', 'known', 'empty', 'failed', 'blocked', 'budget', 'limit'] }), message: str({ description: '在哪一页、因为什么原因停止' }),
   }, ['pages', 'stoppedAt', 'stop', 'message']),
   ItemFilter: object({ include: array(str({ maxLength: 200 }), { maxItems: 30 }), exclude: array(str({ maxLength: 200 }), { maxItems: 30 }), regex: bool }, ['include', 'exclude', 'regex'], { description: '条目过滤：排除优先，include 非空时必须命中其一；只影响输出' }),
-  FeedSettingsInput: object({ translationMode, targetLanguage, translationProvider, channelTitle: str({ minLength: 1, maxLength: 200 }), intervalMinutes: int({ minimum: 5, maximum: 1440 }), itemFilter: nullable(ref('ItemFilter')), outputLimit: int({ minimum: 10, maximum: 500 }), networkProfileId }, [], { description: '至少提供一个字段；itemFilter 为 null 时删除过滤；networkProfileId 为 null 时改回默认网络' }),
+  FeedSettingsInput: object({ translationMode, targetLanguage, translationProvider, channelTitle: str({ minLength: 1, maxLength: 200 }), intervalMinutes: int({ minimum: 5, maximum: 1440 }), itemFilter: nullable(ref('ItemFilter')), outputLimit: int({ minimum: 10, maximum: 500 }), retentionLimit: nullable(int({ minimum: 10, maximum: 1000, description: '数据库保留条数，不少于输出条数；null 为自动（网页 200、RSS 100）' })), networkProfileId }, [], { description: '至少提供一个字段；itemFilter 为 null 时删除过滤；networkProfileId 为 null 时改回默认网络' }),
   OutputStatus: object({ outputStatus: { type: 'object', additionalProperties: str({ enum: ['published', 'untranslated', 'excluded', 'not-included', 'over-limit'] }), description: '条目 ID → 是否输出及原因' }, filterTimedOut: bool }, ['outputStatus']),
   NotificationSummary: { type: 'object', description: '告警策略（阈值、超时、重试、冷却、规则失效预警开关 ruleHealthAlerts）和各渠道状态；不返回任何密钥', properties: { channels: { type: 'object' } } },
   NotificationUpdate: { type: 'object', description: '局部更新：省略的字段保持原值，空字符串清除密钥；headers 整体替换', properties: { channels: { type: 'object', properties: { bark: { type: 'object' }, webhook: { type: 'object' }, ntfy: { type: 'object' }, telegram: { type: 'object' } } } } },
   Feed: { allOf: [ref('FeedInput'), object({
     id: str(), ownerId: str(), channelTitle: str(), enabled: bool, createdAt: dateTime, lastFetchedAt: nullable(dateTime), lastSuccessAt: nullable(dateTime),
-    nextFetchAt: dateTime, lastError: nullable(str()), itemCount: int(), itemFilter: ref('ItemFilter'), outputLimit: int({ minimum: 10, maximum: 500, default: 100 }), translation: object({ pending: int(), success: int(), failed: int() }),
+    nextFetchAt: dateTime, lastError: nullable(str()), itemCount: int(), itemFilter: ref('ItemFilter'), outputLimit: int({ minimum: 10, maximum: 500, default: 100 }), retentionLimit: nullable(int({ minimum: 10, maximum: 1000 })), translation: object({ pending: int(), success: int(), failed: int() }),
     ruleHealth: ref('RuleHealthWarning'),
   }, ['id', 'enabled', 'createdAt', 'lastFetchedAt', 'lastSuccessAt', 'nextFetchAt', 'lastError', 'itemCount'])] },
   FeedItem: object({
@@ -208,7 +208,7 @@ const operations: Operation[] = [
   // Feeds
   { method: 'GET', path: '/api/feeds', tag: 'feeds', summary: '列出订阅', workspace: true, response: array(ref('Feed')) },
   { method: 'POST', path: '/api/feeds', tag: 'feeds', summary: '创建订阅', description: '网页订阅会立即抓取一次后返回；RSS 订阅在后台抓取。', workspace: true, body: ref('FeedInput'), response: ref('FeedPayload') },
-  { method: 'POST', path: '/api/feeds/bulk', tag: 'feeds', summary: '批量操作', workspace: true, body: object({ ids: array(str(), { minItems: 1, maxItems: 200 }), action: str({ enum: ['copy', 'pause', 'resume', 'refresh', 'delete', 'settings'] }), settings: object({ translationMode, targetLanguage, translationProvider, intervalMinutes: int({ minimum: 5, maximum: 1440 }), itemFilter: nullable(ref('ItemFilter')), outputLimit: int({ minimum: 10, maximum: 500 }) }) }, ['ids', 'action']), response: ref('BulkResult') },
+  { method: 'POST', path: '/api/feeds/bulk', tag: 'feeds', summary: '批量操作', workspace: true, body: object({ ids: array(str(), { minItems: 1, maxItems: 200 }), action: str({ enum: ['copy', 'pause', 'resume', 'refresh', 'delete', 'settings'] }), settings: object({ translationMode, targetLanguage, translationProvider, intervalMinutes: int({ minimum: 5, maximum: 1440 }), itemFilter: nullable(ref('ItemFilter')), outputLimit: int({ minimum: 10, maximum: 500 }), retentionLimit: nullable(int({ minimum: 10, maximum: 1000 })) }) }, ['ids', 'action']), response: ref('BulkResult') },
   { method: 'GET', path: '/api/feeds/:id', tag: 'feeds', summary: '订阅详情和最近 200 条条目', workspace: true, response: ref('FeedDetail') },
   { method: 'PUT', path: '/api/feeds/:id', tag: 'feeds', summary: '替换订阅的网址和规则', description: '启用中的订阅会立即重新抓取。', workspace: true, body: ref('FeedInput'), response: ref('FeedPayload') },
   { method: 'PATCH', path: '/api/feeds/:id', tag: 'feeds', summary: '修改名称、刷新间隔或翻译输出', workspace: true, body: ref('FeedSettingsInput'), response: ref('FeedPayload') },
@@ -256,9 +256,9 @@ const operations: Operation[] = [
   // Backups
   { method: 'POST', path: '/api/backups/export', tag: 'backups', summary: '导出加密完整备份', admin: true, body: object({ currentPassword: str(), password: str({ minLength: 12 }) }, ['currentPassword', 'password']), response: ref('EncryptedBackup') },
   { method: 'POST', path: '/api/backups/preview', tag: 'backups', summary: '预览完整备份', description: '未初始化时可用 setupToken 代替管理员登录。', admin: true, bodyLimit: '100 MB',
-    body: object({ archive: ref('EncryptedBackup'), password: str(), currentPassword: str(), setupToken: str() }, ['archive', 'password']), response: { type: 'object' } },
+    body: object({ archive: ref('EncryptedBackup'), password: str(), currentPassword: str(), setupToken: str() }, ['archive', 'password']), response: { type: 'object', description: 'serverChanges 列出本机与备份不同的服务器与网络设置（key、label、current、backup）' } },
   { method: 'POST', path: '/api/backups/restore', tag: 'backups', summary: '覆盖恢复完整备份', description: '未初始化时可用 setupToken 代替管理员登录。恢复会吊销全部会话和访问令牌。', admin: true, bodyLimit: '100 MB',
-    body: object({ archive: ref('EncryptedBackup'), password: str(), currentPassword: str(), setupToken: str(), confirm: { const: true } }, ['archive', 'password', 'confirm']), response: ok },
+    body: object({ archive: ref('EncryptedBackup'), password: str(), currentPassword: str(), setupToken: str(), confirm: { const: true }, restoreServerSettings: { ...bool, default: false, description: '同时恢复备份中的服务器与网络设置（监听地址、端口、公开访问地址、可信代理、白名单、DNS over HTTPS 等）；默认保留本机设置' } }, ['archive', 'password', 'confirm']), response: object({ ok: bool, serverSettingsRestored: bool }) },
   { method: 'GET', path: '/api/backups/config', tag: 'backups', summary: '导出轻量配置', admin: true, response: { type: 'object' } },
   { method: 'POST', path: '/api/backups/config', tag: 'backups', summary: '预览或确认导入轻量配置', admin: true, bodyLimit: '10 MB', body: object({ archive: { type: 'object' }, confirm: bool }, ['archive']), response: { type: 'object' } },
   // Browser

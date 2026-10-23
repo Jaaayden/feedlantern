@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import vm from 'node:vm';
 import { DomUtils, parseDocument } from 'htmlparser2';
-import { ITEM_FILTER_LIMITS, OUTPUT_LIMIT, translationEnabled } from '../shared/types.js';
+import { ITEM_FILTER_LIMITS, OUTPUT_LIMIT, RETENTION_LIMIT, translationEnabled } from '../shared/types.js';
 import type { Feed, FeedItem, ItemFilter, ItemOutputStatus } from '../shared/types.js';
 
 /**
@@ -23,13 +23,33 @@ export function clampOutputLimit(value: number | undefined): number {
   return Math.min(OUTPUT_LIMIT.max, Math.max(OUTPUT_LIMIT.min, Math.round(value)));
 }
 
+/** A stored retention value, or null for automatic. Out-of-range values are clamped. */
+export function clampRetentionLimit(value: number | null | undefined): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  return Math.min(RETENTION_LIMIT.max, Math.max(RETENTION_LIMIT.min, Math.round(value)));
+}
+
+/** Why a retention value cannot be saved next to `outputLimit`, or null when it can. */
+export function retentionProblem(retention: unknown, outputLimit: number | undefined): string | null {
+  if (retention === null) return null;
+  if (typeof retention !== 'number' || !Number.isInteger(retention) || retention < RETENTION_LIMIT.min || retention > RETENTION_LIMIT.max) {
+    return `保留条数必须是 ${RETENTION_LIMIT.min} 到 ${RETENTION_LIMIT.max} 之间的整数，留空为自动`;
+  }
+  const output = clampOutputLimit(outputLimit);
+  return retention < output ? `保留条数不能少于输出条数（${output}）` : null;
+}
+
 /**
- * Items kept in the database. Never fewer than the output limit; website
- * feeds keep their historical 200 so filters still have candidates, RSS
- * feeds keep 100 because every stored item is translated.
+ * Items kept in the database. A feed may set its own value; automatic keeps
+ * 200 for website feeds so filters still have candidates and 100 for RSS
+ * feeds because every stored item is translated. Never fewer than the output
+ * limit. Website fetches additionally keep every item they just saw (see
+ * `Store.upsertItems`), so an item still on the page is never deleted and
+ * then stored again as new.
  */
-export function storedItemLimit(feed: Pick<Feed, 'sourceType' | 'outputLimit'>): number {
-  return Math.max(feed.sourceType === 'rss' ? 100 : 200, clampOutputLimit(feed.outputLimit));
+export function storedItemLimit(feed: Pick<Feed, 'sourceType' | 'outputLimit' | 'retentionLimit'>): number {
+  const automatic = feed.sourceType === 'rss' ? RETENTION_LIMIT.rssAuto : RETENTION_LIMIT.websiteAuto;
+  return Math.max(clampRetentionLimit(feed.retentionLimit) ?? automatic, clampOutputLimit(feed.outputLimit));
 }
 
 /**

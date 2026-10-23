@@ -21,6 +21,7 @@ import { redactForLog } from './log';
 import { extractPage } from './extraction';
 import { collectPages, PAGINATION_BUDGET_MS, type CollectResult } from './pagination';
 import { prepareScrollContent } from './page-preparation';
+import { FetchTimeoutError, hostOf } from './fetch-errors';
 import type { FetchNetworkOptions } from './fetch-options';
 import {
   allowedHostListFromEnv,
@@ -364,8 +365,17 @@ function boundedWait(value: number): number {
   return Math.max(0, Math.min(120_000, finiteNumber(value, 'waitMs')));
 }
 
-function cleanError(error: unknown, fallback: string): BrowserServiceError {
-  if (error instanceof BrowserServiceError) return error;
+/** A page opened but the "wait for element" selector never appeared. */
+class WaitTimeoutError extends BrowserServiceError {}
+
+/** Playwright's navigation timeout, or Chromium giving up on the connection. */
+function isNavigationTimeout(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return error.name === 'TimeoutError' || /Timeout \d+ms exceeded|ERR_TIMED_OUT|ERR_CONNECTION_TIMED_OUT/.test(error.message);
+}
+
+function cleanError(error: unknown, fallback: string): BrowserServiceError | FetchTimeoutError {
+  if (error instanceof BrowserServiceError || error instanceof FetchTimeoutError) return error;
   const message = error instanceof Error ? error.message : String(error);
   return new BrowserServiceError(`${fallback}：${message}`);
 }
@@ -517,7 +527,14 @@ export class BrowserService {
     const waitMs = boundedWait(options.waitMs);
     this.contextProxies.get(page.context())?.resetError();
     try {
-      const response = await page.goto(options.url, { waitUntil: 'domcontentloaded', timeout: NAVIGATION_TIMEOUT_MS, ...((referer ?? options.network?.referer) ? { referer: referer ?? options.network?.referer } : {}) });
+      let response: Awaited<ReturnType<Page['goto']>>;
+      try {
+        response = await page.goto(options.url, { waitUntil: 'domcontentloaded', timeout: NAVIGATION_TIMEOUT_MS, ...((referer ?? options.network?.referer) ? { referer: referer ?? options.network?.referer } : {}) });
+      } catch (error) {
+        // Only the host is named, so query parameters stay out of logs and alerts.
+        if (isNavigationTimeout(error)) throw new FetchTimeoutError(hostOf(options.url), NAVIGATION_TIMEOUT_MS / 1000, this.contextProxies.has(page.context()));
+        throw error;
+      }
       // A plain-HTTP page whose proxy failed arrives as our proxy's 502 page.
       if (!response || response.status() >= 500) { const failure = this.proxyFailure(page); if (failure) throw failure; }
       if (rejectHttpErrors && response && response.status() >= 400) {
@@ -525,12 +542,19 @@ export class BrowserService {
         throw new BrowserServiceError(`目标网页返回 HTTP ${response.status()}${hint}`);
       }
       if (options.waitForSelector) {
-        await page.waitForSelector(options.waitForSelector, { state: 'attached', timeout: SELECTOR_TIMEOUT_MS });
+        try { await page.waitForSelector(options.waitForSelector, { state: 'attached', timeout: SELECTOR_TIMEOUT_MS }); }
+        catch (error) {
+          if (isNavigationTimeout(error)) throw new WaitTimeoutError(`页面已打开，但等待的元素 ${SELECTOR_TIMEOUT_MS / 1000} 秒内没有出现，请检查“等待元素”设置、Cookie 或页面是否需要登录`);
+          throw error;
+        }
       }
       if (waitMs > 0) await page.waitForTimeout(waitMs);
       await prepareScrollContent(page);
     } catch (error) {
-      throw this.proxyFailure(page) ?? normalizeSelectorError(error, '打开页面失败');
+      const failure = this.proxyFailure(page);
+      if (failure) throw failure;
+      if (error instanceof FetchTimeoutError || error instanceof WaitTimeoutError) throw error;
+      throw normalizeSelectorError(error, '打开页面失败');
     }
   }
 
@@ -897,7 +921,7 @@ export class BrowserService {
       const deadline = new Promise<never>((_, reject) => {
         timeout = setTimeout(() => {
           void context?.close().catch(() => undefined);
-          reject(new BrowserServiceError('后台抓取超时，浏览器会话已关闭'));
+          reject(new BrowserServiceError(`抓取 ${hostOf(options.url)} 超时（${Math.round(timeoutMs / 1000)} 秒内未完成），浏览器会话已关闭；请缩短等待时间或减少翻页页数`));
         }, timeoutMs);
         timeout.unref?.();
       });
@@ -910,7 +934,7 @@ export class BrowserService {
         if (timeout) clearTimeout(timeout);
       }
     } catch (error) {
-      if (error instanceof BrowserServiceError) throw error;
+      if (error instanceof BrowserServiceError || error instanceof FetchTimeoutError) throw error;
       throw cleanError(error, '抓取页面失败');
     } finally {
       options.signal?.removeEventListener('abort', abort);
