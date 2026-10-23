@@ -1,6 +1,6 @@
 import { ZodError } from 'zod';
 import type { Cookie } from 'playwright';
-import { paginationLimits, type FeedInput, type PaginationRules, type SelectionRules } from '../shared/types.js';
+import { isTargetLanguage, isTranslationProvider, paginationLimits, type FeedInput, type PaginationRules, type SelectionRules, type TargetLanguage, type TranslationMode, type TranslationProviderId } from '../shared/types.js';
 import { AppError } from './auth.js';
 import { CookieParseError } from './cookies.js';
 import { redactForLog } from './log.js';
@@ -10,6 +10,8 @@ interface FeedBody {
   pagination?: unknown;
   sourceType?: unknown;
   translationMode?: unknown;
+  targetLanguage?: unknown;
+  translationProvider?: unknown;
   name?: unknown;
   url?: unknown;
   rules?: unknown;
@@ -98,6 +100,26 @@ function parseRuleOrigins(value: unknown): FeedInput['ruleOrigins'] {
   return output;
 }
 
+/** `chinese` is the pre-0.7 name of `translated` and is still accepted from older clients and files. */
+export function parseTranslationMode(value: unknown): TranslationMode | undefined {
+  if (value === undefined) return undefined;
+  if (value === 'chinese') return 'translated';
+  if (value === 'original' || value === 'translated' || value === 'bilingual') return value;
+  throw new AppError(400, '翻译输出模式无效');
+}
+export function parseTargetLanguage(value: unknown): TargetLanguage | undefined {
+  if (value === undefined) return undefined;
+  if (!isTargetLanguage(value)) throw new AppError(400, '翻译目标语言无效');
+  return value;
+}
+/** `null` (or an empty string) follows the instance default service. */
+export function parseTranslationProvider(value: unknown): TranslationProviderId | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || value === '') return null;
+  if (!isTranslationProvider(value)) throw new AppError(400, '翻译服务无效');
+  return value;
+}
+
 /** Fill `{n}` of a pagination URL template. */
 export function templateUrl(template: string, n: number): string {
   return template.replaceAll('{n}', String(n));
@@ -131,14 +153,18 @@ export function parsePagination(value: unknown): PaginationRules | null | undefi
 export function parseFeedInput(value: unknown): FeedInput {
   const record = asRecord(value) as FeedBody;
   if (record.sourceType !== undefined && !['website','rss'].includes(String(record.sourceType))) throw new AppError(400, '订阅来源类型无效');
-  if (record.translationMode !== undefined && !['original','chinese','bilingual'].includes(String(record.translationMode))) throw new AppError(400, '翻译输出模式无效');
+  const mode = parseTranslationMode(record.translationMode);
+  const targetLanguage = parseTargetLanguage(record.targetLanguage);
+  const translationProvider = parseTranslationProvider(record.translationProvider);
   const rss = record.sourceType === 'rss';
   const credentialId = record.credentialId === undefined || record.credentialId === null || record.credentialId === '' ? null : asNonEmptyString(record.credentialId, 'credentialId', 200);
   const pagination = rss ? null : parsePagination(record.pagination);
   return {
     ...(pagination !== undefined ? { pagination } : {}),
     sourceType: rss ? 'rss' : 'website',
-    translationMode: record.translationMode === 'original' ? 'original' : record.translationMode === 'chinese' ? 'chinese' : record.translationMode === 'bilingual' || rss ? 'bilingual' : undefined,
+    translationMode: mode ?? (rss ? 'bilingual' : undefined),
+    ...(targetLanguage ? { targetLanguage } : {}),
+    ...(translationProvider !== undefined ? { translationProvider } : {}),
     name: asNonEmptyString(record.name, 'feed name', 200),
     url: parseHttpUrl(record.url, 'feed URL'),
     rules: rss ? { item: '', title: '', link: '' } : parseRules(record.rules),

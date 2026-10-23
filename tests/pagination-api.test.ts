@@ -40,7 +40,7 @@ test('翻页设置随订阅保存，后台刷新传入已见条目并在抓取�
     pick: () => { throw Error('unused'); }, extract: () => [], close() {}, dispose() {},
     scrape: async options => {
       calls.push({ pagination: options.pagination, known: options.isKnown && ['https://example.test/one#top', 'https://example.test/new'].map(options.isKnown) });
-      options.onReport?.(report);
+      options.onReport?.(report, [{ title: 'one', link: 'https://example.test/one' }, { title: 'two', link: 'https://example.test/two' }]);
       return [{ title: 'one', link: 'https://example.test/one' }, { title: 'two', link: 'https://example.test/two' }, { title: 'three', link: 'https://example.test/three' }];
     },
   };
@@ -61,6 +61,8 @@ test('翻页设置随订阅保存，后台刷新传入已见条目并在抓取�
     assert.equal(latest.pages, 2);
     assert.equal(latest.note, '共 2 页（2 + 1 条）；第 3 页失败：目标网页返回 HTTP 500，已保留前 2 页的条目');
     assert.deepEqual(store.getItems(id).map(item => item.title), ['one', 'two', 'three'], '第 1 页的条目排在最前');
+    const health = () => { const db = new DatabaseSync(join(dir, 'app.db')); try { return db.prepare('SELECT item_count FROM feed_health_samples WHERE feed_id=? ORDER BY id').all(id).map(row => Number(row.item_count)); } finally { db.close(); } };
+    assert.deepEqual(health(), [2], '规则健康只统计第 1 页的条目');
 
     await app.inject({ method: 'POST', url: `/api/feeds/${id}/refresh`, headers });
     assert.deepEqual(calls[1].known, [true, false], '已保存的链接（忽略 #hash）视为已见过');

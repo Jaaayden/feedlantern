@@ -83,7 +83,7 @@ export function UsersPanel({ currentUserId, manage, changed, identityChanged }: 
       {users.length > 0 && !shown.length && <p className="muted users-empty">没有匹配的用户{onlyFailing && <> · <button type="button" className="link-button" onClick={() => setOnlyFailing(false)}>显示全部账号</button></>}</p>}
     </section>
     {deletion && <div className="modal-backdrop"><section className="panel settings-form delete-user-dialog" role="dialog" aria-modal="true" aria-label="永久删除用户">
-      <h2>永久删除 {deletion.user.username}</h2><p>将删除 {deletion.feeds} 个订阅、{deletion.credentials} 个凭据、{deletion.jobs} 个批量任务，以及全部历史、个人设置和通知记录。原 RSS 地址将失效，此操作不可撤销。</p>
+      <h2>永久删除 {deletion.user.username}</h2><p>将删除 {deletion.feeds} 个订阅、{deletion.bundles ? `${deletion.bundles} 个聚合订阅、` : ''}{deletion.credentials} 个凭据、{deletion.jobs} 个批量任务，以及全部历史、个人设置和通知记录。原 RSS 地址将失效，此操作不可撤销。</p>
       <label className="field"><span>输入目标用户名确认</span><input autoFocus value={confirmation} onChange={e => setConfirmation(e.target.value)} /></label>
       {error && <p role="alert" className="error-note">{error}</p>}
       <div className="inline"><button className="button danger" disabled={busy || confirmation !== deletion.user.username} onClick={() => { void run(() => api.users.delete(deletion.user.id, confirmation), '用户及其数据已永久删除。').then(ok => { if (ok) { setDeletion(null); reset(); } }); }}>永久删除</button><button className="button" disabled={busy} onClick={() => setDeletion(null)}>取消</button></div>

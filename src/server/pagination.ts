@@ -31,7 +31,8 @@ export interface CollectOptions {
   now?: () => number;
 }
 
-export interface CollectResult { items: ExtractedItem[]; report: PaginationReport }
+/** `firstPage` holds the items of page 1 as extracted (rule health compares those only). */
+export interface CollectResult { items: ExtractedItem[]; firstPage: ExtractedItem[]; report: PaginationReport }
 
 class BudgetError extends Error {}
 
@@ -103,7 +104,7 @@ export async function collectPages(page: Page, options: CollectOptions): Promise
   };
   const finish = (stop: PaginationStop, stoppedAt: number, text: string): CollectResult => {
     if (items.length > MAX_COLLECTED_ITEMS) items.length = MAX_COLLECTED_ITEMS;
-    return { items, report: { pages, stoppedAt, stop, message: text } };
+    return { items, firstPage: first, report: { pages, stoppedAt, stop, message: text } };
   };
 
   // Page 1: any error here is the error of the whole run.

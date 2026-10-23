@@ -29,8 +29,13 @@ function escapeXml(value: string): string {
   return value.replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[char]!);
 }
 
-export function buildOpml(title: string, feeds: Array<{ name: string; feedUrl: string; siteUrl: string }>): string {
-  const outlines = feeds.map(feed => `    <outline type="rss" text="${escapeXml(feed.name)}" title="${escapeXml(feed.name)}" xmlUrl="${escapeXml(feed.feedUrl)}" htmlUrl="${escapeXml(feed.siteUrl)}"/>`).join('\n');
+/** Bundles go into their own "聚合订阅" folder; they have no web page of their own. */
+export function buildOpml(title: string, feeds: Array<{ name: string; feedUrl: string; siteUrl: string }>, bundles: Array<{ name: string; feedUrl: string }> = []): string {
+  const outline = (feed: { name: string; feedUrl: string; siteUrl?: string }, indent: string) => `${indent}<outline type="rss" text="${escapeXml(feed.name)}" title="${escapeXml(feed.name)}" xmlUrl="${escapeXml(feed.feedUrl)}"${feed.siteUrl ? ` htmlUrl="${escapeXml(feed.siteUrl)}"` : ''}/>`;
+  const outlines = [
+    ...feeds.map(feed => outline(feed, '    ')),
+    ...(bundles.length ? [`    <outline text="聚合订阅" title="聚合订阅">`, ...bundles.map(bundle => outline(bundle, '      ')), '    </outline>'] : []),
+  ].join('\n');
   return `<?xml version="1.0" encoding="UTF-8"?>\n<opml version="2.0">\n  <head>\n    <title>${escapeXml(title)}</title>\n    <dateCreated>${new Date().toUTCString()}</dateCreated>\n  </head>\n  <body>\n${outlines}\n  </body>\n</opml>\n`;
 }
 

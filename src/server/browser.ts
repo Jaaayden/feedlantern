@@ -61,8 +61,8 @@ export interface BrowserScrapeOptions extends BrowserOpenOptions {
   pagination?: PaginationRules | null;
   /** Links the feed already stored; a page of only those ends a multi-page run. */
   isKnown?: (link: string) => boolean;
-  /** Receives which pages were fetched and why collection stopped. */
-  onReport?: (report: PaginationReport) => void;
+  /** Receives which pages were fetched and why collection stopped, and the items of page 1. */
+  onReport?: (report: PaginationReport, firstPage: ExtractedItem[]) => void;
 }
 
 function paginated(pagination?: PaginationRules | null): pagination is PaginationRules {
@@ -832,7 +832,7 @@ export class BrowserService {
 
   async scrape(options: BrowserScrapeOptions): Promise<ExtractedItem[]> {
     const result = await this.background(options, page => this.collect(page, options), paginated(options.pagination) ? PAGINATED_OPERATION_TIMEOUT_MS : BROWSER_OPERATION_TIMEOUT_MS);
-    options.onReport?.(result.report);
+    options.onReport?.(result.report, result.firstPage);
     return result.items;
   }
 

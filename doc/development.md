@@ -28,15 +28,21 @@ React/Vite 前端；Fastify API；SQLite Store；Playwright BrowserService；共
 
 SQLite `PRAGMA user_version` 记录迁移：版本 1 增加频道名称与设置表，版本 2 增加持久化任务，版本 3 将频道名称与管理名称统一（保留已设置的频道名称）。已有 v0.1.0 数据在首次启动时迁移，旧名称填入频道名称。更改迁移前必须考虑已有数据库和备份格式兼容。
 
-版本 16 为 `feeds` 增加 `pagination_json`（多页采集设置，NULL 表示只抓源网址这一页）。迁移会先检查列是否已存在。`fetch_logs` 的 `pages`、`note` 列和该表的其他列一样，由 `FetchHistory` 按列存在与否补齐。
+迁移版本 11 增加 `api_tokens` 表（令牌 ID、所属用户、名称、SHA-256 哈希、显示前缀、权限、创建／过期／最近使用时间），删除用户时级联删除。
+
+迁移版本 15 新增规则健康统计：`feed_health`（每个订阅当前的预警和最近一次推送时间）与 `feed_health_samples`（每次成功抓取的条目数、不重复链接数和各字段有效率），并为 `fetch_logs` 增加 `warning` 列。它们和抓取日志一样属于诊断数据，不进入完整备份；删除订阅时级联删除。判断逻辑在 `src/server/rule-health.ts`（`measureItems` / `evaluateHealth`，阈值集中在 `RULE_HEALTH`），在抓取事务提交之后单独执行，出错只写服务端日志，不影响抓取结果和条目存储。样本按“网址 + 规则”的签名区分，修改规则或网址后旧样本作废。
+
+迁移版本 16 为 `feeds` 增加 `pagination_json`（多页采集设置，NULL 表示只抓源网址这一页）；和 13–15 一样按列是否存在判断，并写入 `max(16, 当前版本)`，重复运行或从任意版本升级都安全。`fetch_logs` 的 `pages`、`note` 列和该表的其他列一样，由 `FetchHistory` 按列存在与否补齐。
 
 多用户迁移版本为 7：统一 `users` 表替代 `admin`，会话引用用户 ID，订阅、凭据和批量任务记录 `owner_id`。原数据迁移到稳定 ID `admin`，旧会话清空。HTTP 层所有资源入口检查归属，批量操作逐项校验；队列执行时重新检查。用户停用递增 `generation`、撤销会话及发出取消信号，后台结果只有代次仍一致时可落库；翻译同时使用任务 revision。
+
+聚合订阅迁移版本为 14（按 `bundles` 表是否存在判断，与合并顺序无关）：新增 `bundles`（所有者、名称、条数上限、加密密钥与哈希）和 `bundle_feeds`（成员与顺序）。`bundle_feeds.feed_id` 外键 `ON DELETE CASCADE`，删除订阅自动移出所有聚合；删除用户同时删除其聚合。存取在 `src/server/bundle-store.ts`，合并与 RSS 输出在 `src/server/bundles.ts`：每个成员先经 `publishedItems`（与单个订阅 RSS 相同的条目选择），再合并去重；条目复用 `renderRssItem`、`renderAtomEntry`、`jsonFeedItem`，聚合只追加来源（RSS/Atom 的 category、JSON Feed 的 tags）。聚合只读已存条目，不进入抓取任务池。
 
 Store 的无 owner 参数列表方法保留给整站后台调度和备份使用，HTTP 工作台必须传入认证的用户 ID。客户端提交的 ownerId 不决定归属。普通用户不读取全局设置，列表偏好存储在浏览器中。
 
 ## API 摘要
 
-所有管理接口要求登录；账号管理、全局设置及备份仅管理员可用，跨用户资源与不存在资源均返回 404。写操作需要 `X-FeedLantern: 1` 和 `X-CSRF-Token`，并校验 Host/Origin。错误返回 `{error:string}`，响应不缓存。
+所有管理接口要求登录（网页会话 Cookie 或个人访问令牌，见下节）；账号管理、全局设置及备份仅管理员可用，跨用户资源与不存在资源均返回 404。网页会话的写操作需要 `X-FeedLantern: 1` 和 `X-CSRF-Token`，并校验 Host/Origin。错误返回 `{error:string}`，响应不缓存。完整的接口说明见 `GET /api/openapi.json`（OpenAPI 3.1）。
 
 | 接口 | 用途 |
 |---|---|
@@ -55,17 +61,83 @@ Store 的无 owner 参数列表方法保留给整站后台调度和备份使用�
 | `/api/backups/export` | 加密导出，POST 管理员密码与备份密码 |
 | `/api/backups/preview`、`restore` | 预览/覆盖恢复；初始化场景使用 setupToken |
 | `GET/POST /api/backups/config` | 轻量配置导出/预览与确认导入 |
+| `GET/POST /api/tokens`、`DELETE /api/tokens/:id` | 列出、创建（`{name, scope:'read'\|'write', expiresInDays?}`，返回只出现一次的 `secret`）、吊销自己的访问令牌；仅限网页会话 |
+| `GET /api/openapi.json` | 公开的 OpenAPI 3.1 文档 |
 | `/feeds/:id/:token.xml` | 无管理员登录的密钥授权 RSS 2.0 |
+| `POST /api/feeds/:id/health/redetect` | 网页订阅：后台按当前规则抽取并运行自动识别，返回 `{current:{count,items,error?}, detection}`（每个候选最多 5 条预览），不保存规则 |
+| `POST /api/feeds/:id/health/preview` | `{rules}`，在订阅网页上预览字段组合，返回 `{count,items,error?}` |
+| `POST /api/feeds/:id/health/ignore` | 清除“规则可能失效”并以最新样本作为新基线，返回 `{feed,feedUrl}` |
+| `/feeds/:id/:token.atom`、`.json` | 同一密钥授权的 Atom 1.0、JSON Feed 1.1 |
+| `PATCH /api/feeds/:id` | 名称、间隔、翻译模式，以及 `itemFilter`（`null` 清除）和 `outputLimit` |
+| `POST /api/feeds/:id/output-preview` | `{itemFilter?,outputLimit?}` 预览未保存设置下每个条目的输出状态 |
+| `GET/POST /api/bundles` | 列出／以 `{name, feedIds, itemLimit?}` 创建聚合订阅，返回 `{bundle, bundleUrl}`；成员必须属于同一账号，最多 200 个，`itemLimit` 为 10–500（默认 100） |
+| `GET/PUT/DELETE /api/bundles/:id` | 读取／局部修改 `{name?, feedIds?, itemLimit?}`（`feedIds` 整体替换成员）／删除聚合，不影响成员订阅 |
+| `POST /api/bundles/:id/feeds` | `{feedIds}` 追加成员，已有成员保持原位 |
+| `POST /api/bundles/:id/rotate-token` | 轮换聚合密钥，旧地址立即失效 |
+| `/bundles/:id/:token.xml`、`.atom`、`.json` | 同一密钥授权的聚合 RSS 2.0、Atom 1.0、JSON Feed 1.1，`.xml` 在浏览器直接打开时显示预览页；只读已存条目，不触发抓取 |
+
+### 输出选择
+
+RSS、Atom、JSON Feed、浏览器预览页和管理端都通过 `src/server/feed-output.ts` 的 `classifyItems` 决定发布哪些条目：先去掉未完成翻译的条目，再应用 `itemFilter`，最后按 `outputLimit` 截断。每个条目的状态为 `published`、`untranslated`、`excluded`、`not-included` 或 `over-limit`；`GET /api/feeds/:id` 在 `outputStatus`（按条目 ID）中返回，ETag 也基于同一结果计算，修改规则后阅读器会拿到新内容。
+
+正则过滤的安全限制：保存时用 `u` 标志编译检查，`unsafeRegexReason` 拒绝反向引用以及“重复的组内还有重复或分支”（如 `(a+)+`、`(a|ab)*`）；运行时标题截取 500 字符、摘要 2000 字符，并在 `node:vm` 中以 100 毫秒超时执行，V8 会在回溯中途中断。超时结果按规则和内容缓存，本次输出不应用过滤并记录一次警告；保存时如果在已有条目上超时则直接拒绝。
 
 `ScreenFrame` 是从页面顶部截取的第一段截图（JPEG 质量 75，data URL，每段最高 8000 像素）。`height` 为已截取的高度，`documentHeight` 为可截取的总高度（最高 48000 像素；网页更长时 `truncated: true`），`viewportHeight` 为远端视口高度。`POST /api/browser/:id/segment {top}` 截取下一段，`top` 必须等于已截取的高度，否则拒绝，避免重复或跳段；返回 `{top, height, image, documentHeight, map}`。`map` 是元素地图：`boxes` 每 5 个数一组（x、y、宽、高、最近的上层元素序号，根为 -1），坐标相对整页顶部，另含 `labels`、`links`（仅 http/https）和 `innerScroll`。地图是累计的：后续分段只追加新元素，已有序号不变。编辑器据此在本地完成悬停高亮、↑/↓ 调整范围和滚动。
 
 `POST /api/browser/:id/pick` 优先接受元素序号 `{node, exact?}`，也接受整页坐标 `{x, y}`；`exact: true` 保留所选元素，不自动扩展到重复条目或字段元素。带上 `rules` 时，同一请求按新选择器预览并返回 `items`（失败时为 `previewError`）。`POST /api/browser/:id/follow {node}` 在当前会话打开该元素或其上层元素的链接（受同样的网络策略限制）并返回新的 `ScreenFrame`。高亮框、自动识别和日期选区的坐标均相对整页顶部。
 
-多页采集由 `src/server/pagination.ts` 的 `collectPages` 完成：第 1 页由调用方打开，之后在同一标签、同一浏览器上下文中按 `PaginationRules`（`next` / `template` / `loadMore`）逐页处理。后台刷新（`BrowserService.scrape`）、批量确认和编辑器预览都调用它；导航前先做 `NetworkPolicy.assertAllowed`，请求仍经过上下文路由和受限代理。总时长预算为 180 秒，硬超时为预算加 90 秒。`POST /api/browser/:id/preview` 带上 `pagination` 且最多页数大于 1 时，在会话的另一个标签重新打开源网址并试抓，返回 `{items, pagination: PaginationReport}`；`PickRequest.target` 可为 `next`，用于点选“下一页”或“加载更多”。后台刷新传入订阅已保存链接的判断函数，一页全是已见条目时停止；结果写入抓取日志的 `pages` 和 `note`。
+多页采集由 `src/server/pagination.ts` 的 `collectPages` 完成：第 1 页由调用方打开，之后在同一标签、同一浏览器上下文中按 `PaginationRules`（`next` / `template` / `loadMore`）逐页处理。后台刷新（`BrowserService.scrape`）、批量确认和编辑器预览都调用它；导航前先做 `NetworkPolicy.assertAllowed`，请求仍经过上下文路由和受限代理。总时长预算为 180 秒，硬超时为预算加 90 秒。`POST /api/browser/:id/preview` 带上 `pagination` 且最多页数大于 1 时，在会话的另一个标签重新打开源网址并试抓，返回 `{items, pagination: PaginationReport}`；`PickRequest.target` 可为 `next`，用于点选“下一页”或“加载更多”。后台刷新传入订阅已保存链接的判断函数，一页全是已见条目时停止；结果写入抓取日志的 `pages` 和 `note`，与规则健康的 `warning`、多渠道告警记录互不影响。规则健康只统计 `CollectResult.firstPage`（第 1 页抽取的条目），`/api/feeds/:id/health/*` 的对比和重新识别也只看第 1 页，因此健康签名不包含翻页设置，改动最多页数不需要重置基线。
 
 `POST /api/browser/:id/scroll` 接受 `{deltaY,x?,y?}`，坐标须同时提供并位于远端视口内；省略时使用视口中心。编辑器只在 `map.innerScroll` 为真时用它滚动页面内部的滚动区域。显式关闭编辑会话会取消进行中的操作并释放容量。
 
-完整备份格式版本为 3（兼容导入 version 1、2），独立于数据库迁移版本；敏感值只在加密包内部携带可迁移明文，目标实例使用自己的主密钥重新加密。
+数据库版本 9 为 `feeds` 增加 `item_filter_json`（JSON，可空）和 `output_limit`（默认 100）；完整备份中两列为可选字段，旧备份恢复后使用默认值。完整备份格式版本为 3（兼容导入 version 1、2），独立于数据库迁移版本；敏感值只在加密包内部携带可迁移明文，目标实例使用自己的主密钥重新加密。
+
+## 用令牌调用 API
+
+脚本和 AI Agent 使用个人访问令牌，不需要模拟网页登录。在“设置 → 访问令牌”创建，令牌形如 `fl_` 加 43 个字符，只在创建时显示一次；数据库只保存 SHA-256 哈希和用于识别的前 11 个字符。
+
+```sh
+export FEEDLANTERN=https://feeds.example.com
+export FEEDLANTERN_TOKEN=fl_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+# 确认令牌和所属账号（返回 userId、role、tokenScope）
+curl -s -H "Authorization: Bearer $FEEDLANTERN_TOKEN" "$FEEDLANTERN/api/auth/status"
+
+# 列出订阅（read 或 write 令牌）
+curl -s -H "Authorization: Bearer $FEEDLANTERN_TOKEN" "$FEEDLANTERN/api/feeds"
+
+# 立即抓取一个订阅（需要 write 令牌）
+curl -s -X POST -H "Authorization: Bearer $FEEDLANTERN_TOKEN" "$FEEDLANTERN/api/feeds/FEED_ID/refresh"
+
+# 修改刷新间隔（需要 write 令牌）
+curl -s -X PATCH -H "Authorization: Bearer $FEEDLANTERN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"intervalMinutes":120}' "$FEEDLANTERN/api/feeds/FEED_ID"
+
+# 下载接口文档（公开，无需令牌）
+curl -s "$FEEDLANTERN/api/openapi.json" -o feedlantern-openapi.json
+```
+
+规则：
+
+- 令牌请求按令牌所属账号鉴权，权限与工作台隔离和该账号的网页会话完全相同：普通用户只能访问自己的数据；管理员令牌默认作用于管理员自己的工作台，和网页一样，只有带 `X-FeedLantern-User: 用户ID` 才在其他账号的工作台中操作。
+- `read` 令牌只能调用 GET；任何写操作返回 403。`write` 令牌可调用所有开放给令牌的接口。
+- 带 `Authorization: Bearer` 的请求只看令牌，忽略 Cookie；不需要 `X-FeedLantern`、`X-CSRF-Token`，也不校验 Host/Origin（这些检查只用来保护浏览器自动携带的 Cookie，跨站页面无法替用户附上令牌）。其他认证方案（例如反向代理的 `Authorization: Basic`）不受影响，仍按 Cookie 会话处理。网页会话的防护保持不变。
+- 令牌无效、过期或已吊销返回 401（带 `WWW-Authenticate: Bearer`）；同一来源地址 15 分钟内失败 20 次后，该地址的令牌请求一律返回 429，直到窗口结束。与登录限速一样，部署在反向代理后要设置 `TRUSTED_PROXIES`。
+- 账号停用、删除、修改密码（包括管理员重置）、改名或角色变化时，与登录会话一样立即吊销该账号的全部令牌；重新启用账号不会恢复旧令牌。完整恢复备份会吊销全部令牌。
+- 每个账号最多 50 个令牌；有效期 1–3650 天或永不过期。过期令牌保留在列表中 30 天后自动清除。
+
+令牌不能调用的接口（只能在网页登录会话中操作，返回 403）：
+
+- 登录相关：`POST /api/auth/setup`、`/api/auth/login`、`/api/auth/logout`、`/api/auth/password`
+- 备份：`POST /api/backups/export`、`/api/backups/preview`、`/api/backups/restore`，`GET/POST /api/backups/config`
+- 账号管理中的危险操作：`POST /api/users`、`PATCH /api/users/:id`、`POST /api/users/:id/password`、`DELETE /api/users/:id`
+- 令牌本身：`GET/POST /api/tokens`、`DELETE /api/tokens/:id`
+
+清单定义在 `src/server/api-tokens.ts` 的 `SESSION_ONLY_ROUTES`，OpenAPI 文档中这些接口的 `x-feedlantern-token` 为 `forbidden`。
+
+`GET /api/openapi.json` 公开提供：文档只描述接口形状，与开源代码中的信息相同，不含任何用户数据；公开后脚本、Agent 和代码生成工具无需先拿到令牌就能读取。`servers` 使用当前请求的公开地址。每个操作带 `x-feedlantern-access`（public / session / read / write）和 `x-feedlantern-token`（read / write / forbidden）。
+
+新增或删除 `/api/*` 路由时同步修改 `src/server/openapi.ts`；`tests/openapi.test.ts` 会比对服务器路由表和文档，缺少或多出接口都会失败。
 
 ## 发布
 
@@ -78,21 +150,35 @@ seccomp 配置来自 Playwright v1.63.0，保留上游配置；更新 Playwright
 数据库版本 5 增加订阅来源 `source_type`、输出模式 `translation_mode`；RSS 获取状态、任务、译文及片段缓存分别由 `rss_sources`、`translations`、`translation_cache` 保存。版本 6 将旧网页订阅设置为原文输出；网页订阅开启翻译后将已抓取内容同步到翻译队列，原始数据保留。
 
 - `POST /api/rss/preview {url}`：鉴权与 CSRF 保护，获取并返回前三条安全原文预览，不触发翻译。
-- `POST/PUT /api/feeds[/id]` 新增 `sourceType: 'rss'` 与 `translationMode: 'original' | 'chinese' | 'bilingual'`。RSS 输入不要求 `rules`、`waitMs` 或 Cookie。新建返回订阅链接后后台获取；来源类型缺省按原有网页订阅处理。
-- `PATCH /api/feeds/:id` 支持 `translationMode`；模式切换不改变地址、GUID 或缓存。
+- `POST/PUT /api/feeds[/id]` 新增 `sourceType: 'rss'` 与 `translationMode: 'original' | 'translated' | 'bilingual'`（v0.7 前名为 `chinese`，仍作为别名接受），以及 `targetLanguage`（`zh-CN` / `zh-TW` / `en` / `ja` / `ko`，默认 `zh-CN`）和 `translationProvider`（`google` / `deepl` / `openai`，`null` 跟随默认）。RSS 输入不要求 `rules`、`waitMs` 或 Cookie。新建返回订阅链接后后台获取；来源类型缺省按原有网页订阅处理。
+- `PATCH /api/feeds/:id` 与批量设置支持 `translationMode`、`targetLanguage`、`translationProvider`；模式切换不改变地址、GUID 或缓存，更换目标语言或实际使用的服务时该订阅全部条目重新排队翻译（`RssTranslations.retranslate`），GUID 不变。
+- `GET /api/translation/providers`（任意已登录用户）返回默认服务和各服务是否已配置；`POST /api/settings/translation/test {provider, settings?, targetLanguage?}`（管理员）用未保存的设置翻译一句示例。
 - `POST /api/feeds/:id/translation/retry {}`：重试未完成条目，清除该订阅重试计数；保留服务端限流等待期。
 - RSS 输出及 ETag 使用同一份仅翻译成功的条目列表；管理端仍返回等待／失败条目。
 - 详情及列表的 RSS Feed 增加 `translation: {pending,success,failed}`；详情条目增加 `contentHtml`、`translationStatus`、`translationError`。
 
 RSS HTTP 获取绑定已检查的 IP，限制 5 次重定向、20 秒和 5 MB 响应；单条 HTML 上限 200,000 字符、标题上限 20,000 字符，超限明确失败，不静默截断。XML 禁止 DTD/实体声明。RSS 输出和管理预览都使用安全 HTML，管理预览另加 sandbox 与 CSP。
 
-翻译后台队列与网页抓取池分开，SQLite 任务使用 revision 防止暂停、编辑、删除后的旧结果回写。关闭、恢复备份和应用设置维护时先停止并取消翻译，再操作存储；启动恢复进行中的任务。获取失败进入抓取日志；翻译失败进入独立日志，两类故障分别去重并复用 Bark 发送队列。
+翻译后台队列与网页抓取池分开，SQLite 任务使用 revision 防止暂停、编辑、删除后的旧结果回写。关闭、恢复备份和应用设置维护时先停止并取消翻译，再操作存储；启动恢复进行中的任务。获取失败进入抓取日志；翻译失败进入独立日志，两类故障分别去重并复用通知发送队列。
 
 完整备份继续接受版本 1，新增字段/表使用兼容默认值，因此新程序可恢复旧备份；包含 RSS 翻译的新备份不应交给旧版本程序恢复。轻量配置格式 2 增加来源与模式，不携带内容缓存。
 
-`tests/rss-translation.test.ts` 验证解析、受限 HTTP、缓存、竞态、备份与接口。E2E 后端注入确定性翻译器与模拟 Bark 发送器，实际 RSS HTTP 和浏览器抓取仍使用本地 fixture；生产入口不包含模拟翻译。运行真实 Google 连接检查可使用 `node --import tsx scripts/check-translation.ts`。
+`tests/rss-translation.test.ts` 验证解析、受限 HTTP、缓存、竞态、备份与接口。E2E 后端注入确定性翻译器与模拟通知发送器，实际 RSS HTTP 和浏览器抓取仍使用本地 fixture；生产入口不包含模拟翻译。运行真实 Google 连接检查可使用 `node --import tsx scripts/check-translation.ts`。
 
-应用设置新增 `translation: {concurrency: 6, requestIntervalMs: 100}`，旧设置和备份缺失时自动采用默认值。并发范围 1–16，间隔范围 0–5000 毫秒；PUT 支持局部更新。全局请求调度器约束真实 HTTP 并发与启动间隔，正文先并行翻译，再按 DOM 顺序组装；局部失败等待已启动操作收敛后再记录重试，禁止半成品进入 RSS。
+### 翻译服务
+
+`src/server/translation-providers.ts` 定义 `TranslationEngine`：一个服务加一个目标语言，只负责把一组文本按顺序翻译成同样数量的结果，失败抛出 `TranslationError`（`rateLimited` 表示需要退避）。排队、批量、缓存、限流退避和重试仍由 `TranslationWorker` 统一处理，Google 通道的行为不变。工作器为每个服务维护独立的队列、并发、启动间隔和冷却时间；`RssTranslations.next(defaultProvider, skip)` 跳过正在冷却或已满的服务。
+
+- 缓存键为 `sha256("<命名空间>:<片段>")`：Google 为 `google-browser:v2:<语言>`（`zh-CN` 即升级前的键），DeepL 为 `deepl:v1:<语言>`，OpenAI 兼容接口为 `openai:v1:<接口地址+模型+提示词摘要>:<语言>`。
+- DeepL 与 OpenAI 兼容接口的请求经 `policyPost` 发出：先用 `NetworkPolicy` 解析并校验地址，再把连接固定到已校验的 IP，不跟随重定向；私网和回环地址只有精确加入 `allowedHosts` 才放行。
+- OpenAI 兼容接口把片段编号为 `<seg id="N">…</seg>`（转义后发送），系统提示词为“自定义提示词 + 固定格式要求”；`parseSegments` 要求编号连续、数量一致、段内无标签、段外无内容，否则整批失败重试。`finish_reason: length` 视为失败。
+- 设置中的 API Key 随加密的应用设置保存；`GET /api/settings`、备份预览和轻量配置导出把 Key 置空并返回 `apiKeyConfigured`。`PUT /api/settings` 中 Key 缺省或为空表示保留，`null` 表示删除。
+- 数据库迁移 13 增加 `feeds.target_language`、`feeds.translation_provider`，并把 `chinese` 改为 `translated`。迁移按列是否存在执行，不依赖其他迁移的合并顺序。完整备份与轻量配置的订阅新增对应可选字段，备份格式版本不变。
+- RSS 的 `<language>` 由 `feedLanguage(feed)` 给出（如 `zh-cn`、`ja`）；Atom 的 `xml:lang` 与 JSON Feed 的 `language` 使用 `feedLanguageTag(feed)`（BCP 47，如 `zh-CN`、`ja`）。
+
+`tests/translation-providers.test.ts` 用本地 HTTP 服务模拟 DeepL 与 OpenAI 兼容接口；E2E 的 fixture 服务器提供 `/deepl/{free,pro}/v2/translate` 与 `/openai/v1/chat/completions`，后端通过 `FIXTURE_ORIGIN` 把 DeepL 的固定端点指向它。不调用任何真实翻译服务。
+
+应用设置新增 `translation: {concurrency: 6, requestIntervalMs: 100}`，旧设置和备份缺失时自动采用默认值。并发范围 1–16，间隔范围 0–5000 毫秒；PUT 支持局部更新。v0.7 起该并发与间隔只作用于 Google 通道，`translation.deepl` / `translation.openai` 各有自己的并发与间隔，`translation.defaultProvider` 选择默认服务。每个服务的请求调度器约束真实 HTTP 并发与启动间隔，正文先并行翻译，再按 DOM 顺序组装；局部失败等待已启动操作收敛后再记录重试，禁止半成品进入 RSS。
 
 ## v0.5.1 用户与目标工作台
 
@@ -108,7 +194,21 @@ RSS HTTP 获取绑定已检查的 IP，限制 5 次重定向、20 秒和 5 MB �
 
 SQLite 版本 8 移除单管理员索引并增加加密 `user_notifications`。账号变更在事务内保护最后一名启用管理员；会话仍绑定稳定用户 ID。导入任务持久记录 `actorId` 和 `ownerId`，翻译手动重试记录操作人，浏览器记录操作人及目标。执行前及写入前检查权限与取消信号，删除不能恢复已清除的任务。删除账号也清理可能含来源片段的共享翻译缓存，不删除其他用户已保存的译文。
 
-完整备份 version 3 包含个人通知并兼容 version 1、2；只在加密备份内保存可恢复密钥。轻量配置仅导出操作管理员自己的订阅和个人 Bark。开发测试注入模拟 Bark 发送器，禁止向真实设备地址发送测试消息。
+完整备份 version 3 包含个人通知并兼容 version 1、2；只在加密备份内保存可恢复密钥。轻量配置仅导出操作管理员自己的订阅和个人通知设置。开发测试注入模拟通知发送器，禁止向真实设备地址发送测试消息。
+
+## 通知渠道
+
+告警按“告警 + 渠道投递”两层保存：`fetch_alerts` 每次故障一行，记录正文、`kind`（`fetch`／`translation`／`health`，后者为规则失效预警，Webhook 事件 `rules.warning`）、结构化 `payload`（订阅名称、错误、时间）以及汇总状态；`fetch_alert_deliveries` 每个渠道一行，各自记录 `attempts`、`next_attempt_at`、`error` 和状态。告警产生时为所有者所有已启用且填写完整的渠道各建一条投递；`NotificationWorker`（`src/server/notify.ts`）逐条发送，阈值、超时、重试和冷却沿用所有者的告警策略。汇总状态规则：仍有待发送即“待发送”，任一渠道送达即“已发送”（不再重复推送），全部失败才“发送失败”并在冷却后允许重新告警。取消告警（恢复成功、删除订阅、修改通知目标）由触发器同时取消其待发送投递。数据库迁移 `user_version=10` 把升级前的告警转换为 Bark 投递，已有日志继续显示 Bark 的发送结果。
+
+渠道配置与 Bark 设置一起加密存放在 `user_notifications.value`：原有 Bark 字段（含告警策略）保持不变，新增可选 `channels: {webhook, ntfy, telegram}`，因此旧数据和旧备份无需转换。所有渠道（包括 Bark）通过 `postJson`（`src/server/outbound.ts`）发送：先用 `NetworkPolicy` 解析并检查目标，再把连接固定到检查过的地址，不跟随重定向，响应体最多读取 64 KB。投递错误只保存固定文案。
+
+- `GET /api/notifications`：返回 `NotificationSummary`，即告警策略和各渠道的 `enabled`、`configured` 及非机密字段（脱敏地址、ntfy 服务器与主题、Telegram Chat ID、Webhook 是否签名及请求头名称），不返回地址、密钥、请求头值和令牌。
+- `PUT /api/notifications`：请求体为 `NotificationUpdate`，可同时包含策略字段和 `channels.{bark,webhook,ntfy,telegram}` 的局部更新。省略字段保持原值，空字符串清除；清除必填项（Bark／Webhook 地址、ntfy 主题、Telegram Token 或 Chat ID）会自动停用该渠道；`headers` 整体替换。通知目标变化时取消该账号的待发送告警。
+- `POST /api/notifications/test`：`{channel, ...未保存字段}`，以已保存设置叠加请求字段发送一次 `event: "test"` 通知，不保存；目标被网络策略拦截时返回 400。
+- `GET/PUT /api/notifications/bark` 与 `POST /api/notifications/bark/test` 保留给已有脚本，只读写 Bark 字段，保存 Bark 不会改动其他渠道。
+- `GET /api/backups/config` 新增可选 `notificationChannels`；导入时校验，缺省时保留当前渠道。
+
+测试与 E2E 通过 `createApp({ notificationSenders })` 注入各渠道发送器（`barkSender` 仍可单独替换 Bark）；`tests/notify.test.ts` 用本地 HTTP 接收端和精确白名单验证真实发送路径、签名与网络拦截。
 
 ## 数据保留与体积
 
@@ -116,11 +216,13 @@ SQLite 版本 8 移除单管理员索引并增加加密 `user_notifications`。�
 
 | 数据 | 清理规则 | 位置 |
 | --- | --- | --- |
-| 每个订阅的文章 | 最新 200 条 | `Store.upsertItems` |
+| 每个订阅的文章 | 网页订阅 max(200, 输出条数)，RSS 翻译订阅 max(100, 输出条数)，下次抓取时清理 | `storedItemLimit`（`Store.upsertItems`、`RssTranslations.upsert`） |
 | 翻译进度事件 | 每个订阅最新 200 条，且不超过 7 天；界面只读最近 100 条 | `RssTranslations.prune` |
 | 翻译片段缓存 | 最近使用的 20000 条（`TRANSLATION_CACHE_LIMIT`，备份格式共用同一上限） | `RssTranslations.prune` |
 | 抓取日志 | 按「日志保留天数」，默认 30 天 | `FetchHistory.prune` |
+| 规则健康样本 | 每个订阅最近 10 条正常样本和 10 条可疑样本，并按「日志保留天数」清理 | `RuleHealth.record` / `RuleHealth.prune` |
 | 登录会话 | 过期后每小时清理 | `Store.purgeExpiredSessions` |
+| 访问令牌 | 过期 30 天后每小时清理；每个账号最多 50 个 | `ApiTokens.purgeExpired` |
 
 清理每小时运行一次。新建的数据库使用 `auto_vacuum=INCREMENTAL`，清理后 `Store.compact()` 把空闲页逐步还给磁盘；更早创建的数据库用 `scripts/compact-db.ts` 一次性转换并压缩，用法见[升级维护](maintenance.md#数据库体积)。完整备份导出时翻译缓存也只取最近使用的 20000 条，因此缓存在两次清理之间短暂超限不会让导出失败。
 

@@ -73,7 +73,7 @@ test('persistent cache, mode change, changed content and restart keep item ident
     assert.match(first.title, /译Hello \/ Hello/); assert.match(first.contentHtml!, /const x = 1/);
     store.translations.upsert(feed, [sourceItem]); worker.wake(); await delay(20); assert.equal(calls, before);
     const etag = rssEtag(store.getFeed(feed.id)!, [first]);
-    store.updateFeedSettings(feed.id, { translationMode: 'chinese' });
+    store.updateFeedSettings(feed.id, { translationMode: 'translated' });
     assert.equal(store.getItems(feed.id)[0].title, '译Hello'); assert.notEqual(rssEtag(store.getFeed(feed.id)!, store.getItems(feed.id)), etag);
     store.translations.upsert(feed, [{ ...sourceItem, html: sourceItem.html + '<p>New paragraph</p>' }]); worker.wake();
     await until(() => store.translations.stats(feed.id).success === 1); assert.equal(calls, before + 1);
@@ -397,7 +397,7 @@ test('website translation opt-in preserves originals, IDs, images and output mod
     store.upsertItems(feed, [{ title: 'English title', link: sourceItem.link, description: 'Plain <script> text', image: 'https://example.test/image.png' }]);
     const original = store.getItems(feed.id)[0];
     assert.equal(store.getFeed(feed.id)!.translationMode, 'original');
-    store.updateFeedSettings(feed.id, { translationMode: 'chinese' });
+    store.updateFeedSettings(feed.id, { translationMode: 'translated' });
     assert.equal(store.translations.stats(feed.id).pending, 1);
     assert.doesNotMatch(renderRss(store.getFeed(feed.id)!, store.getItems(feed.id), input.url), /<item>/);
     worker.start(); await until(() => store.translations.stats(feed.id).success === 1);
@@ -411,7 +411,7 @@ test('website translation opt-in preserves originals, IDs, images and output mod
     assert.equal(store.getItems(feed.id)[0].description, original.description); assert.equal(store.getItems(feed.id)[0].title, original.title);
     assert.ok(store.checkFeedToken(feed.id, token));
     store.upsertItems(store.getFeed(feed.id)!, [{ title: 'Changed title', link: sourceItem.link, description: 'New summary' }]);
-    store.updateFeedSettings(feed.id, { translationMode: 'chinese' });
+    store.updateFeedSettings(feed.id, { translationMode: 'translated' });
     assert.equal(store.translations.stats(feed.id).pending, 1); worker.wake();
     await until(() => store.translations.stats(feed.id).success === 1);
     assert.match(store.getItems(feed.id)[0].title, /中文Changed/); assert.equal(store.getItems(feed.id)[0].id, original.id);

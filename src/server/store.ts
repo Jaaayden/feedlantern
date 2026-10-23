@@ -1,17 +1,22 @@
 import type { UserSummary } from '../shared/types.js';
-import { translationEnabled } from '../shared/types.js';
+import { isTargetLanguage, isTranslationProvider, translationEnabled } from '../shared/types.js';
 import { RssTranslations } from './rss-translation.js';
 import { TRANSLATION_CACHE_LIMIT, type Tables } from './backups.js';
 import { FetchHistory } from './fetch-history.js';
 import { normalizeLink } from './links.js';
+import { RuleHealth } from './rule-health.js';
+import { BUNDLE_SCHEMA, BundleStore } from './bundle-store.js';
+import { ApiTokens } from './api-tokens.js';
 import { AppError } from './auth.js';
 import { applicationSettingsSchema } from './settings.js';
-import { defaultApplicationSettings, type ApplicationSettings } from '../shared/types.js';
+import { clampOutputLimit, parseItemFilter, storedItemLimit } from './feed-output.js';
+import { defaultApplicationSettings, defaultNotificationChannels, type ApplicationSettings, type NotificationChannelSettings } from '../shared/types.js';
+import { activeChannels, notificationChannelsSchema, storedNotificationSchema, type ChannelConfigs, type NotificationTarget } from './notify.js';
 import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import type { CredentialSummary, ExtractedItem, Feed, FeedInput, FeedSettingsInput, FeedItem, ImportJob, PaginationRules, RuleOrigins, SelectionRules } from '../shared/types.js';
+import type { CredentialSummary, ExtractedItem, Feed, FeedInput, FeedSettingsInput, FeedItem, ImportJob, ItemFilter, PaginationRules, RuleOrigins, SelectionRules } from '../shared/types.js';
 import type { ServerConfig } from './config.js';
 
 export interface CredentialValue {
@@ -112,12 +117,20 @@ function mergeRuleOrigins(current: RuleOrigins | undefined, next: RuleOrigins | 
   return { ...(current ?? {}), ...next };
 }
 
+/** A stored filter that no longer validates is dropped rather than breaking the feed. */
+function storedItemFilter(value: unknown): ItemFilter | undefined {
+  try { return parseItemFilter(parseJson<unknown>(value, null)) ?? undefined; } catch { return undefined; }
+}
+
 function rowToFeed(row: Record<string, unknown>): Feed {
+  const itemFilter = storedItemFilter(row.item_filter_json);
   return {
     id: String(row.id),
     ownerId: String(row.owner_id),
     sourceType: row.source_type === 'rss' ? 'rss' : 'website',
-    translationMode: row.translation_mode === 'original' ? 'original' : row.translation_mode === 'chinese' ? 'chinese' : 'bilingual',
+    translationMode: row.translation_mode === 'original' ? 'original' : row.translation_mode === 'translated' || row.translation_mode === 'chinese' ? 'translated' : 'bilingual',
+    targetLanguage: isTargetLanguage(row.target_language) ? row.target_language : 'zh-CN',
+    translationProvider: isTranslationProvider(row.translation_provider) ? row.translation_provider : null,
     name: String(row.name),
     channelTitle: String(row.channel_title ?? row.name),
     url: String(row.url),
@@ -135,6 +148,8 @@ function rowToFeed(row: Record<string, unknown>): Feed {
     nextFetchAt: String(row.next_fetch_at),
     lastError: row.last_error ? String(row.last_error) : null,
     itemCount: Number(row.item_count ?? 0),
+    ...(itemFilter ? { itemFilter } : {}),
+    outputLimit: clampOutputLimit(row.output_limit === undefined || row.output_limit === null ? undefined : Number(row.output_limit)),
   };
 }
 
@@ -153,7 +168,10 @@ function rowToItem(row: Record<string, unknown>): FeedItem {
 
 export class Store {
   readonly history: FetchHistory;
+  readonly ruleHealth: RuleHealth;
   readonly translations: RssTranslations;
+  readonly bundles: BundleStore;
+  readonly tokens: ApiTokens;
   readonly dataDir: string;
   readonly dbPath: string;
   readonly masterKeyPath: string;
@@ -279,14 +297,70 @@ export class Store {
       DROP INDEX IF EXISTS users_single_admin;
       CREATE TABLE user_notifications (user_id TEXT PRIMARY KEY, value TEXT NOT NULL);
       PRAGMA user_version=8; COMMIT;`);
-    // Multi-page collection settings (JSON, NULL = source page only).
-    if (version < 16) {
-      this.db.exec('BEGIN');
-      if (!this.db.prepare('PRAGMA table_info(feeds)').all().some(row => row.name === 'pagination_json')) this.db.exec('ALTER TABLE feeds ADD COLUMN pagination_json TEXT');
-      this.db.exec('PRAGMA user_version=16; COMMIT;');
+    if (version < 9) {
+      // Per-feed output settings. Columns are added only when missing, so a
+      // database rebuilt from an older layout still upgrades cleanly.
+      const columns = new Set(this.db.prepare('PRAGMA table_info(feeds)').all().map(row => String(row.name)));
+      this.db.exec(`BEGIN;
+        ${columns.has('item_filter_json') ? '' : 'ALTER TABLE feeds ADD COLUMN item_filter_json TEXT;'}
+        ${columns.has('output_limit') ? '' : 'ALTER TABLE feeds ADD COLUMN output_limit INTEGER NOT NULL DEFAULT 100;'}
+        PRAGMA user_version=9; COMMIT;`);
     }
     this.translations = new RssTranslations(this.db, id => this.userSignal(id));
-    this.history = new FetchHistory(this.db, () => this.getSettings(), id => this.getBarkForFeed(id));
+    this.history = new FetchHistory(this.db, () => this.getSettings(), id => {
+      const { policy, configs } = this.notificationTarget(id);
+      return { policy, channels: Object.keys(configs) as (keyof ChannelConfigs)[] };
+    });
+    // Alerts raised before notification channels existed were Bark-only.
+    if (version < 10) { this.db.exec('BEGIN'); this.history.migrateLegacyDeliveries(); this.db.exec('PRAGMA user_version=10; COMMIT'); }
+    // Personal access tokens: only a SHA-256 digest of the secret is stored.
+    if (version < 11) this.db.exec(`BEGIN;
+      CREATE TABLE IF NOT EXISTS api_tokens (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, prefix TEXT NOT NULL, scope TEXT NOT NULL CHECK(scope IN ('read','write')),
+        created_at TEXT NOT NULL, expires_at TEXT, last_used_at TEXT);
+      CREATE INDEX IF NOT EXISTS api_tokens_user ON api_tokens(user_id);
+      PRAGMA user_version=11; COMMIT;`);
+    this.tokens = new ApiTokens(this.db);
+    // Migration numbers are reserved per feature branch, so this one checks its
+    // own column instead of trusting the order in which branches were merged.
+    const feedColumns = new Set(this.db.prepare('PRAGMA table_info(feeds)').all().map(column => String(column.name)));
+    if (!feedColumns.has('target_language')) {
+      const current = Number((this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
+      this.db.exec(`BEGIN;
+        ALTER TABLE feeds ADD COLUMN target_language TEXT NOT NULL DEFAULT 'zh-CN';
+        ALTER TABLE feeds ADD COLUMN translation_provider TEXT;
+        UPDATE feeds SET translation_mode='translated' WHERE translation_mode='chinese';
+        PRAGMA user_version=${Math.max(13, current)}; COMMIT;`);
+    }
+    // Feed bundles. 14 is reserved for this migration; like 13 it checks for its own
+    // tables, so it also runs when it was not merged last.
+    if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='bundles'").get()) {
+      const current = Number((this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
+      this.db.exec(`BEGIN; ${BUNDLE_SCHEMA} PRAGMA user_version=${Math.max(14, current)}; COMMIT;`);
+    }
+    this.bundles = new BundleStore(this.db, value => encrypt(this.masterKey, value), value => decrypt(this.masterKey, value), id => this.isUserActive(id));
+    // Rule health statistics (derived diagnostics, not part of backups). 15 is
+    // reserved for this migration; like 13 and 14 it checks for its own tables.
+    if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='feed_health_samples'").get()) {
+      const current = Number((this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
+      this.db.exec(`BEGIN;
+        CREATE TABLE IF NOT EXISTS feed_health (feed_id TEXT PRIMARY KEY REFERENCES feeds(id) ON DELETE CASCADE,
+          signature TEXT NOT NULL, warning_json TEXT, alerted_at INTEGER);
+        CREATE TABLE IF NOT EXISTS feed_health_samples (id INTEGER PRIMARY KEY AUTOINCREMENT,
+          feed_id TEXT NOT NULL REFERENCES feeds(id) ON DELETE CASCADE, signature TEXT NOT NULL, recorded_at TEXT NOT NULL,
+          item_count INTEGER NOT NULL, distinct_links INTEGER NOT NULL, title_rate REAL NOT NULL, link_rate REAL NOT NULL,
+          date_rate REAL NOT NULL, image_rate REAL NOT NULL, description_rate REAL NOT NULL, flagged INTEGER NOT NULL DEFAULT 0);
+        CREATE INDEX IF NOT EXISTS feed_health_samples_feed ON feed_health_samples(feed_id, flagged, id DESC);
+        CREATE INDEX IF NOT EXISTS feed_health_samples_retention ON feed_health_samples(recorded_at);
+        PRAGMA user_version=${Math.max(15, current)}; COMMIT;`);
+    }
+    // Multi-page collection settings (JSON, NULL = source page only). 16 is
+    // reserved for this migration; like 13–15 it checks for its own column.
+    if (!this.db.prepare('PRAGMA table_info(feeds)').all().some(column => column.name === 'pagination_json')) {
+      const current = Number((this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
+      this.db.exec(`BEGIN; ALTER TABLE feeds ADD COLUMN pagination_json TEXT; PRAGMA user_version=${Math.max(16, current)}; COMMIT;`);
+    }
+    this.ruleHealth = new RuleHealth(this.db, () => this.getSettings(), this.history);
     this.migrateBark();
     this.ensureSetupToken();
   }
@@ -391,6 +465,7 @@ export class Store {
 
   private revokeUser(id: string): void {
     this.db.prepare('DELETE FROM sessions WHERE user_id=?').run(id);
+    this.tokens.revokeUser(id);
     this.userControllers.get(id)?.abort(); this.userControllers.delete(id);
     for (const feed of this.listFeeds(id)) this.translations.invalidate(feed.id);
     this.translations.cancelActor(id);
@@ -404,7 +479,7 @@ export class Store {
   deletionPreview(id: string) {
     const user = this.getUser(id);
     if (!user) throw new AppError(404, '用户不存在');
-    return { user, feeds: this.listFeeds(id).length, credentials: this.listCredentialSummaries(id).length, jobs: this.listImportJobs(id).length };
+    return { user, feeds: this.listFeeds(id).length, bundles: this.bundles.list(id).length, credentials: this.listCredentialSummaries(id).length, jobs: this.listImportJobs(id).length };
   }
 
   deleteUser(actorId: string, id: string, confirmation: string): void {
@@ -415,7 +490,7 @@ export class Store {
       if (confirmation !== user.username) throw new AppError(400, '请输入目标用户名确认删除');
       if (user.role === 'admin' && user.enabled && !this.listUsers().some(u => u.id !== id && u.role === 'admin' && u.enabled)) throw new AppError(409, '必须保留至少一名启用的管理员');
       this.revokeUser(id);
-      for (const table of ['import_jobs', 'feeds', 'credentials']) this.db.prepare(`DELETE FROM ${table} WHERE owner_id=?`).run(id);
+      for (const table of ['import_jobs', 'bundles', 'feeds', 'credentials']) this.db.prepare(`DELETE FROM ${table} WHERE owner_id=?`).run(id);
       // The shared translation cache can contain this user's source fragments.
       this.db.prepare('DELETE FROM translation_cache').run();
       this.db.prepare('DELETE FROM user_notifications WHERE user_id=?').run(id);
@@ -473,6 +548,7 @@ export class Store {
         this.userControllers.get(id)?.abort();
         this.userControllers.delete(id);
         this.db.prepare('DELETE FROM sessions WHERE user_id=?').run(id);
+        this.tokens.revokeUser(id);
         for (const feed of this.listFeeds(id)) this.translations.invalidate(feed.id);
       } else {
         this.db.prepare('UPDATE feeds SET next_fetch_at=? WHERE owner_id=? AND enabled=1').run(nowIso(), id);
@@ -480,7 +556,7 @@ export class Store {
     });
   }
 
-  owns(table: 'feeds' | 'credentials' | 'import_jobs', id: string, userId: string): boolean {
+  owns(table: 'feeds' | 'credentials' | 'import_jobs' | 'bundles', id: string, userId: string): boolean {
     return !!this.db.prepare(`SELECT 1 FROM ${table} WHERE id=? AND owner_id=?`).get(id, userId);
   }
 
@@ -661,10 +737,10 @@ export class Store {
     this.db.prepare(`INSERT INTO feeds(
       id, name, url, rules_json, rule_origins_json, credential_id, interval_minutes, wait_ms,
       wait_for_selector, enabled, created_at, last_fetched_at, last_success_at, next_fetch_at,
-      last_error, item_count, token_ciphertext, token_hash, channel_title, source_type, translation_mode, owner_id
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL, NULL, ?, NULL, 0, ?, ?, ?, ?, ?, ?)`)
+      last_error, item_count, token_ciphertext, token_hash, channel_title, source_type, translation_mode, owner_id, target_language, translation_provider
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL, NULL, ?, NULL, 0, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(id, input.name, input.url, JSON.stringify(input.rules), input.ruleOrigins ? JSON.stringify(input.ruleOrigins) : null, input.credentialId, input.intervalMinutes, input.waitMs, input.waitForSelector ?? null, timestamp, nextFetchAt, encrypt(this.masterKey, token), hashToken(token),
-        input.name, input.sourceType ?? 'website', input.translationMode ?? (input.sourceType === 'rss' ? 'bilingual' : 'original'), ownerId);
+        input.name, input.sourceType ?? 'website', input.translationMode ?? (input.sourceType === 'rss' ? 'bilingual' : 'original'), ownerId, input.targetLanguage ?? 'zh-CN', input.translationProvider ?? null);
     if (input.pagination) this.db.prepare('UPDATE feeds SET pagination_json=? WHERE id=?').run(JSON.stringify(input.pagination), id);
     return { feed: this.getFeed(id)!, token };
   }
@@ -679,6 +755,7 @@ export class Store {
       this.translations.resetSource(id);
     }
     this.db.prepare('UPDATE feeds SET source_type=?,translation_mode=? WHERE id=?').run(input.sourceType ?? 'website', input.translationMode ?? existing.translationMode ?? 'bilingual', id);
+    this.setTranslationTarget(existing, input);
     const origins = mergeRuleOrigins(existing.ruleOrigins, input.ruleOrigins);
     // An input without the field (older client) keeps the saved pagination.
     if (input.pagination !== undefined) this.db.prepare('UPDATE feeds SET pagination_json=? WHERE id=?').run(input.pagination && input.sourceType !== 'rss' ? JSON.stringify(input.pagination) : null, id);
@@ -687,7 +764,18 @@ export class Store {
     this.db.prepare(`UPDATE feeds SET name = ?, channel_title = ?, url = ?, rules_json = ?, rule_origins_json = ?, credential_id = ?, interval_minutes = ?, wait_ms = ?, wait_for_selector = ?, next_fetch_at = ?, last_error = NULL WHERE id = ?`)
       .run(input.name, input.name, input.url, JSON.stringify(input.rules), origins ? JSON.stringify(origins) : null, input.credentialId, input.intervalMinutes, input.waitMs, input.waitForSelector ?? null, nextFetchAt, id);
     this.translations.syncWebsite(this.getFeed(id)!);
+    this.ruleHealth.sync(this.getFeed(id)!);
     return this.getFeed(id);
+  }
+
+  /** Translations made by another service or into another language are redone, never reused. */
+  private setTranslationTarget(feed: Feed, input: Pick<FeedSettingsInput, 'targetLanguage' | 'translationProvider'>): void {
+    const target = input.targetLanguage ?? feed.targetLanguage ?? 'zh-CN';
+    const provider = input.translationProvider === undefined ? feed.translationProvider ?? null : input.translationProvider;
+    if (target === feed.targetLanguage && provider === (feed.translationProvider ?? null)) return;
+    this.db.prepare('UPDATE feeds SET target_language=?,translation_provider=? WHERE id=?').run(target, provider, feed.id);
+    const fallback = this.getSettings().translation.defaultProvider;
+    if (target !== feed.targetLanguage || (provider ?? fallback) !== (feed.translationProvider ?? fallback)) this.translations.retranslate(feed.id);
   }
 
   setChannelTitle(id: string, title: string): Feed | null {
@@ -699,19 +787,24 @@ export class Store {
     if (!feed) return null;
     if (input.translationMode && input.translationMode !== feed.translationMode) this.translations.invalidate(id);
     if (input.translationMode) this.db.prepare('UPDATE feeds SET translation_mode=? WHERE id=?').run(input.translationMode, id);
+    this.setTranslationTarget(feed, input);
     const title = input.channelTitle ?? feed.name;
     const interval = input.intervalMinutes ?? feed.intervalMinutes;
     const nextFetchAt = interval === feed.intervalMinutes
       ? feed.nextFetchAt : new Date(Date.now() + interval * 60_000).toISOString();
     this.db.prepare('UPDATE feeds SET name = ?, channel_title = ?, interval_minutes = ?, next_fetch_at = ? WHERE id = ?')
       .run(title, title, interval, nextFetchAt, id);
+    // Output settings only change what is published. Lowering the limit keeps
+    // stored items until the next fetch trims them (see storedItemLimit).
+    if (input.itemFilter !== undefined) this.db.prepare('UPDATE feeds SET item_filter_json = ? WHERE id = ?').run(input.itemFilter ? JSON.stringify(input.itemFilter) : null, id);
+    if (input.outputLimit !== undefined) this.db.prepare('UPDATE feeds SET output_limit = ? WHERE id = ?').run(clampOutputLimit(input.outputLimit), id);
     this.translations.syncWebsite(this.getFeed(id)!);
     return this.getFeed(id);
   }
 
   exportTables(): Tables {
     const tables: Record<string, unknown> = {};
-    for (const table of ['users', 'user_notifications', 'credentials', 'feeds', 'feed_items', 'settings', 'rss_sources', 'translations', 'translation_cache']) {
+    for (const table of ['users', 'user_notifications', 'credentials', 'feeds', 'feed_items', 'settings', 'rss_sources', 'translations', 'translation_cache', 'bundles', 'bundle_feeds']) {
       // The cache is pruned hourly, so it can briefly exceed the limit the backup format allows.
       const rows = table === 'translation_cache'
         ? this.db.prepare('SELECT * FROM translation_cache ORDER BY touched_at DESC LIMIT ?').all(TRANSLATION_CACHE_LIMIT)
@@ -719,7 +812,7 @@ export class Store {
       tables[table] = rows.map(row => {
         if (table === 'user_notifications') return { ...row, value: decrypt(this.masterKey, String(row.value)) };
         if (table === 'credentials') return { ...row, encrypted_value: decrypt(this.masterKey, String(row.encrypted_value)) };
-        if (table === 'feeds') return { ...row, token_ciphertext: decrypt(this.masterKey, String(row.token_ciphertext)) };
+        if (table === 'feeds' || table === 'bundles') return { ...row, token_ciphertext: decrypt(this.masterKey, String(row.token_ciphertext)) };
         if (table === 'settings' && row.key === 'application') return { ...row, value: decrypt(this.masterKey, String(row.value)) };
         return { ...row };
       });
@@ -732,13 +825,15 @@ export class Store {
     for (const controller of this.userControllers.values()) controller.abort();
     this.userControllers.clear();
     this.transaction(() => {
-      for (const table of ['sessions', 'import_jobs', 'translations', 'rss_sources', 'translation_cache', 'feed_items', 'feeds', 'credentials', 'user_notifications', 'users', 'settings']) this.db.exec(`DELETE FROM ${table}`);
-      for (const table of ['users', 'user_notifications', 'credentials', 'feeds', 'feed_items', 'settings', 'rss_sources', 'translations', 'translation_cache'] as const) {
+      // Like sessions, access tokens are not part of a backup; a restore revokes them all.
+      for (const table of ['sessions', 'api_tokens', 'import_jobs', 'bundle_feeds', 'bundles', 'translations', 'rss_sources', 'translation_cache', 'feed_items', 'feeds', 'credentials', 'user_notifications', 'users', 'settings']) this.db.exec(`DELETE FROM ${table}`);
+      for (const table of ['users', 'user_notifications', 'credentials', 'feeds', 'feed_items', 'settings', 'rss_sources', 'translations', 'translation_cache', 'bundles', 'bundle_feeds'] as const) {
         for (const value of tables[table] ?? []) {
           const row: Record<string, string | number | null> = { ...value };
           if (table === 'user_notifications') row.value = encrypt(this.masterKey, String(row.value));
           if (table === 'credentials') row.encrypted_value = encrypt(this.masterKey, String(row.encrypted_value));
           if (table === 'settings' && row.key === 'application') row.value = encrypt(this.masterKey, JSON.stringify(applicationSettingsSchema.parse(JSON.parse(String(row.value)))));
+          if (table === 'bundles') { row.token_hash = hashToken(String(row.token_ciphertext)); row.token_ciphertext = encrypt(this.masterKey, String(row.token_ciphertext)); }
           if (table === 'feeds') { row.name = String(row.channel_title ?? '').trim() || row.name; row.channel_title = row.name; row.token_hash = hashToken(String(row.token_ciphertext)); row.token_ciphertext = encrypt(this.masterKey, String(row.token_ciphertext)); }
           const keys = Object.keys(row);
           this.db.prepare(`INSERT INTO ${table}(${keys.join(',')}) VALUES (${keys.map(() => '?').join(',')})`).run(...keys.map(k => row[k]));
@@ -776,24 +871,60 @@ export class Store {
     this.db.prepare("UPDATE settings SET value=? WHERE key='application'").run(encrypt(this.masterKey, JSON.stringify(value)));
   }
 
-  getBark(userId: string): ApplicationSettings['bark'] {
+  /** One account's Bark settings, shared alert policy and other channels (stored encrypted together). */
+  getNotifications(userId: string): { bark: ApplicationSettings['bark']; channels: NotificationChannelSettings } {
     const row = this.db.prepare('SELECT value FROM user_notifications WHERE user_id=?').get(userId);
-    return row ? applicationSettingsSchema.shape.bark.parse(JSON.parse(decrypt(this.masterKey, String(row.value)))) : structuredClone(defaultApplicationSettings.bark);
+    if (!row) return { bark: structuredClone(defaultApplicationSettings.bark), channels: structuredClone(defaultNotificationChannels) };
+    const { channels, ...bark } = storedNotificationSchema.parse(JSON.parse(decrypt(this.masterKey, String(row.value))));
+    return { bark, channels: notificationChannelsSchema.parse(channels ?? {}) };
+  }
+  getBark(userId: string): ApplicationSettings['bark'] { return this.getNotifications(userId).bark; }
+  private feedOwner(id: string): string | undefined {
+    const row = this.db.prepare('SELECT owner_id FROM feeds WHERE id=?').get(id);
+    return row ? String(row.owner_id) : undefined;
   }
   getBarkForFeed(id: string): ApplicationSettings['bark'] {
-    const row = this.db.prepare('SELECT owner_id FROM feeds WHERE id=?').get(id);
-    return row ? this.getBark(String(row.owner_id)) : structuredClone(defaultApplicationSettings.bark);
+    const owner = this.feedOwner(id);
+    return owner ? this.getBark(owner) : structuredClone(defaultApplicationSettings.bark);
   }
-  private writeBark(userId: string, value: ApplicationSettings['bark']): void {
+  /** Alert policy and enabled, complete channels of a feed's owner. */
+  notificationTarget(feedId: string): NotificationTarget {
+    const owner = this.feedOwner(feedId);
+    const { bark, channels } = owner ? this.getNotifications(owner) : { bark: structuredClone(defaultApplicationSettings.bark), channels: structuredClone(defaultNotificationChannels) };
+    const { enabled: _enabled, url: _url, ...policy } = bark;
+    return { policy, configs: activeChannels(bark, channels) };
+  }
+  private writeNotifications(userId: string, bark: ApplicationSettings['bark'], channels: NotificationChannelSettings): void {
+    const value = storedNotificationSchema.parse({ ...bark, channels });
     this.db.prepare('INSERT INTO user_notifications(user_id,value) VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET value=excluded.value').run(userId, encrypt(this.masterKey, JSON.stringify(value)));
   }
-  setBark(userId: string, patch: Partial<ApplicationSettings['bark']>): ApplicationSettings['bark'] {
-    const previous = this.getBark(userId);
-    const value = applicationSettingsSchema.shape.bark.parse({ ...previous, ...patch, ...(patch.url === '' ? { enabled: false } : {}) });
+  private writeBark(userId: string, value: ApplicationSettings['bark']): void {
+    this.writeNotifications(userId, value, this.getNotifications(userId).channels);
+  }
+  /**
+   * Saves validated notification settings. Changing where alerts go (enabling,
+   * disabling or re-targeting any channel) cancels this account's pending alerts,
+   * as changing the Bark address always did; other accounts are unaffected.
+   */
+  setNotifications(userId: string, next: { bark: ApplicationSettings['bark']; channels: NotificationChannelSettings }): void {
+    const previous = this.getNotifications(userId);
+    const destinations = (value: typeof next) => JSON.stringify(activeChannels(value.bark, value.channels));
     this.transaction(() => {
-      this.writeBark(userId, value);
-      if (previous.url !== value.url || previous.enabled !== value.enabled) this.history.resetNotifications(userId);
+      this.writeNotifications(userId, next.bark, next.channels);
+      if (destinations(previous) !== destinations(next)) this.history.resetNotifications(userId);
+      // Turning rule-health alerts off drops the ones not sent yet; failure alerts are unaffected.
+      if (previous.bark.ruleHealthAlerts !== false && next.bark.ruleHealthAlerts === false) {
+        this.db.prepare("UPDATE fetch_alerts SET status='canceled' WHERE status='pending' AND kind='health' AND feed_id IN (SELECT id FROM feeds WHERE owner_id=?)").run(userId);
+      }
     });
+  }
+  setNotificationChannels(userId: string, channels: NotificationChannelSettings): void {
+    this.setNotifications(userId, { bark: this.getBark(userId), channels });
+  }
+  setBark(userId: string, patch: Partial<ApplicationSettings['bark']>): ApplicationSettings['bark'] {
+    const previous = this.getNotifications(userId);
+    const value = applicationSettingsSchema.shape.bark.parse({ ...previous.bark, ...patch, ...(patch.url === '' ? { enabled: false } : {}) });
+    this.setNotifications(userId, { bark: value, channels: previous.channels });
     return value;
   }
 
@@ -832,6 +963,8 @@ export class Store {
     if (!row) return null;
     const feed = rowToFeed(row);
     if (translationEnabled(feed)) feed.translation = this.translations.stats(feed.id);
+    const ruleHealth = this.ruleHealth.warning(feed.id);
+    if (ruleHealth) feed.ruleHealth = ruleHealth;
     return feed;
   }
 
@@ -840,6 +973,8 @@ export class Store {
     return rows.map(row => {
       const feed = rowToFeed(row);
       if (translationEnabled(feed)) feed.translation = this.translations.stats(feed.id);
+      const ruleHealth = this.ruleHealth.warning(feed.id);
+      if (ruleHealth) feed.ruleHealth = ruleHealth;
       return feed;
     });
   }
@@ -881,7 +1016,9 @@ export class Store {
     return expected.length === actual.length && timingSafeEqual(expected, actual);
   }
 
-  getItems(id: string, limit = 200): FeedItem[] {
+  /** Newest first. Without a limit, every item the feed currently stores. */
+  getItems(id: string, limit?: number): FeedItem[] {
+    if (limit === undefined) limit = Math.max(this.countItems(id), 1);
     const rows = this.db.prepare('SELECT id, title, link, description, image, published_at, published_at_source, first_seen_at FROM feed_items WHERE feed_id = ? ORDER BY first_seen_at DESC, rowid ASC LIMIT ?').all(id, limit) as Array<Record<string, unknown>>;
     const items = rows.map(rowToItem);
     const feed = this.getFeed(id);
@@ -892,6 +1029,10 @@ export class Store {
   knownLinks(feed: Feed): (link: string) => boolean {
     const keys = new Set((this.db.prepare('SELECT normalized_key FROM feed_items WHERE feed_id = ?').all(feed.id) as Array<{ normalized_key: string }>).map(row => row.normalized_key));
     return link => keys.has(hashToken(normalizeLink(link, feed.url)));
+  }
+
+  private countItems(id: string): number {
+    return Number((this.db.prepare('SELECT COUNT(*) AS c FROM feed_items WHERE feed_id = ?').get(id) as { c: number }).c);
   }
 
   upsertItems(feed: Feed, extracted: ExtractedItem[], counts?: { itemCount: number; newItemCount: number }): FeedItem[] {
@@ -921,7 +1062,8 @@ export class Store {
           inserted++;
         }
       }
-      this.db.prepare(`DELETE FROM feed_items WHERE feed_id = ? AND id NOT IN (SELECT id FROM feed_items WHERE feed_id = ? ORDER BY first_seen_at DESC, rowid ASC LIMIT 200)`).run(feed.id, feed.id);
+      const keep = storedItemLimit(this.getFeed(feed.id) ?? feed);
+      this.db.prepare(`DELETE FROM feed_items WHERE feed_id = ? AND id NOT IN (SELECT id FROM feed_items WHERE feed_id = ? ORDER BY first_seen_at DESC, rowid ASC LIMIT ?)`).run(feed.id, feed.id, keep);
       this.translations.syncWebsite(this.getFeed(feed.id)!);
       this.db.exec('RELEASE items');
     } catch (error) {
@@ -929,7 +1071,7 @@ export class Store {
       throw error;
     }
     if (counts) { counts.itemCount = unique.size; counts.newItemCount = inserted; }
-    return this.getItems(feed.id, 200);
+    return this.getItems(feed.id);
   }
 
   markFetchStart(id: string, nextFetchAt: string): void {

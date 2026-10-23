@@ -1,6 +1,8 @@
 import { randomBytes, scryptSync, createCipheriv, createDecipheriv } from 'node:crypto';
 import { z } from 'zod';
-import { applicationSettingsSchema, isApplicationSettingsJson } from './settings.js';
+import { isApplicationSettingsJson } from './settings.js';
+import { storedNotificationSchema } from './notify.js';
+import { BUNDLE_ITEM_LIMIT, BUNDLE_MAX_FEEDS, OUTPUT_LIMIT } from '../shared/types.js';
 /** The translation cache is disposable; both pruning and backups keep only this many newest entries. */
 export const TRANSLATION_CACHE_LIMIT = 20_000;
 const text = z.string().max(1_000_000);
@@ -14,11 +16,17 @@ export const backupTables = {
   translations: z.array(z.object({ item_id: short, feed_id: short, revision: short, status: z.enum(['pending','running','success','failed']), attempts: z.number().int().min(0).max(3), next_at: z.number().int().nonnegative(), error: nullable,
     body_json: z.string().max(20_000_000).refine(value => { try { const b=JSON.parse(value); return (b.actorId == null || typeof b.actorId==='string' && b.actorId.length<=4000) && typeof b.html==='string' && ['title','translatedHtml','bilingualHtml'].every(k => b[k]===undefined || typeof b[k]==='string'); } catch { return false; } }) }).strict()).max(2_000_000).default([]),
   translation_cache: z.array(z.object({ key: z.string().regex(/^[a-f0-9]{64}$/), text, touched_at: z.number().int().nonnegative() }).strict()).max(TRANSLATION_CACHE_LIMIT).default([]),
-  user_notifications: z.array(z.object({ user_id: short, value: text.refine(value => { try { return applicationSettingsSchema.shape.bark.safeParse(JSON.parse(value)).success; } catch { return false; } }) }).strict()).max(10000).default([]),
+  // Bark settings plus optional `channels` (Webhook, ntfy, Telegram); older backups simply omit them.
+  user_notifications: z.array(z.object({ user_id: short, value: text.refine(value => { try { return storedNotificationSchema.safeParse(JSON.parse(value)).success; } catch { return false; } }) }).strict()).max(10000).default([]),
   users: z.array(z.object({ id: short, role: z.enum(['admin','user']), enabled: flag, generation: z.number().int().nonnegative(), username: z.string().regex(/^\S{1,100}$/), password_hash: z.string().regex(/^scrypt\$16384\$8\$1\$[A-Za-z0-9_-]{22}\$[A-Za-z0-9_-]{86}$/), created_at: date, updated_at: date }).strict()).min(1).max(10000).refine(rows => rows.some(u => u.role === 'admin' && u.enabled === 1) && new Set(rows.map(u => u.id)).size === rows.length && new Set(rows.map(u => u.username)).size === rows.length, '用户列表无效'),
   credentials: z.array(z.object({ owner_id: short, id: short, name: short, url, format: z.enum(['header', 'json']), encrypted_value: text, domains_json: text, cookie_count: z.number().int().nonnegative(), updated_at: date, expires_at: date.nullable() }).strict()).max(10000),
-  feeds: z.array(z.object({ owner_id: short, source_type: z.enum(['website', 'rss']).default('website'), translation_mode: z.enum(['original', 'chinese', 'bilingual']).optional(), id: short, name: short, channel_title: z.string().min(1).max(200).nullable(), url, rules_json: text, rule_origins_json: nullable, credential_id: short.nullable(), interval_minutes: z.number().int().min(5).max(1440), wait_ms: z.number().int().min(0).max(10000), wait_for_selector: nullable, pagination_json: nullable.optional(), enabled: flag, created_at: date, last_fetched_at: date.nullable(), last_success_at: date.nullable(), next_fetch_at: date, last_error: nullable, item_count: z.number().int().nonnegative(), token_ciphertext: z.string().regex(/^[A-Za-z0-9_-]{43}$/), token_hash: z.string().regex(/^[a-f0-9]{64}$/) }).strict().transform(row => ({ ...row, translation_mode: row.translation_mode ?? (row.source_type === 'rss' ? 'bilingual' as const : 'original' as const) }))).max(10000),
+  feeds: z.array(z.object({ owner_id: short, source_type: z.enum(['website', 'rss']).default('website'), translation_mode: z.enum(['original', 'translated', 'chinese', 'bilingual']).optional(), target_language: z.enum(['zh-CN', 'zh-TW', 'en', 'ja', 'ko']).default('zh-CN'), translation_provider: z.enum(['google', 'deepl', 'openai']).nullable().default(null), id: short, name: short, channel_title: z.string().min(1).max(200).nullable(), url, rules_json: text, rule_origins_json: nullable, credential_id: short.nullable(), interval_minutes: z.number().int().min(5).max(1440), wait_ms: z.number().int().min(0).max(10000), wait_for_selector: nullable, pagination_json: nullable.optional(), enabled: flag, created_at: date, last_fetched_at: date.nullable(), last_success_at: date.nullable(), next_fetch_at: date, last_error: nullable, item_count: z.number().int().nonnegative(), token_ciphertext: z.string().regex(/^[A-Za-z0-9_-]{43}$/), token_hash: z.string().regex(/^[a-f0-9]{64}$/), item_filter_json: nullable.optional(), output_limit: z.number().int().min(OUTPUT_LIMIT.min).max(OUTPUT_LIMIT.max).optional() }).strict()
+    // Backups made before 0.7 call the translation-only mode `chinese`.
+    .transform(row => ({ ...row, translation_mode: row.translation_mode === 'chinese' ? 'translated' as const : row.translation_mode ?? (row.source_type === 'rss' ? 'bilingual' as const : 'original' as const) }))).max(10000),
   feed_items: z.array(z.object({ id: short, feed_id: short, normalized_key: short, title: text, link: url, description: nullable, image: nullable, published_at: date.nullable(), published_at_source: z.enum(['absolute', 'relative']).nullable().default(null), first_seen_at: date }).strict()).max(2_000_000),
+  // Optional so that backups made before feed bundles still restore.
+  bundles: z.array(z.object({ id: short, owner_id: short, name: z.string().min(1).max(200), item_limit: z.number().int().min(BUNDLE_ITEM_LIMIT.min).max(BUNDLE_ITEM_LIMIT.max), created_at: date, updated_at: date, token_ciphertext: z.string().regex(/^[A-Za-z0-9_-]{43}$/), token_hash: z.string().regex(/^[a-f0-9]{64}$/) }).strict()).max(10000).default([]),
+  bundle_feeds: z.array(z.object({ bundle_id: short, feed_id: short, position: z.number().int().min(0).max(BUNDLE_MAX_FEEDS) }).strict()).max(200_000).default([]),
   settings: z.array(z.union([
     z.object({ key: z.literal('feedView'), value: z.enum(['list', 'cards']) }).strict(),
     z.object({ key: z.literal('application'), value: text.refine(isApplicationSettingsJson, '应用设置无效') }).strict(),
@@ -56,10 +64,16 @@ export const snapshotSchema = z.preprocess(value => {
   }
   return snapshot;
 }, currentSnapshotSchema).superRefine((snapshot, context) => {
-  const { users, feeds, credentials, user_notifications } = snapshot.tables;
+  const { users, feeds, credentials, user_notifications, bundles, bundle_feeds } = snapshot.tables;
   const owners = new Set(users.map(u => u.id)), creds = new Map(credentials.map(c => [c.id, c.owner_id]));
   if (new Set(user_notifications.map(n => n.user_id)).size !== user_notifications.length || user_notifications.some(n => !owners.has(n.user_id)) || feeds.some(f => !owners.has(f.owner_id) || f.credential_id && creds.get(f.credential_id) !== f.owner_id) || credentials.some(c => !owners.has(c.owner_id))) {
     context.addIssue({ code: 'custom', message: '备份中的数据归属无效' });
+  }
+  // A bundle only holds its owner's feeds, each at most once.
+  const feedOwners = new Map(feeds.map(f => [f.id, f.owner_id])), bundleOwners = new Map(bundles.map(b => [b.id, b.owner_id]));
+  if (bundleOwners.size !== bundles.length || bundles.some(b => !owners.has(b.owner_id)) || new Set(bundle_feeds.map(m => `${m.bundle_id}\n${m.feed_id}`)).size !== bundle_feeds.length
+    || bundle_feeds.some(m => !bundleOwners.has(m.bundle_id) || feedOwners.get(m.feed_id) !== bundleOwners.get(m.bundle_id))) {
+    context.addIssue({ code: 'custom', message: '备份中的聚合订阅无效' });
   }
 });
 export type Snapshot = z.infer<typeof snapshotSchema>;

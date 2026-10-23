@@ -1,7 +1,14 @@
 import type { TranslationProgressData } from './TranslationProgress';
+import type { RulePreview, RuleRedetectResult, SelectionRules } from '../shared/types';
 import type {
+  ApiTokenScope,
+  ApiTokenSummary,
   UserSummary,
-  BarkSummary,
+  BundleInput,
+  BundlePayload,
+  NotificationChannel,
+  NotificationSummary,
+  NotificationUpdate,
   AuthState,
   ApplicationSettings,
   ImportJob,
@@ -15,13 +22,22 @@ import type {
   FeedSettingsInput,
   BulkFeedSettingsInput,
   FeedItem,
+  ItemFilter,
+  ItemOutputStatus,
   PaginationReport,
   PaginationRules,
   PickRequest,
   PickResult,
   ScreenFrame,
   SegmentResult,
+  TargetLanguage,
+  TranslationMode,
+  TranslationProviderId,
+  TranslationProvidersInfo,
 } from '../shared/types';
+
+/** Why each stored item is or is not published, keyed by item id. */
+export interface OutputPreview { outputStatus: Record<string, ItemOutputStatus>; filterTimedOut?: boolean }
 
 export class ApiError extends Error {
   status: number;
@@ -60,7 +76,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   const generation = sessionGeneration;
   const headers = new Headers(options.headers);
   headers.set('X-FeedLantern', '1');
-  if (workspaceUser && !/^\/api\/(auth|users|backups|settings)(?:\/|$)/.test(path)) headers.set('X-FeedLantern-User', workspaceUser);
+  if (workspaceUser && !/^\/api\/(auth|users|backups|settings|tokens)(?:\/|$)/.test(path)) headers.set('X-FeedLantern-User', workspaceUser);
   if (csrfToken) headers.set('X-CSRF-Token', csrfToken);
   if (options.body !== undefined) headers.set('Content-Type', 'application/json');
 
@@ -92,6 +108,11 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 }
 
 export const api = {
+  tokens: {
+    list: () => request<ApiTokenSummary[]>('/api/tokens'),
+    create: (body: { name: string; scope: ApiTokenScope; expiresInDays: number | null }) => request<{ token: ApiTokenSummary; secret: string }>('/api/tokens', { method: 'POST', body }),
+    revoke: (id: string) => request<{ ok: boolean }>(`/api/tokens/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  },
   backups: {
     export: (currentPassword: string, password: string) => request<unknown>('/api/backups/export', { method: 'POST', body: { currentPassword, password } }),
     restore: (body: unknown, preview: boolean) => request<Record<string, unknown>>(`/api/backups/${preview ? 'preview' : 'restore'}`, { method: 'POST', body }),
@@ -100,18 +121,19 @@ export const api = {
   },
   jobs: {
     list: () => request<ImportJob[]>('/api/import-jobs'),
-    create: (entries: Array<{ url: string; credentialId: string | null }>, intervalMinutes: number, sourceType: 'website' | 'rss' = 'website', translationMode: 'chinese' | 'bilingual' = 'bilingual') => request<ImportJob>('/api/import-jobs', { method: 'POST', body: { entries, intervalMinutes, sourceType, translationMode } }),
+    create: (entries: Array<{ url: string; credentialId: string | null }>, intervalMinutes: number, sourceType: 'website' | 'rss' = 'website', translation: { translationMode?: Exclude<TranslationMode, 'original'>; targetLanguage?: TargetLanguage; translationProvider?: TranslationProviderId | null } = {}) => request<ImportJob>('/api/import-jobs', { method: 'POST', body: { entries, intervalMinutes, sourceType, translationMode: 'bilingual', ...translation } }),
     action: (id: string, action: 'retry' | 'cancel', entryId?: string) => request<ImportJob>(`/api/import-jobs/${id}/${action}`, { method: 'POST', body: { entryId } }),
     confirm: (id: string, entryId: string, input: FeedInput) => request<{ feed: Feed; feedUrl: string }>(`/api/import-jobs/${id}/confirm`, { method: 'POST', body: { entryId, input } }),
   },
   notifications: {
-    get: () => request<BarkSummary>('/api/notifications/bark'),
-    save: (body: Partial<ApplicationSettings['bark']>) => request<BarkSummary>('/api/notifications/bark', { method: 'PUT', body }),
-    test: (body: Partial<ApplicationSettings['bark']>) => request<{ ok: boolean }>('/api/notifications/bark/test', { method: 'POST', body }),
+    get: () => request<NotificationSummary>('/api/notifications'),
+    save: (body: NotificationUpdate) => request<NotificationSummary>('/api/notifications', { method: 'PUT', body }),
+    /** Sends a test through one channel using the saved settings overridden by `fields`; nothing is saved. */
+    test: (channel: NotificationChannel, fields: Record<string, unknown>) => request<{ ok: boolean }>('/api/notifications/test', { method: 'POST', body: { ...fields, channel } }),
   },
   users: {
     update: (id: string, body: Partial<Pick<UserSummary, 'username' | 'enabled' | 'role'>>) => request<UserSummary>(`/api/users/${encodeURIComponent(id)}`, { method: 'PATCH', body }),
-    deletionPreview: (id: string) => request<{ user: UserSummary; feeds: number; credentials: number; jobs: number }>(`/api/users/${encodeURIComponent(id)}/deletion-preview`),
+    deletionPreview: (id: string) => request<{ user: UserSummary; feeds: number; bundles?: number; credentials: number; jobs: number }>(`/api/users/${encodeURIComponent(id)}/deletion-preview`),
     delete: (id: string, username: string) => request<{ ok: boolean }>(`/api/users/${encodeURIComponent(id)}`, { method: 'DELETE', body: { username } }),
     list: () => request<UserSummary[]>('/api/users'),
     create: (username: string, password: string) => request<UserSummary>('/api/users', { method: 'POST', body: { username, password } }),
@@ -123,6 +145,11 @@ export const api = {
     save: ({ bark: _bark, ...body }: ApplicationSettings) => request<ApplicationSettings>('/api/settings', { method: 'PUT', body }),
     get: () => request<ApplicationSettings>('/api/settings'),
     update: (feedView: 'list' | 'cards') => request<{ feedView: 'list' | 'cards' }>('/api/settings', { method: 'PUT', body: { feedView } }),
+    /** Translate a sample sentence with unsaved service settings (an empty key uses the saved one). */
+    testTranslation: (provider: TranslationProviderId, settings?: unknown, targetLanguage?: TargetLanguage) => request<{ ok: boolean; sample: string; text: string }>('/api/settings/translation/test', { method: 'POST', body: { provider, settings, targetLanguage } }),
+  },
+  translation: {
+    providers: () => request<TranslationProvidersInfo>('/api/translation/providers'),
   },
   auth: {
     status: () => request<AuthState>('/api/auth/status'),
@@ -141,6 +168,11 @@ export const api = {
     update: (id: string, body: CredentialPayload) =>
       request<CredentialSummary>(`/api/credentials/${encodeURIComponent(id)}`, { method: 'PUT', body }),
     remove: (id: string) => request<void>(`/api/credentials/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  },
+  ruleHealth: {
+    redetect: (id: string) => request<RuleRedetectResult>(`/api/feeds/${encodeURIComponent(id)}/health/redetect`, { method: 'POST', body: {} }),
+    preview: (id: string, rules: SelectionRules) => request<RulePreview>(`/api/feeds/${encodeURIComponent(id)}/health/preview`, { method: 'POST', body: { rules } }),
+    ignore: (id: string) => request<{ feed: Feed; feedUrl: string }>(`/api/feeds/${encodeURIComponent(id)}/health/ignore`, { method: 'POST', body: {} }),
   },
   feeds: {
     previewRss: (url: string) => request<{ title: string; items: ExtractedItem[] }>('/api/rss/preview', { method: 'POST', body: { url } }),
@@ -181,7 +213,9 @@ export const api = {
     list: () => request<Feed[]>('/api/feeds'),
     create: (body: FeedInput) => request<{ feed: Feed; feedUrl: string }>('/api/feeds', { method: 'POST', body }),
     detail: (id: string) =>
-      request<{ feed: Feed; items: FeedItem[]; feedUrl: string }>(`/api/feeds/${encodeURIComponent(id)}`),
+      request<{ feed: Feed; items: FeedItem[]; feedUrl: string } & OutputPreview>(`/api/feeds/${encodeURIComponent(id)}`),
+    outputPreview: (id: string, body: { itemFilter: ItemFilter | null; outputLimit: number }) =>
+      request<OutputPreview>(`/api/feeds/${encodeURIComponent(id)}/output-preview`, { method: 'POST', body }),
     update: (id: string, body: FeedInput) =>
       request<{ feed: Feed; feedUrl: string }>(`/api/feeds/${encodeURIComponent(id)}`, { method: 'PUT', body }),
     refresh: (id: string) => request<void>(`/api/feeds/${encodeURIComponent(id)}/refresh`, { method: 'POST', body: {} }),
@@ -189,6 +223,14 @@ export const api = {
     rotate: (id: string) =>
       request<{ feedUrl: string }>(`/api/feeds/${encodeURIComponent(id)}/rotate-token`, { method: 'POST', body: {} }),
     remove: (id: string) => request<void>(`/api/feeds/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  },
+  bundles: {
+    list: () => request<BundlePayload[]>('/api/bundles'),
+    create: (body: BundleInput) => request<BundlePayload>('/api/bundles', { method: 'POST', body }),
+    update: (id: string, body: Partial<BundleInput>) => request<BundlePayload>(`/api/bundles/${encodeURIComponent(id)}`, { method: 'PUT', body }),
+    addFeeds: (id: string, feedIds: string[]) => request<BundlePayload>(`/api/bundles/${encodeURIComponent(id)}/feeds`, { method: 'POST', body: { feedIds } }),
+    rotate: (id: string) => request<BundlePayload>(`/api/bundles/${encodeURIComponent(id)}/rotate-token`, { method: 'POST', body: {} }),
+    remove: (id: string) => request<{ ok: true }>(`/api/bundles/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   },
   browser: {
     open: (body: { url: string; credentialId: string | null; waitMs: number; waitForSelector?: string }) =>

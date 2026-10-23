@@ -6,9 +6,11 @@ const port = Number(process.env.FIXTURE_PORT ?? 8766);
 type FixtureState = {
   failure: boolean;
   version: number;
+  /** /redesign: false serves the original list, true a redesigned page where the old rules match only two leftovers. */
+  redesigned: boolean;
 };
 
-const state: FixtureState = { failure: false, version: 1 };
+const state: FixtureState = { failure: false, version: 1, redesigned: false };
 
 type Article = {
   title: string;
@@ -182,6 +184,30 @@ function versionedPage(): string {
   );
 }
 
+function redesignPage(): string {
+  const articles = Array.from({ length: 10 }, (_, i) => ({
+    title: `Redesign fixture story ${i + 1}`,
+    slug: `story-${i + 1}`,
+    description: `Summary of redesign fixture story ${i + 1}.`,
+    image: '/assets/fixture-one.svg',
+    date: `2026-02-${String(10 - i).padStart(2, '0')}T08:00:00.000Z`,
+  }));
+  if (!state.redesigned) {
+    return page('Redesign fixture', `<h1>Redesign fixture</h1>
+      <section class="article-list" data-fixture-list="redesign">${articles.map(article => articleCard(article, 'redesign-')).join('')}</section>`);
+  }
+  // After a redesign the list moved to new markup; two old-style promos remain.
+  return page('Redesign fixture', `<h1>Redesign fixture</h1>
+    <aside class="article-list" data-fixture-list="leftovers">${articles.slice(0, 2).map(article => articleCard({ ...article, title: `Promo ${article.title}`, slug: `promo-${article.slug}` }, 'redesign-')).join('')}</aside>
+    <ul class="story-list" data-fixture-list="stories">${articles.map(article => `
+      <li class="story">
+        <h3 class="story-headline"><a href="/article/new-${article.slug}">${escapeHtml(article.title)}</a></h3>
+        <p class="story-dek">${escapeHtml(article.description)}</p>
+        <time class="story-date" datetime="${article.date}">${article.date.slice(0, 10)}</time>
+      </li>`).join('')}
+    </ul>`);
+}
+
 async function readBody(request: IncomingMessage): Promise<string> {
   const chunks: Buffer[] = [];
   for await (const chunk of request) chunks.push(Buffer.from(chunk));
@@ -216,10 +242,27 @@ const server = createServer(async (request, response) => {
       const payload = JSON.parse(await readBody(request)) as Partial<FixtureState>;
       if (typeof payload.failure === 'boolean') state.failure = payload.failure;
       if (typeof payload.version === 'number' && Number.isInteger(payload.version)) state.version = payload.version;
+      if (typeof payload.redesigned === 'boolean') state.redesigned = payload.redesigned;
       sendJson(response, 200, { ...state });
     } catch {
       sendJson(response, 400, { error: 'invalid JSON' });
     }
+    return;
+  }
+
+  // Local stand-ins for DeepL and OpenAI-compatible translation APIs.
+  if (request.method === 'POST' && /^\/deepl\/(free|pro)\/v2\/translate$/.test(requestUrl.pathname)) {
+    const body = JSON.parse(await readBody(request)) as { text: string[]; target_lang: string };
+    if (!String(request.headers.authorization ?? '').startsWith('DeepL-Auth-Key ')) { sendJson(response, 403, { message: 'Forbidden' }); return; }
+    sendJson(response, 200, { translations: body.text.map(text => ({ detected_source_language: 'EN', text: `DeepL ${body.target_lang}：${text.trim()}` })) });
+    return;
+  }
+  if (request.method === 'POST' && requestUrl.pathname === '/openai/v1/chat/completions') {
+    const body = JSON.parse(await readBody(request)) as { model: string; messages: Array<{ role: string; content: string }> };
+    const user = body.messages.find(message => message.role === 'user')?.content ?? '';
+    const language = body.messages[0]?.content.match(/into ([A-Za-z ]+)\./)?.[1] ?? '?';
+    const content = [...user.matchAll(/<seg id="(\d+)">([\s\S]*?)<\/seg>/g)].map(match => `<seg id="${match[1]}">${language} ${body.model}：${match[2].trim()}</seg>`).join('\n');
+    sendJson(response, 200, { choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }] });
     return;
   }
 
@@ -234,6 +277,11 @@ const server = createServer(async (request, response) => {
   if (requestUrl.pathname === '/redirect-malicious') {
     response.writeHead(302, { location: 'http://127.0.0.1:8767/fixture-secret' });
     response.end();
+    return;
+  }
+
+  if (requestUrl.pathname === '/redesign') {
+    sendHtml(response, 200, redesignPage());
     return;
   }
 

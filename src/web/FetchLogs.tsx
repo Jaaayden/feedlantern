@@ -1,9 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { fetchSourceLabels, type AlertStatus, type FetchLog, type FetchStatus } from '../shared/types';
+import { fetchSourceLabels, notificationChannelLabels, type AlertStatus, type FetchLog, type FetchStatus } from '../shared/types';
 import { api } from './api';
 
 const statusLabels: Record<FetchStatus, string> = { running: '执行中', success: '成功', failure: '失败', interrupted: '中断' };
 const alertLabels: Record<AlertStatus, string> = { pending: '待发送', sent: '已发送', failed: '发送失败', canceled: '已取消', disabled: '未启用' };
+/** One entry per channel the alert went to, e.g. "Bark 已发送 · Webhook 待重试（…）". */
+function notificationText(notification: NonNullable<FetchLog['notification']>): string {
+  if (!notification.channels?.length) return `${alertLabels[notification.status]}${notification.error ? ` · ${notification.error}` : ''}`;
+  return notification.channels.map(c => `${notificationChannelLabels[c.channel] ?? c.channel} ${c.status === 'pending' && c.error ? '待重试' : alertLabels[c.status]}${c.error ? `（${c.error}）` : ''}`).join(' · ');
+}
 
 export function FetchLogs({ id, revision }: { id: string; revision: number }) {
   const [retention, setRetention] = useState(30);
@@ -60,13 +65,14 @@ export function FetchLogs({ id, revision }: { id: string; revision: number }) {
     {!loading && !error && logs.length === 0 && <p className="muted">暂无抓取日志</p>}
     <div className="fetch-log-list">{logs.map(log => <article className="fetch-log" key={log.id}>
       <div className="fetch-log-heading"><time dateTime={log.startedAt}>{new Date(log.startedAt).toLocaleString('zh-CN', { hour12: false })}</time>
-        <span>{fetchSourceLabels[log.source]}</span><span className={`badge ${log.status === 'success' ? 'good' : log.status === 'failure' || log.status === 'interrupted' ? 'bad' : ''}`}>{statusLabels[log.status]}</span>
+        <span>{fetchSourceLabels[log.source]}</span><span className={`badge ${log.status === 'success' ? 'good' : log.status === 'failure' || log.status === 'interrupted' ? 'bad' : ''}`}>{statusLabels[log.status]}</span>{log.warning && <span className="badge warn">规则可能失效</span>}
       </div>
       <p className="muted">耗时：{log.durationMs === null ? log.status === 'running' ? '执行中' : '未知' : `${(log.durationMs / 1000).toFixed(2)} 秒`}
         {log.itemCount !== null && ` · 有效 ${log.itemCount} 条 · 新增 ${log.newItemCount} 条`}</p>
       {log.note && <p className="fetch-log-note muted">翻页：{log.note}</p>}
       {log.error && <p className="card-error">{log.error}</p>}
-      {log.notification && <p className="fetch-log-notification">Bark：{alertLabels[log.notification.status]}{log.notification.error && ` · ${log.notification.error}`}</p>}
+      {log.warning && <p className="card-warning">{log.warning}</p>}
+      {log.notification && <p className="fetch-log-notification">通知：{notificationText(log.notification)}</p>}
     </article>)}</div>
     {cursor && <button className="button small" disabled={loading} onClick={() => {
       if (pending.current) return;

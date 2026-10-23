@@ -1,21 +1,26 @@
 import type { UserSummary } from '../shared/types';
-import { BarkPanel } from './BarkPanel';
+import { NotificationsPanel } from './NotificationsPanel';
 import { UsersPanel } from './UsersPanel';
-import { translationEnabled } from '../shared/types';
+import { feedFormatUrl, ITEM_FILTER_LIMITS, OUTPUT_LIMIT, translationEnabled } from '../shared/types';
+import type { FeedFormat, ItemFilter, ItemOutputStatus } from '../shared/types';
 import { TranslationProgress } from './TranslationProgress';
+import { LanguageOptions, ProviderOptions, useTranslationProviders } from './TranslationFields';
 import { RssEditor, RssContent } from './RssEditor';
 import { ApplicationSettingsPanel } from './ApplicationSettingsPanel';
 import { BackupPanel } from './BackupPanel';
+import { ApiTokensPanel } from './ApiTokensPanel';
 import { BatchView } from './BatchView';
 import { FeedCollection } from './FeedCollection';
+import { AddToBundle, BundleEditor, BundleSection } from './Bundles';
 import { FetchLogs } from './FetchLogs';
 import { PaginationPanel, paginationProblem } from './PaginationPanel';
+import { RuleHealthNotice, needsAttention } from './RuleHealth';
 import { PageScreen, linkModifier, loadedHeight, type ScreenChoice, type SegmentState } from './PageScreen';
 import { levelsBetween, liftNode } from '../shared/element-map';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type React from 'react';
 import type { FormEvent, ReactNode } from 'react';
-import { Archive, ChevronRight, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bell, Check, ChevronDown, CircleHelp, Cookie, Copy, ExternalLink, Globe2, Info, KeyRound, Languages, ListPlus, LoaderCircle, LogOut, Monitor, Moon, MousePointer2, Pencil, Plus, Radio, RefreshCw, Rss, Search, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Sun, Trash2 } from 'lucide-react';
+import { Archive, ChevronRight, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bell, Check, ChevronDown, CircleHelp, Cookie, Copy, ExternalLink, Globe2, Info, KeyRound, KeySquare, Languages, Layers, ListPlus, LoaderCircle, LogOut, Monitor, Moon, MousePointer2, Pencil, Plus, Radio, RefreshCw, Rss, Search, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Sun, Trash2 } from 'lucide-react';
 import { Modal } from './Modal';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
 import { absoluteTime, copyText, relativeTime, sameAddress, summaryText } from './format';
@@ -23,7 +28,9 @@ import type { StatusFilter } from './FeedCollection';
 import { readTheme, saveTheme, themeLabels } from './theme';
 import type { Theme } from './theme';
 import { api, onUnauthorized, setCsrfToken, setWorkspaceUser } from './api';
-import type { CredentialPayload } from './api';
+import type { TargetLanguage, TranslationMode, TranslationProviderId } from '../shared/types';
+import type { CredentialPayload, OutputPreview } from './api';
+import type { BundlePayload } from '../shared/types';
 import type { AuthState, CredentialSummary, DetectionCandidate, DetectionResult, ExtractedItem, Feed, FeedInput, FeedItem, FieldName, PaginationReport, PaginationRules, PickResult, Rect, RuleOrigins, ScreenFrame, SelectionRules } from '../shared/types';
 
 type Notify = (message: string) => void;
@@ -61,11 +68,13 @@ function AuthScreen({ state, authenticated }: { state: AuthState; authenticated:
   </form><p className="auth-note"><KeyRound size={14} />{state.setupRequired ? '只有持有本机设置码的人可以创建管理员。' : '普通用户忘记密码请联系管理员；管理员可在服务主机运行 pnpm admin:reset。'}</p>{state.setupRequired && <BackupPanel setup onRestored={() => location.reload()} />}<span className="version">{state.version} · <a href="https://github.com/Jaaayden/feedlantern" target="_blank" rel="noreferrer">GitHub · Jaaayden/feedlantern</a></span></div></section></div>;
 }
 
-function ItemPreview({ items, empty = '还没有可预览的条目' }: { items: ExtractedItem[]; empty?: string }) {
+const hiddenLabels: Partial<Record<ItemOutputStatus, string>> = { excluded: '已过滤：命中排除关键词', 'not-included': '已过滤：未命中包含关键词', 'over-limit': '超出输出条数' };
+
+function ItemPreview({ items, empty = '还没有可预览的条目', status }: { items: ExtractedItem[]; empty?: string; status?: (item: ExtractedItem) => ItemOutputStatus | undefined }) {
   const [expanded, setExpanded] = useState(false);
   if (!items.length) return <div className="empty-preview"><Search size={24} /><p>{empty}</p></div>;
   const shown = expanded ? items : items.slice(0, 20);
-  return <><div className="item-list">{shown.map((item, index) => <article className="preview-item" key={`${item.link}-${index}`}><div className="preview-number">{String(index + 1).padStart(2, '0')}</div><div className="preview-text"><a href={item.link} target="_blank" rel="noreferrer">{item.title || '（未匹配到标题）'}<ExternalLink size={13} /></a>{item.description && <p>{summaryText(item.description)}</p>}{item.contentHtml !== undefined && <RssContent title={`订阅正文 ${index + 1}`} html={item.contentHtml} />}{item.translationError && <p className="card-error">{item.translationError}</p>}<div className="item-meta"><span>{hostLabel(item.link)}</span>{item.publishedAt && <time>{dateLabel(item.publishedAt)}{item.publishedAtSource === 'relative' ? '（估算）' : ''}</time>}</div></div>{item.image && <img src={item.image} alt="" loading="lazy" referrerPolicy="no-referrer" onError={e => { e.currentTarget.style.display = 'none'; }} />}</article>)}</div>{items.length > 20 && !expanded && <button className="button small show-all" onClick={() => setExpanded(true)}>显示全部 {items.length} 条</button>}</>;
+  return <><div className="item-list">{shown.map((item, index) => { const hidden = hiddenLabels[status?.(item) ?? 'published']; return <article className={`preview-item${hidden ? ' is-hidden' : ''}`} key={`${item.link}-${index}`} data-output={status?.(item)}><div className="preview-number">{String(index + 1).padStart(2, '0')}</div><div className="preview-text">{hidden && <span className="badge output-badge">{hidden}</span>}<a href={item.link} target="_blank" rel="noreferrer">{item.title || '（未匹配到标题）'}<ExternalLink size={13} /></a>{item.description && <p>{summaryText(item.description)}</p>}{item.contentHtml !== undefined && <RssContent title={`订阅正文 ${index + 1}`} html={item.contentHtml} />}{item.translationError && <p className="card-error">{item.translationError}</p>}<div className="item-meta"><span>{hostLabel(item.link)}</span>{item.publishedAt && <time>{dateLabel(item.publishedAt)}{item.publishedAtSource === 'relative' ? '（估算）' : ''}</time>}</div></div>{item.image && <img src={item.image} alt="" loading="lazy" referrerPolicy="no-referrer" onError={e => { e.currentTarget.style.display = 'none'; }} />}</article>; })}</div>{items.length > 20 && !expanded && <button className="button small show-all" onClick={() => setExpanded(true)}>显示全部 {items.length} 条</button>}</>;
 }
 
 function CredentialForm({ editing, done, cancel }: { editing?: CredentialSummary; done: () => void; cancel: () => void }) {
@@ -362,10 +371,42 @@ export function Editor({ initial, draft, existing = [], submitFeed, saved, cance
   </>;
 }
 
+const formatLabels: Record<FeedFormat, string> = { rss: 'RSS', atom: 'Atom', json: 'JSON Feed' };
+const formatOptions: Array<[FeedFormat, string]> = [['rss', 'RSS 2.0'], ['atom', 'Atom 1.0'], ['json', 'JSON Feed 1.1']];
+function readFormat(): FeedFormat {
+  try { const saved = localStorage.getItem('feedlantern:feed-format'); return saved === 'atom' || saved === 'json' ? saved : 'rss'; } catch { return 'rss'; }
+}
+
 function FeedAddress({ feedUrl, notify, onError }: { feedUrl: string; notify: Notify; onError: (error: string) => void }) {
-  return <Field label="RSS 订阅地址" hint="持有此地址即可读取订阅内容。需要撤销时可在订阅设置中轮换密钥。">
-    <div className="copy-row"><input readOnly value={feedUrl} onFocus={e => e.target.select()} /><a className="icon-button" href={feedUrl} target="_blank" rel="noreferrer" title="在新标签页打开订阅页" aria-label="在新标签页打开订阅页"><ExternalLink size={16} /></a><button className="button primary" onClick={() => void copyText(feedUrl).then(() => notify('RSS 地址已复制')).catch(() => onError('无法访问剪贴板，请选中地址后手动复制。'))}><Copy size={15} />复制 RSS 地址</button></div>
-  </Field>;
+  const [format, setFormat] = useState<FeedFormat>(readFormat);
+  const url = feedFormatUrl(feedUrl, format);
+  const label = formatLabels[format];
+  function choose(next: FeedFormat) {
+    setFormat(next);
+    try { localStorage.setItem('feedlantern:feed-format', next); } catch { /* per-browser preference only */ }
+  }
+  return <div className="field feed-address">
+    <div className="feed-address-head"><span>订阅地址</span><div className="format-switch" role="group" aria-label="订阅格式">{formatOptions.map(([key, text]) => <button key={key} type="button" className="button small" aria-pressed={format === key} onClick={() => choose(key)}>{text}</button>)}</div></div>
+    <div className="copy-row"><input readOnly aria-label={`${label} 订阅地址`} value={url} onFocus={e => e.target.select()} /><a className="icon-button" href={url} target="_blank" rel="noreferrer" title="在新标签页打开订阅页" aria-label="在新标签页打开订阅页"><ExternalLink size={16} /></a><button className="button primary" onClick={() => void copyText(url).then(() => notify(`${label} 地址已复制`)).catch(() => onError('无法访问剪贴板，请选中地址后手动复制。'))}><Copy size={15} />复制 {label} 地址</button></div>
+    <small>三种格式内容相同，按阅读器支持的格式选择。持有地址即可读取订阅内容；需要撤销时可在订阅设置中轮换密钥，三种地址同时失效。</small>
+  </div>;
+}
+
+/** Counts behind the "输出 / 过滤" summaries. */
+function outputCounts(statuses: Record<string, ItemOutputStatus>) {
+  const counts = { published: 0, filtered: 0, overLimit: 0, untranslated: 0 };
+  for (const status of Object.values(statuses)) {
+    if (status === 'published') counts.published++;
+    else if (status === 'over-limit') counts.overLimit++;
+    else if (status === 'untranslated') counts.untranslated++;
+    else counts.filtered++;
+  }
+  return counts;
+}
+
+function OutputSummary({ preview, stored }: { preview: OutputPreview; stored: number }) {
+  const counts = outputCounts(preview.outputStatus);
+  return <p className="output-summary" aria-live="polite">已存储 {stored} 条，输出 {counts.published} 条{counts.filtered ? `，过滤 ${counts.filtered} 条` : ''}{counts.overLimit ? `，超出输出条数 ${counts.overLimit} 条` : ''}{counts.untranslated ? `，${counts.untranslated} 条翻译完成后输出` : ''}{preview.filterTimedOut ? '。正则过滤运行超时，暂未生效，请简化规则' : ''}</p>;
 }
 
 function FeedStatus({ feed }: { feed: Feed }) {
@@ -374,7 +415,7 @@ function FeedStatus({ feed }: { feed: Feed }) {
 
 type PanelTab = 'items' | 'logs' | 'settings';
 const panelTabs: Array<[PanelTab, string]> = [['items', '订阅内容'], ['logs', '抓取日志'], ['settings', '订阅设置']];
-type FeedDetailData = { feed: Feed; items: FeedItem[]; feedUrl: string };
+type FeedDetailData = { feed: Feed; items: FeedItem[]; feedUrl: string } & OutputPreview;
 
 // One panel for everything about a feed: the address and status stay on top,
 // content, fetch logs and settings are tabs underneath.
@@ -407,42 +448,87 @@ function FeedPanel({ id, tab, onTab, close, edit, changed, notify }: { id: strin
         <div className="feed-panel-source"><div className="detail-source"><Globe2 size={16} /><a href={feed.url} target="_blank" rel="noreferrer">{feed.url}</a></div><button className="button small" disabled={!!busy} onClick={() => void refresh()}><RefreshCw size={14} className={busy === '刷新' ? 'spin' : undefined} />{busy === '刷新' ? '正在刷新' : '立即刷新'}</button></div>
         <FeedAddress feedUrl={detail.feedUrl} notify={notify} onError={setError} />
         <FeedStatus feed={feed} />
+        <RuleHealthNotice key={feed.id} feed={feed} notify={notify} updated={() => { void load().catch(e => setError(messageOf(e))); setRevision(v => v + 1); changed(); }} />
       </div>
       <div className="detail-actions feed-tabs" aria-label="详情内容">{panelTabs.map(([key, label]) => <button key={key} className="button small" aria-pressed={tab === key} onClick={() => { if (tab !== key) guard(() => onTab(key)); }}>{label}</button>)}</div>
       {tab === 'items' && <>
         {translationEnabled(feed) && <TranslationProgress id={id} enabled={feed.enabled} />}
         {translationEnabled(feed) && <button className="button small retry-translation" disabled={!!busy || !feed.enabled} onClick={() => { setBusy('重试翻译'); void api.feeds.retryTranslation(id).then(load).catch(e => setError(messageOf(e))).finally(() => setBusy('')); }}>重试未完成翻译</button>}
-        <ItemPreview items={detail.items} />
+        {(feed.itemFilter || Object.values(detail.outputStatus).includes('over-limit')) && <OutputSummary preview={detail} stored={detail.items.length} />}
+        <ItemPreview items={detail.items} status={item => detail.outputStatus[(item as FeedItem).id]} />
       </>}
       {tab === 'logs' && <FetchLogs id={id} revision={revision} />}
-      {tab === 'settings' && <FeedSettingsTab feed={feed} busy={busy} setBusy={setBusy} setError={setError} dirty={dirty} reload={load} saved={result => setDetail(previous => previous && { ...previous, ...result })} changed={changed} notify={notify} edit={() => guard(() => edit(feed))} removed={close} />}
+      {tab === 'settings' && <FeedSettingsTab feed={feed} busy={busy} setBusy={setBusy} setError={setError} dirty={dirty} reload={load} items={detail.items} saved={result => { setDetail(previous => previous && { ...previous, ...result }); void load().catch(e => setError(messageOf(e))); }} changed={changed} notify={notify} edit={() => guard(() => edit(feed))} removed={close} />}
     </>}
   </div></Modal>;
 }
 
-function FeedSettingsTab({ feed, busy, setBusy, setError, dirty, reload, saved, changed, notify, edit, removed }: {
-  feed: Feed; busy: string; setBusy: (value: string) => void; setError: (value: string) => void; dirty: React.MutableRefObject<boolean>;
+const filterLines = (value: string) => [...new Set(value.split('\n').map(line => line.trim()).filter(Boolean))];
+function draftFilter(include: string, exclude: string, regex: boolean): ItemFilter | null {
+  const draft = { include: filterLines(include), exclude: filterLines(exclude), regex };
+  return draft.include.length || draft.exclude.length ? draft : null;
+}
+
+function FeedSettingsTab({ feed, items, busy, setBusy, setError, dirty, reload, saved, changed, notify, edit, removed }: {
+  feed: Feed; items: FeedItem[]; busy: string; setBusy: (value: string) => void; setError: (value: string) => void; dirty: React.MutableRefObject<boolean>;
   reload: () => Promise<void>; saved: (result: { feed: Feed; feedUrl: string }) => void; changed: () => void; notify: Notify; edit: () => void; removed: () => void;
 }) {
   const [title, setTitle] = useState(feed.name);
   const [interval, setIntervalValue] = useState(String(feed.intervalMinutes));
-  const [mode, setMode] = useState<'original' | 'chinese' | 'bilingual'>(feed.translationMode ?? 'bilingual');
-  const isDirty = title !== feed.name || interval !== String(feed.intervalMinutes) || mode !== (feed.translationMode ?? 'bilingual');
+  const [mode, setMode] = useState<TranslationMode>(feed.translationMode ?? 'bilingual');
+  const [language, setLanguage] = useState<TargetLanguage>(feed.targetLanguage ?? 'zh-CN');
+  const [provider, setProvider] = useState<TranslationProviderId | ''>(feed.translationProvider ?? '');
+  const providers = useTranslationProviders();
+  const retranslates = language !== (feed.targetLanguage ?? 'zh-CN') || provider !== (feed.translationProvider ?? '');
+  const savedLimit = feed.outputLimit ?? OUTPUT_LIMIT.default;
+  const [limit, setLimit] = useState(String(savedLimit));
+  const [include, setInclude] = useState(feed.itemFilter?.include.join('\n') ?? '');
+  const [exclude, setExclude] = useState(feed.itemFilter?.exclude.join('\n') ?? '');
+  const [regex, setRegex] = useState(feed.itemFilter?.regex ?? false);
+  const [preview, setPreview] = useState<OutputPreview | null>(null);
+  const [previewError, setPreviewError] = useState('');
+  const filter = draftFilter(include, exclude, regex);
+  const filterKey = JSON.stringify(filter);
+  const filterDirty = filterKey !== JSON.stringify(feed.itemFilter ?? null);
+  const limitNumber = Number(limit);
+  const limitValid = !!limit && Number.isInteger(limitNumber) && limitNumber >= OUTPUT_LIMIT.min && limitNumber <= OUTPUT_LIMIT.max;
+  const isDirty = title !== feed.name || interval !== String(feed.intervalMinutes) || mode !== (feed.translationMode ?? 'bilingual') || limit !== String(savedLimit) || filterDirty || retranslates;
   dirty.current = isDirty;
+  // Ask the server which stored items the draft would publish; it runs the same code as the feed output.
+  useEffect(() => {
+    if (!limitValid) return;
+    let current = true;
+    const timer = window.setTimeout(() => {
+      api.feeds.outputPreview(feed.id, { itemFilter: JSON.parse(filterKey) as ItemFilter | null, outputLimit: limitNumber })
+        .then(result => { if (current) { setPreview(result); setPreviewError(''); } })
+        .catch(error => { if (current) { setPreview(null); setPreviewError(messageOf(error)); } });
+    }, 350);
+    return () => { current = false; window.clearTimeout(timer); };
+  }, [feed.id, filterKey, limitNumber, limitValid, items]);
+  function resetOutput(next: Feed) {
+    setLimit(String(next.outputLimit ?? OUTPUT_LIMIT.default));
+    setInclude(next.itemFilter?.include.join('\n') ?? ''); setExclude(next.itemFilter?.exclude.join('\n') ?? ''); setRegex(next.itemFilter?.regex ?? false);
+  }
   async function save(event: FormEvent) {
     event.preventDefault();
     if (busy) return;
     if (!title.trim()) { setError('请输入订阅名称'); return; }
     const minutes = Number(interval);
     if (!interval || !Number.isInteger(minutes) || minutes < 5 || minutes > 1440) { setError('刷新间隔必须是 5 到 1440 之间的整数'); return; }
+    if (!limitValid) { setError(`输出条数必须是 ${OUTPUT_LIMIT.min} 到 ${OUTPUT_LIMIT.max} 之间的整数`); return; }
     setBusy('保存设置'); setError('');
     try {
       const result = await api.feeds.settings(feed.id, {
         ...(mode !== feed.translationMode ? { translationMode: mode } : {}),
+        ...(language !== (feed.targetLanguage ?? 'zh-CN') ? { targetLanguage: language } : {}),
+        ...(provider !== (feed.translationProvider ?? '') ? { translationProvider: provider || null } : {}),
         ...(title !== feed.name ? { channelTitle: title } : {}),
         ...(interval !== String(feed.intervalMinutes) ? { intervalMinutes: minutes } : {}),
+        ...(limit !== String(savedLimit) ? { outputLimit: limitNumber } : {}),
+        ...(filterDirty ? { itemFilter: filter } : {}),
       });
-      saved(result); setTitle(result.feed.name); setIntervalValue(String(result.feed.intervalMinutes)); setMode(result.feed.translationMode ?? 'bilingual');
+      saved(result); setTitle(result.feed.name); setIntervalValue(String(result.feed.intervalMinutes)); setMode(result.feed.translationMode ?? 'bilingual'); resetOutput(result.feed);
+      setLanguage(result.feed.targetLanguage ?? 'zh-CN'); setProvider(result.feed.translationProvider ?? '');
       changed(); notify('订阅设置已保存');
     } catch (error) { setError(messageOf(error)); } finally { setBusy(''); }
   }
@@ -463,8 +549,24 @@ function FeedSettingsTab({ feed, busy, setBusy, setError, dirty, reload, saved, 
       <Field label="订阅名称" hint="同步更新订阅列表和 RSS 频道标题，订阅地址保持不变。"><input required maxLength={200} disabled={!!busy} value={title} onChange={e => setTitle(e.target.value)} /></Field>
       <div className="form-row">
         <Field label="刷新间隔（分钟）" hint="支持 5–1440 分钟。修改后从保存时重新计时，不会立即抓取；已暂停的订阅继续保持暂停。"><input type="number" required min={5} max={1440} step={1} disabled={!!busy} value={interval} onChange={e => setIntervalValue(e.target.value)} /></Field>
-        <Field label="输出模式" hint="开启翻译后，仅发布翻译完成的标题和已抓取内容；不会额外抓取文章全文。"><select aria-label="输出模式" disabled={!!busy} value={mode} onChange={e => setMode(e.target.value as typeof mode)}><option value="original">原文（不翻译）</option><option value="bilingual">双语（中文在前）</option><option value="chinese">仅中文</option></select></Field>
+        <Field label="输出模式" hint="开启翻译后，仅发布翻译完成的标题和已抓取内容；不会额外抓取文章全文。"><select aria-label="输出模式" disabled={!!busy} value={mode} onChange={e => setMode(e.target.value as typeof mode)}><option value="original">原文（不翻译）</option><option value="bilingual">双语（译文在前）</option><option value="translated">仅译文</option></select></Field>
       </div>
+      {mode !== 'original' && <div className="form-row">
+        <Field label="目标语言"><select aria-label="目标语言" disabled={!!busy} value={language} onChange={e => setLanguage(e.target.value as TargetLanguage)}><LanguageOptions /></select></Field>
+        <Field label="翻译服务" hint="服务由管理员在“设置”中配置。"><select aria-label="翻译服务" disabled={!!busy} value={provider} onChange={e => setProvider(e.target.value as TranslationProviderId | '')}><ProviderOptions info={providers} current={feed.translationProvider} /></select></Field>
+      </div>}
+      {retranslates && <p className="notice">更换目标语言或翻译服务后，已有文章会重新翻译；完成前它们暂不出现在订阅链接中。条目 ID 不变，阅读器不会重复推送。</p>}
+      <fieldset className="output-settings" disabled={!!busy}>
+        <legend>输出内容</legend>
+        <p className="hint">RSS、Atom 和 JSON Feed 三种地址共用这些设置。过滤只影响输出，不删除已存储的条目，保存后立即生效。</p>
+        <Field label="输出条数" hint={`每种地址最多输出的条目数，支持 ${OUTPUT_LIMIT.min}–${OUTPUT_LIMIT.max}。调小不会立即删除已存储的条目，下次抓取时按保留规则清理；调大后，新抓到的条目会逐步补足。`}><input type="number" required min={OUTPUT_LIMIT.min} max={OUTPUT_LIMIT.max} step={1} value={limit} onChange={e => setLimit(e.target.value)} /></Field>
+        <div className="form-row">
+          <Field label="包含关键词" hint="每行一个。填写后，只输出标题或摘要包含其中任意一个的条目。"><textarea rows={3} spellCheck={false} value={include} onChange={e => setInclude(e.target.value)} placeholder={'例如：\n发布\nrelease'} /></Field>
+          <Field label="排除关键词" hint="每行一个。标题或摘要包含任意一个就不输出，优先于包含关键词。"><textarea rows={3} spellCheck={false} value={exclude} onChange={e => setExclude(e.target.value)} placeholder={'例如：\n广告\nsponsored'} /></Field>
+        </div>
+        <label className="checkbox-field"><input type="checkbox" checked={regex} onChange={e => setRegex(e.target.checked)} /><span>按正则表达式匹配（不区分大小写；每条不超过 {ITEM_FILTER_LIMITS.patternLength} 个字符，不支持嵌套重复和反向引用）</span></label>
+        {previewError ? <p className="output-summary is-error" role="alert">{previewError}</p> : preview && <OutputSummary preview={preview} stored={items.length} />}
+      </fieldset>
       <button className="button primary" disabled={!!busy || !isDirty}>{busy === '保存设置' ? <Busy label="正在保存" /> : '保存设置'}</button>
     </form>
     <section className="feed-settings-section" aria-label="更新与匹配">
@@ -472,8 +574,8 @@ function FeedSettingsTab({ feed, busy, setBusy, setError, dirty, reload, saved, 
       <div className="detail-actions"><button className="button small" disabled={!!busy} onClick={() => void action('切换状态', () => api.feeds.toggle(feed.id), feed.enabled ? '订阅已暂停' : '订阅已恢复')}>{feed.enabled ? '暂停订阅' : '恢复订阅'}</button><button className="button small" disabled={!!busy} onClick={edit}><Pencil size={14} />{feed.sourceType === 'rss' ? '编辑 RSS 来源' : '编辑匹配规则'}</button></div>
     </section>
     <section className="feed-settings-section danger-zone" aria-label="订阅地址与删除">
-      <div><h3>订阅地址与删除</h3><p className="hint">轮换密钥会立即使旧 RSS 地址失效；删除订阅会同时删除历史条目。</p></div>
-      <div className="detail-actions"><button className="button small" disabled={!!busy} onClick={() => { if (confirm('轮换后，旧 RSS 地址将立即失效。继续？')) void action('轮换密钥', () => api.feeds.rotate(feed.id), '订阅地址已更新'); }}><KeyRound size={14} />轮换订阅密钥</button><button className="button small danger" disabled={!!busy} onClick={() => void remove()}><Trash2 size={14} />删除订阅</button></div>
+      <div><h3>订阅地址与删除</h3><p className="hint">轮换密钥会立即使旧的 RSS、Atom 和 JSON Feed 地址全部失效；删除订阅会同时删除历史条目。</p></div>
+      <div className="detail-actions"><button className="button small" disabled={!!busy} onClick={() => { if (confirm('轮换后，旧的 RSS、Atom 和 JSON Feed 地址将立即失效。继续？')) void action('轮换密钥', () => api.feeds.rotate(feed.id), '订阅地址已更新'); }}><KeyRound size={14} />轮换订阅密钥</button><button className="button small danger" disabled={!!busy} onClick={() => void remove()}><Trash2 size={14} />删除订阅</button></div>
     </section>
     {busy && !['保存设置', '刷新', '重试翻译'].includes(busy) && <Busy label={`正在${busy}`} />}
   </div>;
@@ -493,7 +595,7 @@ function SettingsView({ auth, logout, notify, target }: { auth: AuthState; logou
     ...(admin ? [{ id: 'general', label: '应用设置', icon: SlidersHorizontal }] : []),
     { id: 'notifications', label: '通知', icon: Bell },
     { id: 'credentials', label: 'Cookie 凭据', icon: Cookie },
-    ...(!target ? [{ id: 'account', label: '账号与密码', icon: KeyRound }] : []),
+    ...(!target ? [{ id: 'account', label: '账号与密码', icon: KeyRound }, { id: 'tokens', label: '访问令牌', icon: KeySquare }] : []),
     ...(admin ? [{ id: 'backup', label: '备份与迁移', icon: Archive }] : []),
     { id: 'about', label: '关于', icon: Info },
   ];
@@ -518,9 +620,10 @@ function SettingsView({ auth, logout, notify, target }: { auth: AuthState; logou
       <nav className="settings-nav" aria-label="设置分组">{sections.map(section => <button key={section.id} className={active === section.id ? 'selected' : ''} aria-current={active === section.id ? 'true' : undefined} onClick={() => jump(section.id)}><section.icon size={16} />{section.label}</button>)}</nav>
       <div className="settings-sections">
         {admin && <div id="settings-general" className="settings-section"><ApplicationSettingsPanel revision={settingsRevision} /></div>}
-        <div id="settings-notifications" className="settings-section"><BarkPanel key={settingsRevision} username={target?.username ?? auth.username!} enabled={target?.enabled !== false} /></div>
+        <div id="settings-notifications" className="settings-section"><NotificationsPanel key={settingsRevision} username={target?.username ?? auth.username!} enabled={target?.enabled !== false} /></div>
         <div id="settings-credentials" className="settings-section"><CredentialsView notify={notify} /></div>
-        {!target && <div id="settings-account" className="settings-section"><form className="panel settings-form" onSubmit={submit}><div className="panel-heading"><h2>修改密码</h2><KeyRound size={19} /></div><p className="muted">当前用户：{auth.username}。修改后会退出此账号的所有现有会话。</p><Field label="当前密码"><input required type="password" value={currentPassword} onChange={e => setCurrentPassword(e.target.value)} autoComplete="current-password" /></Field><div className="form-row"><Field label="新密码"><input required type="password" minLength={8} maxLength={1024} value={newPassword} onChange={e => setNewPassword(e.target.value)} autoComplete="new-password" /></Field><Field label="确认新密码"><input required type="password" minLength={8} value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} autoComplete="new-password" /></Field></div><ErrorNote error={error} /><button className="button primary" disabled={busy}>{busy ? <Busy /> : '更新密码'}</button></form></div>}
+        {!target && <div id="settings-account" className="settings-section"><form className="panel settings-form" onSubmit={submit}><div className="panel-heading"><h2>修改密码</h2><KeyRound size={19} /></div><p className="muted">当前用户：{auth.username}。修改后会退出此账号的所有现有会话，并吊销全部访问令牌。</p><Field label="当前密码"><input required type="password" value={currentPassword} onChange={e => setCurrentPassword(e.target.value)} autoComplete="current-password" /></Field><div className="form-row"><Field label="新密码"><input required type="password" minLength={8} maxLength={1024} value={newPassword} onChange={e => setNewPassword(e.target.value)} autoComplete="new-password" /></Field><Field label="确认新密码"><input required type="password" minLength={8} value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} autoComplete="new-password" /></Field></div><ErrorNote error={error} /><button className="button primary" disabled={busy}>{busy ? <Busy /> : '更新密码'}</button></form></div>}
+        {!target && <div id="settings-tokens" className="settings-section"><ApiTokensPanel notify={notify} /></div>}
         {admin && <div id="settings-backup" className="settings-section"><BackupPanel onRestored={logout} onImported={() => setSettingsRevision(v => v + 1)} /></div>}
         <div id="settings-about" className="settings-section"><section className="panel about-panel"><Brand /><p>自动找到网页上的新内容，汇入你的 RSS 阅读器。</p><div className="about-row"><span>版本</span><code>{auth.version}</code></div><div className="about-row"><span>许可证</span><span>MIT</span></div><a className="text-link" href="https://github.com/Jaaayden/feedlantern" target="_blank" rel="noreferrer">查看开源项目<ExternalLink size={14} /></a><div className="notice">服务主机需要保持运行，定时更新才会继续。支持网页列表订阅与 RSS 翻译；RSS 全文以源内提供的内容为准，不自动补抓全文或翻页。</div></section></div>
       </div>
@@ -537,7 +640,7 @@ function ThemeToggle() {
 
 type NewSource = 'website' | 'rss';
 
-function NewFeedMenu({ create, batch }: { create: (source: NewSource) => void; batch: () => void }) {
+function NewFeedMenu({ create, batch, bundle }: { create: (source: NewSource) => void; batch: () => void; bundle: () => void }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -564,6 +667,7 @@ function NewFeedMenu({ create, batch }: { create: (source: NewSource) => void; b
       <button role="menuitem" onClick={() => choose(() => create('website'))}><span className="menu-icon"><Globe2 size={17} /></span><span><strong>网页生成 RSS</strong><small>打开网页，自动识别内容列表</small></span></button>
       <button role="menuitem" onClick={() => choose(() => create('rss'))}><span className="menu-icon"><Languages size={17} /></span><span><strong>RSS 翻译</strong><small>把英文订阅变成中文或双语</small></span></button>
       <button role="menuitem" onClick={() => choose(batch)}><span className="menu-icon"><ListPlus size={17} /></span><span><strong>批量添加</strong><small>一次粘贴多个网址</small></span></button>
+      <button role="menuitem" onClick={() => choose(bundle)}><span className="menu-icon"><Layers size={17} /></span><span><strong>聚合订阅</strong><small>把多个订阅合并成一个 RSS 地址</small></span></button>
     </div>}
   </div>;
 }
@@ -598,6 +702,10 @@ export default function App() {
   const [page, setPage] = useState<Page>('feeds');
   const [target, setTarget] = useState<UserSummary | null>(null);
   const [feeds, setFeeds] = useState<Feed[]>([]);
+  const [bundles, setBundles] = useState<BundlePayload[]>([]);
+  // undefined: closed · {}: new bundle · {initial}: edit an existing one.
+  const [bundleEditor, setBundleEditor] = useState<{ initial?: BundlePayload } | undefined>(undefined);
+  const [bundleTarget, setBundleTarget] = useState<string[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
@@ -626,7 +734,7 @@ export default function App() {
   // Switch the workspace (null = my own) and show the given screen inside it.
   const changeWorkspace = useCallback((user: UserSummary | null, route?: Route) => {
     authGeneration.current++; targetRef.current = user?.id ?? null;
-    setWorkspaceUser(user?.id); setTarget(user); setFeeds([]); setQuery(''); setStatus('all'); setError('');
+    setWorkspaceUser(user?.id); setTarget(user); setFeeds([]); setBundles([]); setBundleEditor(undefined); setBundleTarget(null); setQuery(''); setStatus('all'); setError('');
     showRoute(route ?? { page: 'feeds', panel: null, create: null, workspace: user?.id ?? null });
   }, [showRoute]);
   const loadUsers = useCallback(async () => {
@@ -644,13 +752,13 @@ export default function App() {
     // An unknown or deleted account falls back to my own workspace.
     changeWorkspace(user ?? null, user ? route : { page: route.page, panel: null, create: route.create, workspace: null });
   }, [changeWorkspace, loadUsers, showRoute]);
-  const acceptAuth = useCallback((state: AuthState) => { authGeneration.current++; targetRef.current = null; setFeeds([]); setWorkspaceUser(undefined); setTarget(null); setCsrfToken(state.csrfToken); setAuth(state); setSession(value => value + 1); void applyRoute(state.authenticated ? parseRoute(location.hash) : parseRoute(''), state.role === 'admin'); setQuery(''); setStatus('all'); setError(''); }, [applyRoute]);
-  const forgetAuth = useCallback(() => { authGeneration.current++; targetRef.current = null; setUsers([]); setWorkspaceUser(undefined); setTarget(null); setCsrfToken(undefined); setAuth(previous => previous ? { ...previous, authenticated: false, csrfToken: undefined } : null); setFeeds([]); setEditor(undefined); setPanel(null); setEditorReturnId(null); }, []);
+  const acceptAuth = useCallback((state: AuthState) => { authGeneration.current++; targetRef.current = null; setFeeds([]); setBundles([]); setWorkspaceUser(undefined); setTarget(null); setCsrfToken(state.csrfToken); setAuth(state); setSession(value => value + 1); void applyRoute(state.authenticated ? parseRoute(location.hash) : parseRoute(''), state.role === 'admin'); setQuery(''); setStatus('all'); setError(''); }, [applyRoute]);
+  const forgetAuth = useCallback(() => { authGeneration.current++; targetRef.current = null; setUsers([]); setWorkspaceUser(undefined); setTarget(null); setCsrfToken(undefined); setAuth(previous => previous ? { ...previous, authenticated: false, csrfToken: undefined } : null); setFeeds([]); setBundles([]); setBundleEditor(undefined); setBundleTarget(null); setEditor(undefined); setPanel(null); setEditorReturnId(null); }, []);
   useEffect(() => { void api.auth.status().then(acceptAuth).catch(error => setBootError(messageOf(error))); return onUnauthorized(() => { forgetAuth(); setToast('登录已失效，请重新登录'); }); }, [acceptAuth, forgetAuth]);
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''), 4000); return () => clearTimeout(timer); }, [toast]);
   const loadFeeds = useCallback(async () => {
     const generation = authGeneration.current; setLoading(true);
-    try { const next = await api.feeds.list(); if (generation === authGeneration.current) { setFeeds(next); setError(''); } }
+    try { const [next, nextBundles] = await Promise.all([api.feeds.list(), api.bundles.list()]); if (generation === authGeneration.current) { setFeeds(next); setBundles(nextBundles); setError(''); } }
     catch (error) { if (generation === authGeneration.current) setError(messageOf(error)); }
     finally { if (generation === authGeneration.current) setLoading(false); }
   }, []);
@@ -704,15 +812,16 @@ export default function App() {
   if (!auth) return <div className="boot"><Brand />{bootError ? <><ErrorNote error={bootError} /><button className="button" onClick={() => location.reload()}>重新连接</button></> : <Busy label="正在连接服务" />}</div>;
   if (!auth.authenticated) return <><AuthScreen state={auth} authenticated={acceptAuth} />{toast && <div className="toast" role="status"><Check size={16} />{toast}</div>}</>;
   const filtered = feeds.filter(feed => `${feed.name} ${feed.url}`.toLowerCase().includes(query.toLowerCase()));
-  const attention = feeds.filter(feed => !!feed.lastError).length;
+  const attention = feeds.filter(needsAttention).length;
   function navigate(next: Page) { setPage(next); setEditor(undefined); setPanel(null); setEditorReturnId(null); }
   function create(source: NewSource) { setEditorSource(source); setEditor(null); }
   return <div className={`app-layout ${target ? 'managing' : ''}`}><aside className="sidebar"><Brand />{auth.role === 'admin' ? <WorkspaceSwitcher me={{ id: auth.userId!, username: auth.username! }} users={users} target={target} open={user => changeWorkspace(user)} manageUsers={() => navigate('users')} refresh={refreshUsers} /> : <div className="workspace-label">个人工作台</div>}<nav aria-label="主导航"><button className={page === 'feeds' || page === 'batch' ? 'selected' : ''} onClick={() => navigate('feeds')}><Rss size={19} />订阅管理<span>{feeds.length}</span></button><button className={page === 'settings' ? 'selected' : ''} onClick={() => navigate('settings')}><Settings2 size={19} />设置</button>{auth.role === 'admin' && <button className={page === 'users' ? 'selected' : ''} onClick={() => navigate('users')}><ShieldCheck size={19} />用户管理</button>}</nav><div className="sidebar-bottom"><div className="local-label"><span /> 自托管 · 独立运行</div><div className="account"><span className="avatar">{auth.username?.slice(0, 1).toUpperCase()}</span><div><strong>{auth.username}</strong><small>{auth.role === 'admin' ? '管理员' : '普通用户'}</small></div><button className="icon-button" aria-label="退出登录" onClick={() => void logout()}><LogOut size={17} /></button></div><span className="version">{auth.version}</span></div></aside><div className="main-shell"><header className="topbar"><span><span className="muted">工作台</span><span className="slash">/</span>{crumb}</span><span className="topbar-actions">{target && <span className="managing-chip" title="当前操作作用于此用户的订阅、凭据和个人设置">正在管理 {target.username}</span>}<ThemeToggle /><span className="topbar-status"><ShieldCheck size={14} /> 已安全登录 <button className="icon-button mobile-logout" aria-label="退出登录" onClick={() => void logout()}><LogOut size={15} /></button></span></span></header><main className="main-content" key={target?.id ?? auth.userId}>
     {target && <div className="workspace-banner" role="status"><div><strong>正在管理：{target.username}</strong><p>{target.enabled ? '修改将作用于此用户的订阅、凭据和个人设置。' : '此用户已停用，可以查看和修改静态配置；执行任务前请先启用。'}</p></div><button className="button small" onClick={() => changeWorkspace(null)}>返回我的工作台</button></div>}
     {page === 'users' && auth.role === 'admin' ? <UsersPanel currentUserId={auth.userId!} manage={(user, attention) => { changeWorkspace(user); if (attention) setStatus('attention'); }} changed={refreshUsers} identityChanged={() => void api.auth.status().then(acceptAuth)} /> : page === 'batch' ? <BatchView notify={notify} changed={() => void loadFeeds()} back={() => navigate('feeds')} /> : page === 'settings' ? <SettingsView target={target} auth={auth} logout={forgetAuth} notify={notify} /> : editor !== undefined ? <FeedEditor key={editor?.id ?? `new-${editorSource}`} initial={editor ?? undefined} source={editorSource} existing={feeds} cancel={() => { setEditor(undefined); if (editorReturnId) setPanel({ id: editorReturnId, tab: 'settings' }); setEditorReturnId(null); }} saved={id => { setEditor(undefined); setPanel({ id, tab: editorReturnId ? 'settings' : 'items' }); setEditorReturnId(null); notify('订阅已保存'); void loadFeeds(); }} /> : <>
-      <div className="page-heading"><div><span className="section-kicker">LESS CHECKING. MORE READING.</span><h1>你的订阅，持续点亮。</h1><p>把关注的网页汇集在这里，新内容会自动抵达。</p></div><NewFeedMenu create={create} batch={() => navigate('batch')} /></div>
+      <div className="page-heading"><div><span className="section-kicker">LESS CHECKING. MORE READING.</span><h1>你的订阅，持续点亮。</h1><p>把关注的网页汇集在这里，新内容会自动抵达。</p></div><NewFeedMenu create={create} batch={() => navigate('batch')} bundle={() => setBundleEditor({})} /></div>
       {feeds.length > 0 && <div className="stats-row"><div><span>全部订阅</span><strong>{feeds.length}<small>个来源</small></strong></div><div><span>正在关注</span><strong>{feeds.filter(feed => feed.enabled).length}<small>自动更新</small></strong></div><div><span>已收集内容</span><strong>{feeds.reduce((sum, feed) => sum + feed.itemCount, 0)}<small>条记录</small></strong></div>{attention ? <button className={`attention ${status === 'attention' ? 'active' : ''}`} aria-pressed={status === 'attention'} title={status === 'attention' ? '取消筛选，显示全部订阅' : '只看需要检查的订阅'} onClick={() => { const next = status === 'attention' ? 'all' : 'attention'; setStatus(next); if (next === 'attention') requestAnimationFrame(() => document.querySelector('.list-toolbar')?.scrollIntoView({ behavior: 'smooth', block: 'start' })); }}><span>需要检查</span><strong>{attention}<small>{status === 'attention' ? '已筛选' : '点击筛选'}</small><ChevronRight size={15} className="stat-arrow" /></strong></button> : <div><span>需要检查</span><strong>0<small>一切正常</small></strong></div>}</div>}
+      {bundles.length > 0 && <BundleSection bundles={bundles} feeds={feeds} create={() => setBundleEditor({})} edit={bundle => setBundleEditor({ initial: bundle })} changed={() => void loadFeeds()} notify={notify} />}
       <div className="list-toolbar"><h2>订阅列表 <span>{feeds.length}</span></h2><div className="input-icon search-input"><Search size={16} /><input ref={searchRef} aria-label="搜索订阅" placeholder="搜索名称或网址" value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === 'Escape' && query) { e.preventDefault(); setQuery(''); } }} /><kbd className="search-key" aria-hidden="true">/</kbd></div></div>
-      <ErrorNote error={error} />{loading && !feeds.length ? <Busy label="正在加载订阅" /> : filtered.length ? <FeedCollection auth={target ? { ...auth, userId: target.id, role: 'user' } : auth} feeds={filtered} query={query} status={status} onStatus={setStatus} detail={id => setPanel({ id, tab: 'items' })} settings={id => setPanel({ id, tab: 'settings' })} logs={id => setPanel({ id, tab: 'logs' })} changed={() => void loadFeeds()} notify={notify} /> : <div className="empty-state"><span className="large-icon"><Rss size={32} /></span><h2>{query ? '没有找到匹配的订阅' : '从一个值得关注的网址开始'}</h2><p>{query ? '尝试其他名称或网址。' : '输入网页地址，自动识别内容，预览后即可生成 RSS。'}</p>{query ? <button className="button" onClick={() => setQuery('')}>清除搜索</button> : <button className="button" onClick={() => create('website')}><Plus size={16} />创建第一条订阅</button>}</div>}<div className="dashboard-note"><Sparkles size={17} /><span>自动识别先行，手动调整随时可用。</span><span className="muted">按 / 搜索订阅。</span></div></>}
-  </main><footer className="page-footer"><span>FeedLantern · 订阅灯</span><a href="https://github.com/Jaaayden/feedlantern" target="_blank" rel="noreferrer">GitHub · Jaaayden/feedlantern · {auth.version}</a></footer></div>{panel && <FeedPanel key={panel.id} id={panel.id} tab={panel.tab} onTab={tab => setPanel(previous => previous && { ...previous, tab })} close={closePanel} edit={feed => { setPanel(null); setEditorReturnId(feed.id); setEditor(feed); }} changed={() => void loadFeeds()} notify={notify} />}{toast && <div className="toast" role="status"><Check size={16} />{toast}</div>}</div>;
+      <ErrorNote error={error} />{loading && !feeds.length ? <Busy label="正在加载订阅" /> : filtered.length ? <FeedCollection auth={target ? { ...auth, userId: target.id, role: 'user' } : auth} feeds={filtered} bundles={bundles} addToBundle={ids => setBundleTarget(ids)} query={query} status={status} onStatus={setStatus} detail={id => setPanel({ id, tab: 'items' })} settings={id => setPanel({ id, tab: 'settings' })} logs={id => setPanel({ id, tab: 'logs' })} changed={() => void loadFeeds()} notify={notify} /> : <div className="empty-state"><span className="large-icon"><Rss size={32} /></span><h2>{query ? '没有找到匹配的订阅' : '从一个值得关注的网址开始'}</h2><p>{query ? '尝试其他名称或网址。' : '输入网页地址，自动识别内容，预览后即可生成 RSS。'}</p>{query ? <button className="button" onClick={() => setQuery('')}>清除搜索</button> : <button className="button" onClick={() => create('website')}><Plus size={16} />创建第一条订阅</button>}</div>}<div className="dashboard-note"><Sparkles size={17} /><span>自动识别先行，手动调整随时可用。</span><span className="muted">按 / 搜索订阅。</span></div></>}
+  </main><footer className="page-footer"><span>FeedLantern · 订阅灯</span><a href="https://github.com/Jaaayden/feedlantern" target="_blank" rel="noreferrer">GitHub · Jaaayden/feedlantern · {auth.version}</a></footer></div>{panel && <FeedPanel key={panel.id} id={panel.id} tab={panel.tab} onTab={tab => setPanel(previous => previous && { ...previous, tab })} close={closePanel} edit={feed => { setPanel(null); setEditorReturnId(feed.id); setEditor(feed); }} changed={() => void loadFeeds()} notify={notify} />}{bundleEditor && <BundleEditor initial={bundleEditor.initial} feeds={feeds} close={() => setBundleEditor(undefined)} saved={(_result, created) => { setBundleEditor(undefined); notify(created ? '聚合订阅已创建' : '聚合订阅已保存'); void loadFeeds(); }} />}{bundleTarget && <AddToBundle bundles={bundles} feedIds={bundleTarget} close={() => setBundleTarget(null)} done={message => { setBundleTarget(null); notify(message); void loadFeeds(); }} />}{toast && <div className="toast" role="status"><Check size={16} />{toast}</div>}</div>;
 }
