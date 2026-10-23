@@ -35,6 +35,7 @@ export const SESSION_ONLY_ROUTES: readonly string[] = [
   'GET /api/tokens',
   'POST /api/tokens',
   'DELETE /api/tokens/:id',
+  'GET /api/tokens/:id/logs',
 ];
 const sessionOnly = new Set(SESSION_ONLY_ROUTES);
 
@@ -46,6 +47,8 @@ export const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 export interface ApiTokenOwner {
   tokenId: string;
+  name: string;
+  prefix: string;
   userId: string;
   username: string;
   role: UserSummary['role'];
@@ -115,9 +118,23 @@ export class ApiTokens {
     const lastUsed = row.last_used_at ? Date.parse(String(row.last_used_at)) : 0;
     if (now - lastUsed >= TOUCH_INTERVAL_MS) this.db.prepare('UPDATE api_tokens SET last_used_at=? WHERE token_hash=?').run(new Date(now).toISOString(), hash);
     return {
-      tokenId: String(row.id), userId: String(row.user_id), username: String(row.username), role: row.role as UserSummary['role'],
+      tokenId: String(row.id), name: String(row.name), prefix: String(row.prefix), userId: String(row.user_id), username: String(row.username), role: row.role as UserSummary['role'],
       scope: row.scope === 'write' ? 'write' : 'read', expiresAt: row.expires_at ? String(row.expires_at) : null,
     };
+  }
+
+  /**
+   * The token a secret belongs to, even when it has expired, so a rejected call
+   * can still be shown in that token's call log. Never use this to authenticate.
+   */
+  identify(secret: string | undefined): { tokenId: string; userId: string; name: string; prefix: string } | null {
+    if (!secret || !TOKEN_PATTERN.test(secret)) return null;
+    const row = this.db.prepare('SELECT id,user_id,name,prefix FROM api_tokens WHERE token_hash=?').get(digest(secret));
+    return row ? { tokenId: String(row.id), userId: String(row.user_id), name: String(row.name), prefix: String(row.prefix) } : null;
+  }
+
+  exists(userId: string, id: string): boolean {
+    return !!this.db.prepare('SELECT 1 FROM api_tokens WHERE id=? AND user_id=?').get(id, userId);
   }
 
   purgeExpired(now = Date.now()): number {

@@ -54,7 +54,16 @@ const schemas: Record<string, Schema> = {
   ApiToken: object({
     id: str(), name: str(), scope: str({ enum: ['read', 'write'] }), prefix: str({ description: '令牌开头几个字符，便于识别', examples: ['fl_Ab12Cd34'] }),
     createdAt: dateTime, expiresAt: nullable(dateTime), lastUsedAt: nullable(dateTime),
+    usage24h: object({ calls: int(), failures: int({ description: '状态码 ≥ 400 的调用' }) }, ['calls', 'failures'], { description: '最近 24 小时的调用次数（列表接口返回）' }),
   }, ['id', 'name', 'scope', 'prefix', 'createdAt', 'expiresAt', 'lastUsedAt']),
+  ApiTokenCall: object({
+    id: int(), tokenId: str(), tokenName: str(), tokenPrefix: str({ description: '令牌开头几个字符；不记录完整令牌' }), at: dateTime,
+    method: str(), route: nullable(str({ description: '路由模板，例如 /api/feeds/:id；不记录原始路径和查询参数。未匹配任何接口时为 null', examples: ['/api/feeds/:id'] })),
+    status: int({ description: 'HTTP 状态码' }), durationMs: int(), ip: nullable(str({ description: '来源 IP，遵循 TRUSTED_PROXIES 设置' })),
+  }, ['id', 'tokenId', 'tokenName', 'tokenPrefix', 'at', 'method', 'route', 'status', 'durationMs', 'ip']),
+  ApiTokenCallPage: object({
+    calls: array(ref('ApiTokenCall')), nextCursor: nullable(str()), retentionDays: int({ description: '与抓取日志共用的保留天数' }), perTokenLimit: int({ description: '每个令牌最多保留的记录数' }),
+  }, ['calls', 'nextCursor', 'retentionDays', 'perTokenLimit']),
   ApiTokenInput: object({
     name: str({ minLength: 1, maxLength: 100 }),
     scope: str({ enum: ['read', 'write'], description: 'read 只能调用 GET；write 可调用全部开放给令牌的接口' }),
@@ -178,9 +187,16 @@ const operations: Operation[] = [
   { method: 'POST', path: '/api/auth/password', tag: 'auth', summary: '修改自己的密码', description: '撤销此账号所有会话和访问令牌。', body: object({ currentPassword: str(), newPassword: str({ minLength: 8 }) }, ['currentPassword', 'newPassword']), response: ref('AuthState') },
   { method: 'GET', path: '/api/openapi.json', tag: 'meta', summary: '本 OpenAPI 文档', access: 'public', response: { type: 'object' } },
   // Tokens
-  { method: 'GET', path: '/api/tokens', tag: 'tokens', summary: '列出自己的访问令牌', response: array(ref('ApiToken')) },
-  { method: 'POST', path: '/api/tokens', tag: 'tokens', summary: '创建访问令牌', description: '完整令牌只在响应中出现一次；每个账号最多 50 个。', body: ref('ApiTokenInput'), response: ref('ApiTokenCreated') },
-  { method: 'DELETE', path: '/api/tokens/:id', tag: 'tokens', summary: '吊销访问令牌', response: ok },
+  { method: 'GET', path: '/api/tokens', tag: 'tokens', summary: '列出访问令牌', description: '管理员可用 X-FeedLantern-User 只读查看其他用户的令牌。', workspace: true, response: array(ref('ApiToken')) },
+  { method: 'GET', path: '/api/tokens/:id/logs', tag: 'tokens', summary: '令牌调用记录', workspace: true,
+    description: '只记录带 Bearer 令牌的 /api/* 请求（包括写操作和 401/403/429），网页 Cookie 会话的请求不记录。记录时间、令牌名称与前缀、方法、路由模板、状态码、耗时和来源 IP，不记录令牌密钥和查询参数。按日志保留天数清理，每个令牌最多保留 2000 条、全站最多 20000 条。',
+    query: [
+      { name: 'status', schema: str({ enum: ['success', 'denied', 'error'] }), description: 'success：状态码 < 400；denied：401、403、429；error：其他 ≥ 400' },
+      { name: 'cursor', schema: str(), description: '上一页的 nextCursor' },
+      { name: 'limit', schema: int({ minimum: 1, maximum: 100, default: 20 }) },
+    ], response: ref('ApiTokenCallPage') },
+  { method: 'POST', path: '/api/tokens', tag: 'tokens', summary: '创建访问令牌', description: '完整令牌只在响应中出现一次；每个账号最多 50 个。只能为自己创建。', body: ref('ApiTokenInput'), response: ref('ApiTokenCreated') },
+  { method: 'DELETE', path: '/api/tokens/:id', tag: 'tokens', summary: '吊销访问令牌', description: '只能吊销自己的令牌；令牌的调用记录随之删除。', response: ok },
   // Users
   { method: 'GET', path: '/api/users', tag: 'users', summary: '列出用户及统计', admin: true, response: array(ref('UserSummary')) },
   { method: 'POST', path: '/api/users', tag: 'users', summary: '创建普通用户', admin: true, body: object({ username: str(), password: str({ minLength: 8 }) }, ['username', 'password']), response: ref('UserSummary') },
