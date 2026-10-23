@@ -119,8 +119,7 @@ test('网络配置：设置中管理、编辑器预览与后台刷新经代理�
     expect(inUse.status()).toBe(409);
 
     // A feed uses the profile now: its source address comes first.
-    await page.goto('/');
-    await page.getByRole('button', { name: '设置', exact: true }).click();
+    await page.goto('/#/settings/network');
     await page.getByRole('region', { name: '网络配置' }).getByRole('button', { name: '测试网络配置 E2E proxy' }).click();
     await expect(tester).toContainText('默认填入订阅“Network profile feed”的来源地址');
     await expect(tester.getByLabel('测试网址')).toHaveValue(listUrl);
