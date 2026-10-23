@@ -154,6 +154,7 @@ export class RssTranslations {
       return { ...item, title: done && body.title ? bilingual ? `${body.title} / ${item.title}` : body.title : item.title,
         contentHtml: safeHtml(done ? (bilingual ? body.bilingualHtml : body.translatedHtml) ?? body.html : `<p>【${row?.status === 'failed' ? '翻译失败，暂显示原文' : '等待翻译，暂显示原文'}】</p>${body.html}`, item.link),
         description: undefined,
+        ...(done && body.title ? { translatedTitle: body.title, sourceTitle: item.title } : {}),
         translationStatus: done ? 'success' : row?.status === 'failed' ? 'failed' : 'pending',
         translationError: row?.error ? String(row.error) : undefined };
     });

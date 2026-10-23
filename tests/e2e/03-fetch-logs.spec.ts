@@ -11,7 +11,7 @@ test('真实抓取成功、失败保留文章、日志自动更新及状态筛�
   try {
     await page.goto('/'); await page.getByRole('button', { name: '查看订阅 抓取日志验收', exact: true }).click();
     const dialog = page.getByRole('dialog');
-    await dialog.getByRole('button', { name: '抓取日志', exact: true }).click();
+    await dialog.getByRole('button', { name: '运行日志', exact: true }).click();
     const logs = dialog.getByRole('region', { name: '抓取日志' });
     await expect(logs.locator('article')).toHaveCount(1);
     await expect(logs.locator('article')).toContainText('成功');
@@ -50,7 +50,7 @@ test('日志分页、通知状态、加载失败重试及离开标签停止轮�
   try {
     await page.goto('/'); await page.getByRole('button', { name: '查看订阅 日志分页验收', exact: true }).click();
     const dialog = page.getByRole('dialog');
-    await dialog.getByRole('button', { name: '抓取日志', exact: true }).click();
+    await dialog.getByRole('button', { name: '运行日志', exact: true }).click();
     const logs = dialog.getByRole('region', { name: '抓取日志' });
     await expect(logs.getByRole('alert')).toContainText('模拟日志加载失败');
     fail = false; await logs.getByRole('button', { name: '重试', exact: true }).click();

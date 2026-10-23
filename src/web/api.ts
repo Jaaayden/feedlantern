@@ -1,6 +1,8 @@
 import type { TranslationProgressData } from './TranslationProgress';
 import type { RulePreview, RuleRedetectResult, SelectionRules } from '../shared/types';
 import type {
+  ApiTokenCallFilter,
+  ApiTokenCallPage,
   ApiTokenScope,
   ApiTokenSummary,
   UserSummary,
@@ -111,7 +113,14 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 
 export const api = {
   tokens: {
-    list: () => request<ApiTokenSummary[]>('/api/tokens'),
+    /** `userId`: an administrator reading another account's tokens (read-only). */
+    list: (userId?: string) => request<ApiTokenSummary[]>('/api/tokens', userId ? { headers: { 'X-FeedLantern-User': userId } } : {}),
+    calls: (id: string, options: { status?: ApiTokenCallFilter; cursor?: string; userId?: string } = {}) => {
+      const query = new URLSearchParams();
+      if (options.status) query.set('status', options.status);
+      if (options.cursor) query.set('cursor', options.cursor);
+      return request<ApiTokenCallPage>(`/api/tokens/${encodeURIComponent(id)}/logs?${query}`, options.userId ? { headers: { 'X-FeedLantern-User': options.userId } } : {});
+    },
     create: (body: { name: string; scope: ApiTokenScope; expiresInDays: number | null }) => request<{ token: ApiTokenSummary; secret: string }>('/api/tokens', { method: 'POST', body }),
     revoke: (id: string) => request<{ ok: boolean }>(`/api/tokens/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   },
@@ -144,7 +153,8 @@ export const api = {
   },
   settings: {
     testBark: (body: ApplicationSettings['bark']) => request<{ ok: boolean }>('/api/settings/bark/test', { method: 'POST', body }),
-    save: ({ bark: _bark, ...body }: ApplicationSettings) => request<ApplicationSettings>('/api/settings', { method: 'PUT', body }),
+    /** Partial update: only the fields given are changed (an empty or omitted API key keeps the saved one, null removes it). */
+    save: ({ bark: _bark, ...body }: Partial<ApplicationSettings>) => request<ApplicationSettings>('/api/settings', { method: 'PUT', body }),
     get: () => request<ApplicationSettings>('/api/settings'),
     update: (feedView: 'list' | 'cards') => request<{ feedView: 'list' | 'cards' }>('/api/settings', { method: 'PUT', body: { feedView } }),
     /** Translate a sample sentence with unsaved service settings (an empty key uses the saved one). */

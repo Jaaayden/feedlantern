@@ -46,6 +46,8 @@ Store 的无 owner 参数列表方法保留给整站后台调度和备份使用�
 
 迁移版本 17 和 13–16 一样按表和列是否存在判断（`network_profiles` 表、`feeds.network_profile_id` 列），所有语句可重复执行，并写入 `max(17, 当前版本)`，与合并顺序无关。
 
+迁移版本 19 新增 `api_token_logs`（访问令牌调用记录：令牌 ID、所属用户、令牌名称与前缀、时间、方法、路由模板、状态码、耗时、来源 IP），按表是否存在判断并写入 `max(19, 当前版本)`。`token_id` 外键级联删除，吊销令牌、删除账号或恢复备份时一并清除；它属于诊断数据，不进入完整备份。
+
 所有抓取路径都经 `app.ts` 的 `networkFor()` 取得同一份 `FetchNetworkOptions`：编辑器 `POST /api/browser`（含“试抓多页”）、批量识别（`ImportJobs` 的 discover / scrape / RSS）、规则失效后的“重新识别”和后台刷新 `refreshOnce()`。多页采集在同一个浏览器上下文里翻页，代理、User-Agent 和额外请求头对每一页都生效，每次翻页仍先经过网络策略检查；第 1 页使用配置中的 Referer，之后的页面以上一页为 Referer。访问令牌调用网络配置接口与其他接口相同：GET 需要 read，其余需要 write，按令牌所属账号的工作台隔离。
 
 Chromium 侧：有代理的配置会为该浏览器上下文单独创建一个只监听 127.0.0.1 的受限代理（`createRestrictedForwardProxy({ upstream, requireAuth })`），它沿用全局的网络策略选项（`allowedHosts`、`dnsOverHttps`），对每个请求先校验目标、再校验代理地址，然后经上游代理以已校验的 IP 建立隧道（HTTP/HTTPS 代理用 CONNECT，SOCKS5 用 IPv4/IPv6 地址类型）。这个本机代理要求每个上下文独立的随机 Basic 登录，交给 Chromium 的只是这组随机登录，用户真实的代理密码始终留在 Node 进程中；另一个上下文或本机其他进程无法借用。上下文关闭时随之关闭。User-Agent 用上下文选项设置，Referer 只用于首次导航，额外请求头在请求路由中按站点范围加入。浏览器只启动一次，沙箱、`--disable-quic` 和 WebRTC 限制不变。RSS 侧在 `rss-source.ts` 中用同样的隧道和规则。
@@ -72,7 +74,8 @@ Chromium 侧：有代理的配置会为该浏览器上下文单独创建一个�
 | `/api/backups/export` | 加密导出，POST 管理员密码与备份密码 |
 | `/api/backups/preview`、`restore` | 预览/覆盖恢复；初始化场景使用 setupToken |
 | `GET/POST /api/backups/config` | 轻量配置导出/预览与确认导入 |
-| `GET/POST /api/tokens`、`DELETE /api/tokens/:id` | 列出、创建（`{name, scope:'read'\|'write', expiresInDays?}`，返回只出现一次的 `secret`）、吊销自己的访问令牌；仅限网页会话 |
+| `GET/POST /api/tokens`、`DELETE /api/tokens/:id` | 列出（含最近 24 小时调用统计 `usage24h`）、创建（`{name, scope:'read'\|'write', expiresInDays?}`，返回只出现一次的 `secret`）、吊销自己的访问令牌；仅限网页会话。管理员带 `X-FeedLantern-User` 可只读列出其他用户的令牌，创建和吊销只能针对自己 |
+| `GET /api/tokens/:id/logs?status=success\|denied\|error&cursor=&limit=` | 令牌调用记录，新到旧分页（`{calls, nextCursor, retentionDays, perTokenLimit}`）；`denied` 为 401/403/429，`error` 为其他 ≥ 400；仅限网页会话，管理员可带 `X-FeedLantern-User` 查看其他用户的记录 |
 | `GET /api/openapi.json` | 公开的 OpenAPI 3.1 文档 |
 | `/feeds/:id/:token.xml` | 无管理员登录的密钥授权 RSS 2.0 |
 | `POST /api/feeds/:id/health/redetect` | 网页订阅：后台按当前规则抽取并运行自动识别，返回 `{current:{count,items,error?}, detection}`（每个候选最多 5 条预览），不保存规则 |
@@ -106,6 +109,8 @@ RSS、Atom、JSON Feed、浏览器预览页和管理端都通过 `src/server/fee
 ## 用令牌调用 API
 
 脚本和 AI Agent 使用个人访问令牌，不需要模拟网页登录。在“设置 → 访问令牌”创建，令牌形如 `fl_` 加 43 个字符，只在创建时显示一次；数据库只保存 SHA-256 哈希和用于识别的前 11 个字符。
+
+带令牌的每个 `/api/*` 请求都会记入该令牌的调用记录（`src/server/api-token-log.ts`）：`onRequest` 钩子识别令牌（已过期的令牌也会识别，以便记下 401），`onResponse` 钩子把方法、路由模板（`request.routeOptions.url`，未匹配时为 null）、状态码、`reply.elapsedTime` 和 `request.ip`（遵循 `TRUSTED_PROXIES`）放进内存缓冲区。缓冲区每秒或攒满 200 条时在一个事务中写入，并按每个令牌和全站上限裁剪，请求本身不产生数据库写入；读取记录前会先写入缓冲区。网页 Cookie 会话的请求不记录，令牌密钥和查询参数也不记录。
 
 ```sh
 export FEEDLANTERN=https://feeds.example.com
@@ -234,6 +239,7 @@ SQLite 版本 8 移除单管理员索引并增加加密 `user_notifications`。�
 | 规则健康样本 | 每个订阅最近 10 条正常样本和 10 条可疑样本，并按「日志保留天数」清理 | `RuleHealth.record` / `RuleHealth.prune` |
 | 登录会话 | 过期后每小时清理 | `Store.purgeExpiredSessions` |
 | 访问令牌 | 过期 30 天后每小时清理；每个账号最多 50 个 | `ApiTokens.purgeExpired` |
+| 访问令牌调用记录 | 按「日志保留天数」；每个令牌最多 2000 条（`API_TOKEN_LOG_PER_TOKEN`）、全站最多 20000 条（`API_TOKEN_LOG_LIMIT`），写入时即裁剪 | `ApiTokenLog.flush` / `ApiTokenLog.prune` |
 
 清理每小时运行一次。新建的数据库使用 `auto_vacuum=INCREMENTAL`，清理后 `Store.compact()` 把空闲页逐步还给磁盘；更早创建的数据库用 `scripts/compact-db.ts` 一次性转换并压缩，用法见[升级维护](maintenance.md#数据库体积)。完整备份导出时翻译缓存也只取最近使用的 20000 条，因此缓存在两次清理之间短暂超限不会让导出失败。
 

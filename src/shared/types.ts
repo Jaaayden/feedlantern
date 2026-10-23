@@ -124,6 +124,9 @@ export interface ExtractedItem {
   contentHtml?: string;
   translationStatus?: 'pending' | 'success' | 'failed';
   translationError?: string;
+  /** Translated items: the title in each language (`title` is what the feed publishes). */
+  translatedTitle?: string;
+  sourceTitle?: string;
   title: string;
   link: string;
   description?: string;

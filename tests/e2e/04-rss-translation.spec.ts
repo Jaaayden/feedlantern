@@ -15,11 +15,26 @@ test('RSS 翻译创建、原文预览、双语输出、模式切换和移动端'
   await page.getByRole('button', { name: '保存 RSS 翻译订阅' }).click();
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByText('翻译：1 条完成', { exact: false })).toBeVisible();
-  await expect(dialog.getByRole('link', { name: '中文：Hello RSS / Hello RSS', exact: false })).toBeVisible();
-  await expect(dialog.getByLabel('翻译进度')).toContainText('翻译完成');
-  await expect(dialog.getByLabel('翻译进度')).toContainText('开始翻译');
+  // The item shows the translated title, with the original as a quieter second line.
+  const item = dialog.locator('article.preview-item').first();
+  await expect(item.getByRole('link', { name: '中文：Hello RSS', exact: true })).toBeVisible();
+  await expect(item.locator('.item-original-title')).toHaveText('Hello RSS');
+  // Translation progress lives in 运行日志, not under the items.
+  await expect(dialog.getByRole('region', { name: '翻译日志' })).toHaveCount(0);
+  await dialog.getByRole('button', { name: '运行日志', exact: true }).click();
+  await expect(page).toHaveURL(/\/logs$/);
+  await dialog.getByRole('button', { name: '翻译记录' }).click();
+  const translationLog = dialog.getByRole('region', { name: '翻译日志' });
+  await expect(translationLog).toContainText('翻译完成');
+  await expect(translationLog).toContainText('开始翻译');
+  await expect(translationLog).toContainText('全部文章已翻译完成');
+  await dialog.getByRole('button', { name: '订阅内容', exact: true }).click();
+  await item.getByRole('button', { name: '展开全文' }).click();
   const frame = dialog.frameLocator('iframe[title="订阅正文 1"]');
   await expect(frame.getByText('const example = 1;', { exact: true })).toBeVisible();
+  // The bilingual original is marked so it reads quieter than the translation.
+  await expect(frame.locator('.fl-source').first()).toContainText('This is an English article with');
+  expect(await dialog.locator('iframe[title="订阅正文 1"]').getAttribute('sandbox')).not.toContain('allow-scripts');
   const rss = await dialog.locator('input[readonly]').inputValue();
   const originalXml = await (await page.request.get(rss)).text();
   expect(originalXml).toContain('中文：Hello RSS / Hello RSS');

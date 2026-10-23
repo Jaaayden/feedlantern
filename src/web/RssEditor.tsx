@@ -5,10 +5,7 @@ import { api } from './api';
 import { ArrowLeft } from 'lucide-react';
 import { sameAddress } from './format';
 import { NetworkProfileSelect, useNetworkProfiles } from './NetworkProfiles';
-
-export function RssContent({ html, title }: { html: string; title: string }) {
-  return <iframe className="rss-content" title={title} sandbox="" referrerPolicy="no-referrer" srcDoc={`<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https: http:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><style>body{font:15px/1.7 system-ui;margin:8px;color:#263348;overflow-wrap:anywhere}img{max-width:100%;height:auto}pre{white-space:pre-wrap}table{max-width:100%;border-collapse:collapse}td,th{border:1px solid #ddd;padding:5px}a{color:#355ab3}</style></head><body>${html}</body></html>`} />;
-}
+import { ArticleFrame } from './ItemList';
 
 export function RssEditor({ initial, existing = [], saved, cancel }: { initial?: Feed; existing?: Feed[]; saved: (id: string) => void; cancel: () => void }) {
   const [url, setUrl] = useState(initial?.url ?? '');
@@ -55,6 +52,6 @@ export function RssEditor({ initial, existing = [], saved, cancel }: { initial?:
       {error && <div className="error-note" role="alert">{error}</div>}
       <button className="button primary" disabled={busy || (!initial && preview?.url !== `${networkProfileId}\n${url}`)}>{busy ? '处理中…' : '保存 RSS 翻译订阅'}</button>
     </form>
-    {preview && <section className="panel rss-source-preview"><h2>原文预览</h2>{!preview.items.length && <p>订阅源有效，目前没有条目。</p>}{preview.items.map((item, index) => <article key={index}><h3>{item.title}</h3><RssContent title={`原文预览 ${index + 1}`} html={item.contentHtml ?? ''} /></article>)}</section>}
+    {preview && <section className="panel rss-source-preview"><h2>原文预览</h2>{!preview.items.length && <p>订阅源有效，目前没有条目。</p>}{preview.items.map((item, index) => <article key={index}><h3>{item.title}</h3><ArticleFrame title={`原文预览 ${index + 1}`} html={item.contentHtml ?? ''} /></article>)}</section>}
   </>;
 }

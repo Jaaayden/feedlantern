@@ -105,6 +105,7 @@ const schemas: Record<string, Schema> = {
   FeedItem: object({
     id: str(), title: str(), link: str(), description: str(), image: str(), publishedAt: dateTime, publishedAtSource: str({ enum: ['absolute', 'relative'] }),
     firstSeenAt: dateTime, contentHtml: str(), translationStatus: str({ enum: ['pending', 'success', 'failed'] }), translationError: str(),
+    translatedTitle: str({ description: '翻译完成时：译文标题' }), sourceTitle: str({ description: '翻译完成时：原文标题' }),
   }, ['title', 'link']),
   RuleHealthWarning: object({
     detectedAt: dateTime, checkedAt: dateTime, itemCount: int(), baselineSamples: int({ description: '参与比较的最近正常抓取次数' }),
