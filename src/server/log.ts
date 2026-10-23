@@ -2,6 +2,8 @@
 // URL query strings and anything that looks like a credential.
 export function redactForLog(text: string): string {
   return text
+    // user:password@ in any URL, including socks5:// proxy addresses.
+    .replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@"'<>]+@/gi, '$1[已隐藏]@')
     .replace(/(https?:\/\/[^\s?#"'<>)]+)[?#][^\s"'<>)]*/gi, '$1?[已隐藏]')
     .replace(/(?:cookie|authorization|set-cookie|token|password)\s*["']?\s*[:=][^\n]*/gi, '[敏感信息已隐藏]')
     .replace(/Bearer\s+\S+/gi, '[敏感信息已隐藏]')

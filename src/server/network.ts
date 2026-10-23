@@ -7,8 +7,11 @@ import {
 } from 'node:http';
 import { lookup } from 'node:dns/promises';
 import { connect as netConnect, type Socket } from 'node:net';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import ipaddr from 'ipaddr.js';
 import type { BrowserContext } from 'playwright';
+import { headerScopeMatches, type CustomHeader } from './fetch-options.js';
+import { formatHost, openTunnel, ProxyConnectError, proxyLabel, type UpstreamProxy } from './upstream-proxy.js';
 
 export interface NetworkPolicyOptions {
   /** Opt in for hosts using a local fake-IP DNS proxy. Results remain checked. */
@@ -229,22 +232,50 @@ export class NetworkPolicy {
     return { url, address };
   }
 
+  /**
+   * A user's upstream proxy must pass the same checks as a target: it may not
+   * be a loopback, private or metadata address unless its exact host:port is
+   * in the administrator's allowedHosts. Returns the checked address to dial.
+   */
+  async resolveProxy(proxy: Pick<UpstreamProxy, 'type' | 'host' | 'port'>): Promise<string> {
+    const raw = `http://${formatHost(proxy.host)}:${proxy.port}/`;
+    try {
+      return (await this.resolveForConnection(raw)).address;
+    } catch (error) {
+      if (!(error instanceof NetworkPolicyError)) throw error;
+      if (/无法解析/.test(error.message)) throw new NetworkPolicyError(`无法解析代理服务器地址：${proxyLabel(proxy)}`);
+      throw new NetworkPolicyError(`代理服务器 ${proxyLabel(proxy)} 指向内网、回环或保留地址，已被安全策略阻止；如确需使用，请管理员把 ${formatHost(proxy.host)}:${proxy.port} 加入允许访问的主机`);
+    }
+  }
+
   /** Useful for tests and diagnostics without exposing the allowlist. */
   hasExplicitHost(rawUrl: string): boolean {
     return isExplicitlyAllowed(parseUrl(rawUrl), this.allowedHosts);
   }
 }
 
+export interface ContextHeaders {
+  /** The feed URL; custom headers go only to this site (see headerScopeMatches). */
+  scopeUrl: string;
+  headers: readonly CustomHeader[];
+}
+
 /** Attach request and WebSocket guards before the first page is created. */
 export async function installNetworkPolicy(
   context: BrowserContext,
   options: NetworkPolicyOptions = {},
+  extra?: ContextHeaders,
 ): Promise<NetworkPolicy> {
   const policy = new NetworkPolicy(options);
   await context.route('**/*', async route => {
     try {
-      await policy.assertAllowed(route.request().url());
-      await route.continue();
+      const url = route.request().url();
+      await policy.assertAllowed(url);
+      if (extra?.headers.length && headerScopeMatches(url, extra.scopeUrl)) {
+        const headers = { ...(await route.request().allHeaders()) };
+        for (const header of extra.headers) headers[header.name.toLowerCase()] = header.value;
+        await route.continue({ headers });
+      } else await route.continue();
     } catch {
       await route.abort('blockedbyclient').catch(() => undefined);
     }
@@ -260,8 +291,29 @@ export async function installNetworkPolicy(
 
 export interface RestrictedForwardProxy {
   readonly url: string;
+  /** Present when the proxy requires its own per-instance login. */
+  readonly credentials?: { username: string; password: string };
+  /** The latest upstream proxy failure, safe to show to the user. */
+  readonly lastError?: string;
+  /** Forget lastError, before a new navigation. */
+  resetError(): void;
   close(): Promise<void>;
 }
+
+export interface RestrictedForwardProxyOptions extends NetworkPolicyOptions {
+  /**
+   * Forward every checked connection through this proxy. The target address
+   * is still resolved and checked here, and the proxy is given that IP.
+   */
+  upstream?: UpstreamProxy;
+  /**
+   * Demand a random per-instance Basic login. Used with `upstream`, so other
+   * local processes cannot borrow the user's proxy through the loopback port.
+   */
+  requireAuth?: boolean;
+}
+
+const PROXY_AUTH_REQUIRED = 'HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm="FeedLantern"\r\nConnection: close\r\nContent-Length: 0\r\n\r\n';
 
 function writeProxyError(response: import('node:http').ServerResponse, status: number, message: string): void {
   if (response.headersSent) {
@@ -312,12 +364,37 @@ function validPort(port: number): boolean {
  * browserContext.route() implementation.
  */
 export async function createRestrictedForwardProxy(
-  options: NetworkPolicyOptions = {},
+  options: RestrictedForwardProxyOptions = {},
 ): Promise<RestrictedForwardProxy> {
-  const policy = new NetworkPolicy(options);
+  const { upstream, requireAuth, ...policyOptions } = options;
+  const policy = new NetworkPolicy(policyOptions);
   const sockets = new Set<Socket>();
   const upstreamRequests = new Set<ClientRequest>();
+  const credentials = requireAuth ? { username: 'feedlantern', password: randomBytes(24).toString('base64url') } : undefined;
+  const expectedAuth = credentials ? Buffer.from(`Basic ${Buffer.from(`${credentials.username}:${credentials.password}`).toString('base64')}`) : undefined;
+  let lastError: string | undefined;
+  const authorized = (header: string | string[] | undefined): boolean => {
+    if (!expectedAuth) return true;
+    const actual = Buffer.from(typeof header === 'string' ? header : '');
+    return actual.length === expectedAuth.length && timingSafeEqual(actual, expectedAuth);
+  };
+  /** A socket to the checked target address, direct or through the upstream proxy. */
+  const dial = async (address: string, port: number): Promise<Socket> => {
+    if (!upstream) throw new Error('no upstream');
+    try {
+      const proxyAddress = await policy.resolveProxy(upstream);
+      return await openTunnel(upstream, proxyAddress, address, port);
+    } catch (error) {
+      if (error instanceof ProxyConnectError || error instanceof NetworkPolicyError) lastError = error.message;
+      throw error;
+    }
+  };
   const server = createServer(async (incoming, outgoing) => {
+    if (!authorized(incoming.headers['proxy-authorization'])) {
+      outgoing.writeHead(407, { 'proxy-authenticate': 'Basic realm="FeedLantern"', connection: 'close', 'content-length': '0' });
+      outgoing.end();
+      return;
+    }
     incoming.setTimeout(PROXY_TIMEOUT_MS, () => abortIncoming(incoming));
     outgoing.setTimeout(PROXY_TIMEOUT_MS, () => outgoing.destroy());
     const raw = incoming.url ?? '';
@@ -338,34 +415,41 @@ export async function createRestrictedForwardProxy(
 
       const headers: Record<string, string | string[] | undefined> = { ...incoming.headers };
       delete headers['proxy-connection'];
+      delete headers['proxy-authorization'];
       delete headers['connection'];
       delete headers['keep-alive'];
       delete headers['upgrade'];
       headers.host = target.host;
-      const upstream = httpRequest({
+      const tunnel = upstream ? await dial(connection.address, port) : undefined;
+      if (incoming.destroyed || outgoing.destroyed) { tunnel?.destroy(); return; }
+      const upstreamRequest = httpRequest({
         protocol: 'http:',
         hostname: normalizeHostname(target.hostname),
         port,
         method: incoming.method,
         path: requestPath(target),
         headers,
-        agent: false,
-        // Use the already checked address. Node never performs another DNS
-        // lookup for this request.
-        lookup: (_hostname, _options, callback) => {
-          callback(null, connection.address, Number(ipaddr.parse(connection.address).kind().slice(-1)) as 4 | 6);
-        },
+        ...(tunnel ? { createConnection: () => tunnel } : {
+          agent: false,
+          // Use the already checked address. Node never performs another DNS
+          // lookup for this request.
+          lookup: (_hostname: string, _options: unknown, callback: (error: Error | null, address: string, family: 4 | 6) => void) => {
+            callback(null, connection.address, Number(ipaddr.parse(connection.address).kind().slice(-1)) as 4 | 6);
+          },
+        }),
       });
-      upstreamRequests.add(upstream);
-      upstream.setTimeout(PROXY_TIMEOUT_MS, () => upstream.destroy(new Error('upstream timeout')));
-      upstream.once('close', () => upstreamRequests.delete(upstream));
-      const closeUpstream = () => abortRequest(upstream);
+      // The tunnel was left paused after the proxy handshake.
+      if (tunnel) upstreamRequest.once('socket', socket => socket.resume());
+      upstreamRequests.add(upstreamRequest);
+      upstreamRequest.setTimeout(PROXY_TIMEOUT_MS, () => upstreamRequest.destroy(new Error('upstream timeout')));
+      upstreamRequest.once('close', () => upstreamRequests.delete(upstreamRequest));
+      const closeUpstream = () => abortRequest(upstreamRequest);
       incoming.once('aborted', closeUpstream);
       incoming.once('close', () => {
         if (!incoming.complete) closeUpstream();
       });
       outgoing.once('close', closeUpstream);
-      upstream.on('response', response => {
+      upstreamRequest.on('response', response => {
         if (outgoing.destroyed) {
           response.destroy();
           return;
@@ -378,26 +462,31 @@ export async function createRestrictedForwardProxy(
         });
         response.pipe(outgoing);
       });
-      upstream.on('error', error => writeProxyError(outgoing, 502, `上游请求失败：${error.message}`));
-      incoming.pipe(upstream);
+      upstreamRequest.on('error', error => writeProxyError(outgoing, 502, `上游请求失败：${error.message}`));
+      incoming.pipe(upstreamRequest);
     } catch (error) {
       const message = error instanceof Error ? error.message : '代理请求被阻止';
-      abortIncoming(incoming);
+      // Send the error first; a request body still arriving is dropped after it.
       writeProxyError(outgoing, error instanceof NetworkPolicyError ? 403 : 502, message);
+      if (!incoming.complete) outgoing.once('finish', () => abortIncoming(incoming));
     }
   });
 
   server.on('connect', async (request, clientSocket, head) => {
     const client = clientSocket as Socket;
+    if (!authorized(request.headers['proxy-authorization'])) {
+      if (!client.destroyed) client.end(PROXY_AUTH_REQUIRED);
+      return;
+    }
     client.setTimeout(PROXY_TIMEOUT_MS, () => client.destroy());
     let target: URL;
-    let upstream: Socket | undefined;
+    let remote: Socket | undefined;
     let closed = false;
     const closeBoth = () => {
       if (closed) return;
       closed = true;
       if (!clientSocket.destroyed) clientSocket.destroy();
-      if (upstream && !upstream.destroyed) upstream.destroy();
+      if (remote && !remote.destroyed) remote.destroy();
     };
     client.once('close', closeBoth);
     client.on('error', closeBoth);
@@ -410,12 +499,29 @@ export async function createRestrictedForwardProxy(
       const port = targetPort(target);
       if (!validPort(port)) throw new NetworkPolicyError('CONNECT 目标端口无效');
       if (client.destroyed) return;
+      if (upstream) {
+        const tunnel = await dial(connection.address, port);
+        sockets.add(tunnel);
+        remote = tunnel;
+        if (closed || client.destroyed) return closeBoth();
+        tunnel.setTimeout(PROXY_TIMEOUT_MS, () => closeBoth());
+        tunnel.on('error', closeBoth);
+        tunnel.once('close', () => {
+          sockets.delete(tunnel);
+          closeBoth();
+        });
+        client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+        if (head.length) tunnel.write(head);
+        client.pipe(tunnel);
+        tunnel.pipe(client);
+        return;
+      }
       const tunnel = netConnect({
         host: connection.address,
         port,
         family: Number(ipaddr.parse(connection.address).kind().slice(-1)) as 4 | 6,
       }) as Socket;
-      upstream = tunnel;
+      remote = tunnel;
       sockets.add(tunnel);
       tunnel.setTimeout(PROXY_TIMEOUT_MS, () => closeBoth());
       tunnel.once('connect', () => {
@@ -468,6 +574,9 @@ export async function createRestrictedForwardProxy(
   let closed = false;
   return {
     url: `http://127.0.0.1:${address.port}`,
+    ...(credentials ? { credentials } : {}),
+    get lastError() { return lastError; },
+    resetError() { lastError = undefined; },
     async close() {
       if (closed) return;
       closed = true;

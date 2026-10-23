@@ -35,7 +35,7 @@ export class ImportJobs {
   }
   stop() { this.stopped = true; }
   setConcurrency(value: number) { this.concurrency = value; }
-  create(entries: Array<Pick<ImportEntry, 'url' | 'credentialId' | 'intervalMinutes' | 'sourceType' | 'translationMode'>>, ownerId = 'admin', actorId = ownerId): ImportJob {
+  create(entries: Array<Pick<ImportEntry, 'url' | 'credentialId' | 'networkProfileId' | 'intervalMinutes' | 'sourceType' | 'translationMode'>>, ownerId = 'admin', actorId = ownerId): ImportJob {
     if (this.store.listImportJobs().filter(j => j.entries.some(e => ['queued', 'running'].includes(e.state))).length >= 10) throw new AppError(429, '请等待现有批量任务完成');
     const job: ImportJob = { actorId, ownerId, id: randomUUID(), createdAt: new Date().toISOString(), entries: [] };
     const seen = new Set<string>();
@@ -72,6 +72,7 @@ export class ImportJobs {
       const generation = this.store.userGeneration(job.ownerId);
       const actionSignal = this.signal(job);
       if (input.credentialId && !this.store.owns('credentials', input.credentialId, job.ownerId ?? 'admin')) throw new AppError(404, 'Cookie 凭据不存在');
+      if (input.networkProfileId && !this.store.owns('network_profiles', input.networkProfileId, job.ownerId ?? 'admin')) throw new AppError(404, '网络配置不存在');
       const entry = job.entries.find(e => e.id === entryId);
       if (!entry) throw new AppError(404, '任务条目不存在');
       if (entry.sourceType === 'rss') throw new AppError(400, 'RSS 翻译请使用重试，不支持网页规则确认');
@@ -164,7 +165,7 @@ export class ImportJobs {
               const rss = await this.loadRss(entry, this.signal(job));
               if (!stillActive()) { this.requeue(job.id, entry.id); return; }
               entry.title = rss.title;
-              this.complete(current, entry, { sourceType: 'rss', translationMode: entry.translationMode ?? 'bilingual', name: (rss.title.trim() || new URL(entry.url).host).slice(0, 200), url: entry.url, credentialId: null, intervalMinutes: entry.intervalMinutes, waitMs: 0, rules: { item: '', title: '', link: '' } }, [], startedAt, performance.now() - started, rss);
+              this.complete(current, entry, { sourceType: 'rss', translationMode: entry.translationMode ?? 'bilingual', name: (rss.title.trim() || new URL(entry.url).host).slice(0, 200), url: entry.url, credentialId: null, networkProfileId: entry.networkProfileId ?? null, intervalMinutes: entry.intervalMinutes, waitMs: 0, rules: { item: '', title: '', link: '' } }, [], startedAt, performance.now() - started, rss);
               this.wakeTranslation?.();
               return;
             }
@@ -173,7 +174,7 @@ export class ImportJobs {
             entry.title = title;
             const candidate = detection.candidates.find(c => c.id === detection.recommendedId && c.confidence === 'high');
             if (candidate && candidate.items.length >= 3) {
-              this.complete(current, entry, { name: (title.trim() || new URL(entry.url).host).slice(0, 200), url: entry.url, credentialId: entry.credentialId, intervalMinutes: entry.intervalMinutes, waitMs: 1000, rules: candidate.rules, ruleOrigins: Object.fromEntries(Object.keys(candidate.rules).map(k => [k, 'auto'])) }, candidate.items, startedAt, performance.now() - started);
+              this.complete(current, entry, { name: (title.trim() || new URL(entry.url).host).slice(0, 200), url: entry.url, credentialId: entry.credentialId, networkProfileId: entry.networkProfileId ?? null, intervalMinutes: entry.intervalMinutes, waitMs: 1000, rules: candidate.rules, ruleOrigins: Object.fromEntries(Object.keys(candidate.rules).map(k => [k, 'auto'])) }, candidate.items, startedAt, performance.now() - started);
               return;
             }
             entry.state = 'review'; entry.detection = detection;

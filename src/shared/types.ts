@@ -16,6 +16,8 @@ export interface FeedInput {
   rules: SelectionRules;
   ruleOrigins?: RuleOrigins;
   credentialId: string | null;
+  /** Saved network profile (proxy, User-Agent, Referer, headers). Omitted on update keeps the current one. */
+  networkProfileId?: string | null;
   intervalMinutes: number;
   waitMs: number;
   waitForSelector?: string;
@@ -24,6 +26,7 @@ export interface FeedSettingsInput {
   translationMode?: 'original' | 'chinese' | 'bilingual';
   channelTitle?: string;
   intervalMinutes?: number;
+  networkProfileId?: string | null;
 }
 export type BulkFeedSettingsInput = Pick<FeedSettingsInput, 'translationMode' | 'intervalMinutes'>;
 export interface Feed extends FeedInput {
@@ -82,6 +85,29 @@ export const defaultApplicationSettings: ApplicationSettings = {
   bark: { enabled: false, url: '', failureThreshold: 10, timeoutSeconds: 10, maxAttempts: 3, retryDelaySeconds: 60, laterRetryDelaySeconds: 300, cooldownMinutes: 30 },
   server: { backgroundConcurrency: 1, allowedHosts: [], dnsOverHttps: false, trustedProxies: [], publicOrigin: 'http://127.0.0.1:4321', cookieSecure: false, sessionTtlDays: 30, host: '127.0.0.1', port: 4321 },
 };
+/** A reusable network profile. Proxy logins and header values are write-only and never returned. */
+export interface NetworkProfileSummary {
+  id: string;
+  name: string;
+  proxy: { type: 'http' | 'https' | 'socks5'; host: string; port: number; url: string; authenticated: boolean } | null;
+  userAgent: string | null;
+  referer: string | null;
+  headerNames: string[];
+  feedCount: number;
+  updatedAt: string;
+}
+export interface NetworkProfileInput {
+  name: string;
+  /** http://, https:// or socks5:// with host and port. Empty for no proxy. */
+  proxyUrl?: string | null;
+  /** Omit to keep the saved login, null to remove it. */
+  proxyUsername?: string | null;
+  proxyPassword?: string | null;
+  userAgent?: string | null;
+  referer?: string | null;
+  /** A header without `value` keeps its saved value. */
+  headers?: Array<{ name: string; value?: string }>;
+}
 export interface CredentialSummary { id: string; name: string; url: string; format: 'header' | 'json'; domains: string[]; count: number; updatedAt: string; expiresAt: string | null }
 /**
  * Visible elements of a captured frame, measured in screenshot pixels from the
@@ -128,6 +154,8 @@ export interface AuthState { userId?: string; role?: "admin" | "user"; setupRequ
 // POST /api/auth/password {currentPassword,newPassword}; authenticated mutations also require X-CSRF-Token.
 // GET /api/credentials -> CredentialSummary[]; POST -> {name,url,format:'header'|'json',value} -> CredentialSummary
 // PUT /api/credentials/:id same; DELETE /api/credentials/:id (409 if referenced)
+// GET /api/network-profiles -> NetworkProfileSummary[]; POST NetworkProfileInput -> NetworkProfileSummary
+// PUT /api/network-profiles/:id NetworkProfileInput; DELETE (409 if referenced); POST /api/network-profiles/:id/test {url} -> {ok,status}
 // GET /api/feeds -> Feed[]; POST /api/feeds FeedInput -> {feed,feedUrl}
 // GET /api/feeds/:id/logs?status=&cursor=&limit= -> FetchLogPage (owner only, default 20, max 100)
 // GET /api/feeds/:id -> {feed,items:FeedItem[],feedUrl}; PUT FeedInput -> {feed,feedUrl}
@@ -144,7 +172,7 @@ export interface AuthState { userId?: string; role?: "admin" | "user"; setupRequ
 
 export interface ImportEntry {
   sourceType?: 'website' | 'rss'; translationMode?: 'original' | 'chinese' | 'bilingual';
-  id: string; url: string; credentialId: string | null; intervalMinutes: number;
+  id: string; url: string; credentialId: string | null; networkProfileId?: string | null; intervalMinutes: number;
   state: 'queued' | 'running' | 'created' | 'existing' | 'review' | 'failed' | 'canceled';
   feedId?: string; error?: string; title?: string; detection?: DetectionResult;
 }

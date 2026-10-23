@@ -14,6 +14,7 @@ interface FeedBody {
   rules?: unknown;
   ruleOrigins?: unknown;
   credentialId?: unknown;
+  networkProfileId?: unknown;
   intervalMinutes?: unknown;
   waitMs?: unknown;
   waitForSelector?: unknown;
@@ -111,6 +112,8 @@ export function parseFeedInput(value: unknown): FeedInput {
     rules: rss ? { item: '', title: '', link: '' } : parseRules(record.rules),
     ruleOrigins: parseRuleOrigins(record.ruleOrigins),
     credentialId: rss ? null : credentialId,
+    // Omitted keeps the saved profile on update; null or '' removes it.
+    ...(record.networkProfileId === undefined ? {} : { networkProfileId: record.networkProfileId === null || record.networkProfileId === '' ? null : asNonEmptyString(record.networkProfileId, 'networkProfileId', 200) }),
     intervalMinutes: asInteger(record.intervalMinutes, 'intervalMinutes', 5, 1_440, rss ? 30 : 60),
     waitMs: asInteger(record.waitMs, 'waitMs', 0, 10_000, 1_000),
     ...(record.waitForSelector ? { waitForSelector: asNonEmptyString(record.waitForSelector, 'waitForSelector', 4_000) } : {}),
@@ -130,7 +133,7 @@ export function friendlyError(error: unknown, fallback: string): string {
   if (error instanceof CookieParseError) return error.message;
   if (error instanceof AppError) return error.message;
   if (error instanceof Error) {
-    const message = error.message.replace(/https?:\/\/[^\s)]+/gi, '[目标页面]').replace(/(?:cookie|authorization|set-cookie)\s*[:=][^\n]*/gi, '[敏感请求头已隐藏]');
+    const message = error.message.replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s/@]+@/gi, '[已隐藏]@').replace(/https?:\/\/[^\s)]+/gi, '[目标页面]').replace(/(?:cookie|authorization|set-cookie)\s*[:=][^\n]*/gi, '[敏感请求头已隐藏]');
     if (message && message.length <= 300 && !/\n|stack|at\s+/.test(message)) return message;
   }
   return fallback;

@@ -32,6 +32,16 @@ SQLite `PRAGMA user_version` 记录迁移：版本 1 增加频道名称与设置
 
 Store 的无 owner 参数列表方法保留给整站后台调度和备份使用，HTTP 工作台必须传入认证的用户 ID。客户端提交的 ownerId 不决定归属。普通用户不读取全局设置，列表偏好存储在浏览器中。
 
+### 网络配置（迁移 17）
+
+`network_profiles` 表按 `owner_id` 归属，结构与 Cookie 凭据相同：凭据属于用户，订阅通过 `feeds.network_profile_id`（`ON DELETE RESTRICT`）引用。这样一组代理和请求头只需维护一次，改密码后所有引用的订阅同时生效；订阅本身、轻量配置和接口响应都不携带密钥。代理类型、主机、端口、是否有认证、User-Agent、Referer 和请求头名称以明文列保存，供列表展示；完整配置（含代理用户名密码和请求头的值）以主密钥 AES-256-GCM 加密保存在 `encrypted_value`，只在服务端实际抓取时解密。
+
+迁移 17 同时检查版本号和表结构：`feeds` 缺少 `network_profile_id` 列时也会执行，所有语句可重复执行，且不会把较高的 `user_version` 改小。
+
+三条抓取路径都经 `app.ts` 的 `networkFor()` 取得同一份 `FetchNetworkOptions`：编辑器 `POST /api/browser`、批量识别（`ImportJobs` 的 discover / scrape / RSS）和后台刷新 `refreshOnce()`。
+
+Chromium 侧：有代理的配置会为该浏览器上下文单独创建一个只监听 127.0.0.1 的受限代理（`createRestrictedForwardProxy({ upstream, requireAuth })`），它沿用全局的网络策略选项（`allowedHosts`、`dnsOverHttps`），对每个请求先校验目标、再校验代理地址，然后经上游代理以已校验的 IP 建立隧道（HTTP/HTTPS 代理用 CONNECT，SOCKS5 用 IPv4/IPv6 地址类型）。这个本机代理要求每个上下文独立的随机 Basic 登录，交给 Chromium 的只是这组随机登录，用户真实的代理密码始终留在 Node 进程中；另一个上下文或本机其他进程无法借用。上下文关闭时随之关闭。User-Agent 用上下文选项设置，Referer 只用于首次导航，额外请求头在请求路由中按站点范围加入。浏览器只启动一次，沙箱、`--disable-quic` 和 WebRTC 限制不变。RSS 侧在 `rss-source.ts` 中用同样的隧道和规则。
+
 ## API 摘要
 
 所有管理接口要求登录；账号管理、全局设置及备份仅管理员可用，跨用户资源与不存在资源均返回 404。写操作需要 `X-FeedLantern: 1` 和 `X-CSRF-Token`，并校验 Host/Origin。错误返回 `{error:string}`，响应不缓存。
@@ -43,9 +53,10 @@ Store 的无 owner 参数列表方法保留给整站后台调度和备份使用�
 | `PATCH /api/users/:id` | 管理员局部更新 `{username?, enabled?, role?}`；身份变化会撤销目标会话，必须保留至少一名启用的管理员，不能停用自己 |
 | `POST /api/users/:id/password` | 管理员以 `{password}` 重置普通用户密码，撤销目标账号会话 |
 | `/api/credentials` | 凭据元数据及导入更新 |
+| `/api/network-profiles` | 网络配置：GET 列表、POST 创建、PUT `/:id` 修改、DELETE `/:id`（被订阅使用时 409）、POST `/:id/test {url}` 测试连接；返回 `NetworkProfileSummary`，不含代理用户名、密码和请求头的值 |
 | `/api/browser/*` | 打开页面、截图、自动发现、点选、预览 |
 | `/api/feeds` | 单个订阅创建及管理 |
-| `PATCH /api/feeds/:id` | `{channelTitle?, intervalMinutes?}`，至少提供一个；名称同步 RSS 标题，间隔为 5–1440 的整数，变化时重新计时；不触发抓取，兼容仅改名称的旧客户端 |
+| `PATCH /api/feeds/:id` | `{channelTitle?, intervalMinutes?, networkProfileId?}`，至少提供一个；`networkProfileId: null` 改回默认网络；名称同步 RSS 标题，间隔为 5–1440 的整数，变化时重新计时；不触发抓取，兼容仅改名称的旧客户端 |
 | `GET/PUT /api/settings` | 仅管理员读取／修改全局配置及管理员视图偏好 |
 | `POST /api/feeds/bulk` | `{ids,action}`；copy/pause/resume/refresh/delete，逐项结果 |
 | `GET/POST /api/import-jobs` | 列出/创建批量任务，创建参数 entries 与 intervalMinutes |

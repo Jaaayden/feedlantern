@@ -6,6 +6,8 @@ import type {
   ApplicationSettings,
   ImportJob,
   CredentialSummary,
+  NetworkProfileInput,
+  NetworkProfileSummary,
   DetectionResult,
   ExtractedItem,
   Feed,
@@ -98,7 +100,7 @@ export const api = {
   },
   jobs: {
     list: () => request<ImportJob[]>('/api/import-jobs'),
-    create: (entries: Array<{ url: string; credentialId: string | null }>, intervalMinutes: number, sourceType: 'website' | 'rss' = 'website', translationMode: 'chinese' | 'bilingual' = 'bilingual') => request<ImportJob>('/api/import-jobs', { method: 'POST', body: { entries, intervalMinutes, sourceType, translationMode } }),
+    create: (entries: Array<{ url: string; credentialId: string | null; networkProfileId?: string | null }>, intervalMinutes: number, sourceType: 'website' | 'rss' = 'website', translationMode: 'chinese' | 'bilingual' = 'bilingual') => request<ImportJob>('/api/import-jobs', { method: 'POST', body: { entries, intervalMinutes, sourceType, translationMode } }),
     action: (id: string, action: 'retry' | 'cancel', entryId?: string) => request<ImportJob>(`/api/import-jobs/${id}/${action}`, { method: 'POST', body: { entryId } }),
     confirm: (id: string, entryId: string, input: FeedInput) => request<{ feed: Feed; feedUrl: string }>(`/api/import-jobs/${id}/confirm`, { method: 'POST', body: { entryId, input } }),
   },
@@ -140,8 +142,15 @@ export const api = {
       request<CredentialSummary>(`/api/credentials/${encodeURIComponent(id)}`, { method: 'PUT', body }),
     remove: (id: string) => request<void>(`/api/credentials/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   },
+  networkProfiles: {
+    list: () => request<NetworkProfileSummary[]>('/api/network-profiles'),
+    create: (body: NetworkProfileInput) => request<NetworkProfileSummary>('/api/network-profiles', { method: 'POST', body }),
+    update: (id: string, body: NetworkProfileInput) => request<NetworkProfileSummary>(`/api/network-profiles/${encodeURIComponent(id)}`, { method: 'PUT', body }),
+    remove: (id: string) => request<void>(`/api/network-profiles/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    test: (id: string, url: string) => request<{ ok: boolean; status: number }>(`/api/network-profiles/${encodeURIComponent(id)}/test`, { method: 'POST', body: { url } }),
+  },
   feeds: {
-    previewRss: (url: string) => request<{ title: string; items: ExtractedItem[] }>('/api/rss/preview', { method: 'POST', body: { url } }),
+    previewRss: (url: string, networkProfileId?: string | null) => request<{ title: string; items: ExtractedItem[] }>('/api/rss/preview', { method: 'POST', body: { url, ...(networkProfileId ? { networkProfileId } : {}) } }),
     translationProgress: (id: string) => request<TranslationProgressData>(`/api/feeds/${encodeURIComponent(id)}/translation/progress`),
     retryTranslation: (id: string) => request<unknown>(`/api/feeds/${encodeURIComponent(id)}/translation/retry`, { method: 'POST', body: {} }),
     logs: (id: string, status?: FetchStatus, cursor?: string) => {
@@ -189,7 +198,7 @@ export const api = {
     remove: (id: string) => request<void>(`/api/feeds/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   },
   browser: {
-    open: (body: { url: string; credentialId: string | null; waitMs: number; waitForSelector?: string }) =>
+    open: (body: { url: string; credentialId: string | null; networkProfileId?: string | null; waitMs: number; waitForSelector?: string }) =>
       request<ScreenFrame>('/api/browser', { method: 'POST', body }),
     frame: (id: string) => request<ScreenFrame>(`/api/browser/${encodeURIComponent(id)}`),
     scroll: (id: string, deltaY: number, point?: { x: number; y: number }) =>

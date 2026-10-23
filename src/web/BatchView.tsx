@@ -4,6 +4,7 @@ import { api } from './api';
 import { Editor } from './App';
 import { ArrowLeft, FileUp } from 'lucide-react';
 import { copyText, parseOpmlUrls } from './format';
+import { NetworkProfileSelect, useNetworkProfiles } from './NetworkProfiles';
 const labels = { queued: '排队中', running: '识别中', created: '已创建', existing: '已存在', review: '待确认', failed: '失败', canceled: '已取消' };
 export function BatchView({ notify, changed, back }: { notify: (s: string) => void; changed: () => void; back: () => void }) {
   const [sourceType, setSourceType] = useState<'website' | 'rss'>('website');
@@ -12,6 +13,8 @@ export function BatchView({ notify, changed, back }: { notify: (s: string) => vo
   const [interval, setRefreshInterval] = useState(60);
   const [credentials, setCredentials] = useState<CredentialSummary[]>([]);
   const [bindings, setBindings] = useState<Record<string, string>>({});
+  const [networkProfileId, setNetworkProfileId] = useState('');
+  const profiles = useNetworkProfiles(message => setError(message));
   const [jobs, setJobs] = useState<ImportJob[]>([]);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -23,14 +26,15 @@ export function BatchView({ notify, changed, back }: { notify: (s: string) => vo
     try { const url = new URL(raw); if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw Error(); url.hash = ''; const duplicate = seen.has(url.href); seen.add(url.href); return { raw, url: url.href, error: duplicate ? '重复，将跳过' : '' }; }
     catch { return { raw, url: '', error: '无效网址，请修改' }; }
   });
-  if (editing) return <Editor draft={{ name: editing.entry.title ?? '', url: editing.entry.url, credentialId: editing.entry.credentialId, intervalMinutes: editing.entry.intervalMinutes, waitMs: 1000, rules: { item: '', title: '', link: '' } }} submitFeed={input => api.jobs.confirm(editing.job.id, editing.entry.id, input)} cancel={() => setEditing(null)} saved={() => { setEditing(null); void load(); changed(); notify('订阅已保存'); }} />;
+  if (editing) return <Editor draft={{ name: editing.entry.title ?? '', url: editing.entry.url, credentialId: editing.entry.credentialId, networkProfileId: editing.entry.networkProfileId ?? null, intervalMinutes: editing.entry.intervalMinutes, waitMs: 1000, rules: { item: '', title: '', link: '' } }} submitFeed={input => api.jobs.confirm(editing.job.id, editing.entry.id, input)} cancel={() => setEditing(null)} saved={() => { setEditing(null); void load(); changed(); notify('订阅已保存'); }} />;
   async function run(fn: () => Promise<unknown>) { setError(''); setBusy(true); try { await fn(); await load(); changed(); } catch (e) { setError(e instanceof Error ? e.message : '操作失败'); } finally { setBusy(false); } }
   return <><button className="back-link" onClick={back}><ArrowLeft size={16} />返回订阅</button><div className="page-heading"><div><span className="section-kicker">ADD IN BULK</span><h1>批量添加网址</h1><p>{sourceType === 'rss' ? '每行粘贴一个 RSS / Atom 地址，自动创建翻译订阅；译文完成后发布。' : '明确的匹配结果会自动创建，其他结果由你确认。'}关闭页面后任务仍会继续。</p></div></div>
-    <form className="panel settings-form" onSubmit={e => { e.preventDefault(); void run(async () => { await api.jobs.create(lines.filter(l => !l.error).map(l => ({ url: l.url, credentialId: sourceType === 'rss' ? null : bindings[l.url] || null })), interval, sourceType, mode); setText(''); }); }}>
+    <form className="panel settings-form" onSubmit={e => { e.preventDefault(); void run(async () => { await api.jobs.create(lines.filter(l => !l.error).map(l => ({ url: l.url, credentialId: sourceType === 'rss' ? null : bindings[l.url] || null, networkProfileId: networkProfileId || null })), interval, sourceType, mode); setText(''); }); }}>
       <label className="field"><span>批量订阅类型</span><select disabled={busy} value={sourceType} onChange={e => setSourceType(e.target.value as 'website' | 'rss')}><option value="website">网页识别</option><option value="rss">RSS 翻译</option></select></label>
       {sourceType === 'rss' && <label className="field"><span>翻译输出模式</span><select disabled={busy} value={mode} onChange={e => setMode(e.target.value as 'chinese' | 'bilingual')}><option value="bilingual">中英双语</option><option value="chinese">仅中文</option></select></label>}
       <label className="field"><span>每行一个网址（最多 100 个）</span><textarea rows={6} required value={text} onChange={e => setText(e.target.value)} placeholder={sourceType === 'rss' ? 'https://example.com/feed.xml\nhttps://example.org/atom.xml' : 'https://example.com/news\nhttps://example.org/blog'} spellCheck={false} /></label>
       {sourceType === 'rss' && <label className="button small opml-import"><FileUp size={14} />从 OPML 导入<input type="file" accept=".opml,.xml,text/x-opml,application/xml,text/xml" className="visually-hidden" disabled={busy} onChange={async e => { const file = e.target.files?.[0]; e.target.value = ''; if (!file) return; try { if (file.size > 2_000_000) throw Error('OPML 文件不能超过 2 MB'); const urls = parseOpmlUrls(await file.text()); if (!urls.length) throw Error('文件中没有找到 RSS 地址'); setText(previous => [previous.trim(), ...urls].filter(Boolean).join('\n')); notify(`已从 OPML 读取 ${urls.length} 个地址`); } catch (error) { setError(error instanceof Error ? error.message : '无法读取 OPML 文件'); } }} /></label>}
+      <NetworkProfileSelect label="网络配置（用于本批所有网址）" value={networkProfileId} onChange={setNetworkProfileId} profiles={profiles} disabled={busy} />
       <label className="field"><span>刷新间隔（分钟）</span><input type="number" min={5} max={1440} value={interval} onChange={e => setRefreshInterval(Number(e.target.value))} /></label>
       {lines.map((line, i) => <div className="collection-toolbar" key={i} data-issue={!line.url ? 'invalid' : line.error ? 'duplicate' : undefined}><span>{line.raw} {line.error}</span>{sourceType === 'website' && !line.error && <select aria-label={`Cookie ${line.url}`} value={bindings[line.url] ?? ''} onChange={e => setBindings({ ...bindings, [line.url]: e.target.value })}><option value="">无需 Cookie</option>{credentials.filter(c => c.domains.some(d => { const host = new URL(line.url).hostname; return d.startsWith('.') ? host === d.slice(1) || host.endsWith(d) : host === d; })).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select>}</div>)}
       <button className="button primary" disabled={busy || !lines.length || lines.length > 100 || lines.some(l => !l.url)}>{sourceType === 'rss' ? '开始批量添加翻译' : '开始批量识别'}</button>

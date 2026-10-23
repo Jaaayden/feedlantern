@@ -723,6 +723,13 @@ section[aria-label="订阅集合"] > p.muted { padding: 30px; text-align: center
 .modal-body { display: grid; gap: 18px; padding: 24px 26px 28px; }
 .modal-body > form { display: grid; gap: 16px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; padding-top: 6px; }
+.checkbox-field { display: flex; align-items: center; gap: 8px; font-size: 13.5px; color: var(--ink-2); cursor: pointer; }
+.header-rows { gap: 10px; }
+.header-rows legend { font-size: 13px; font-weight: 600; color: var(--ink-2); margin-bottom: 6px; }
+.header-rows .hint { margin: 0; }
+.header-row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr) auto; gap: 8px; align-items: center; }
+.header-row input:disabled { color: var(--ink-2); }
+@media (max-width: 560px) { .header-row { grid-template-columns: minmax(0, 1fr) auto; } .header-row input:nth-child(2) { grid-column: 1; } }
 .delete-user-dialog { width: 480px; max-width: 100%; box-shadow: var(--shadow-lg); animation: rise .3s var(--ease); border-radius: var(--r-xl); }
 
 /* Feed detail */
