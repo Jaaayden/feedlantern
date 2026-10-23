@@ -353,6 +353,12 @@ const server = createServer(async (request, response) => {
       ${[1, 2, 3].map(n => `<a class="frow" href="/article/relative-${n}"><span class="fttl">相对时间文章 ${n}</span><span class="fmeta"><span>猎奇</span><span>NodeSeek</span> · 3分前</span></a>`).join('')}`);
     return;
   }
+  if (requestUrl.pathname === '/generate_204') {
+    // A local stand-in for the connectivity check URL the network test defaults to.
+    response.writeHead(204);
+    response.end();
+    return;
+  }
   if (requestUrl.pathname === '/network/list') {
     // Echoes the request headers a network profile sets, so a feed shows them.
     const ua = escapeHtml(String(request.headers['user-agent'] ?? ''));

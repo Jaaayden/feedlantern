@@ -54,8 +54,16 @@ test('网络配置：设置中管理、编辑器预览与后台刷新经代理�
     await card.getByRole('button', { name: '测试网络配置 E2E proxy' }).click();
     const tester = page.getByRole('dialog', { name: '测试：E2E proxy' });
     // No feed uses it and it was never tested: the neutral address is filled in.
-    await expect(tester.getByLabel('测试网址')).toHaveValue('https://example.com/');
+    await expect(tester.getByLabel('测试网址')).toHaveValue('https://cp.cloudflare.com/generate_204');
     await expect(tester).toContainText('默认填入通用的连通性检查地址，可以修改。');
+    // A 204 counts as success (a local stand-in, the real address is never requested here).
+    await tester.getByLabel('测试网址').fill(`${fixtureBaseUrl}/generate_204`);
+    await tester.getByRole('button', { name: '测试连接' }).click();
+    await expect(tester.getByRole('status')).toContainText('连接成功：目标网站返回 HTTP 204');
+    // Not 2xx: connected, but reported as a failure with the real status code.
+    await tester.getByLabel('测试网址').fill(`${fixtureBaseUrl}/missing-page-for-network-test`);
+    await tester.getByRole('button', { name: '测试连接' }).click();
+    await expect(tester.getByRole('alert')).toContainText('返回 HTTP 404，不是 2xx 成功状态');
     await tester.getByLabel('测试网址').fill(listUrl);
     await tester.getByRole('button', { name: '测试连接' }).click();
     await expect(tester.getByRole('status')).toContainText('连接成功：目标网站返回 HTTP 200');

@@ -115,11 +115,12 @@ function ProfileForm({ editing, done, cancel }: { editing?: NetworkProfileSummar
 }
 
 /**
- * Used when no feed uses the profile and it was never tested here. It is the
- * IANA-reserved example domain: neutral (no third-party service or tracking),
- * HTTPS, answers 200 without a redirect, and is stable over years.
+ * Used when no feed uses the profile and it was never tested here. A
+ * connectivity check endpoint: Cloudflare's global anycast network (usually
+ * reachable from mainland China too, unlike gstatic), an empty 204 with no
+ * redirect, and the default test URL of Clash, Surge and sing-box for years.
  */
-export const NEUTRAL_TEST_URL = 'https://example.com/';
+export const NEUTRAL_TEST_URL = 'https://cp.cloudflare.com/generate_204';
 const lastTestKey = (id: string) => `feedlantern:network-test:${id}`;
 
 /** The first (oldest) feed using the profile, then the last URL tested in this browser, then the neutral address. */
@@ -152,7 +153,12 @@ function TestForm({ profile, close }: { profile: NetworkProfileSummary; close: (
   async function submit(event: FormEvent) {
     event.preventDefault(); setBusy(true); setError(''); setResult('');
     try { localStorage.setItem(lastTestKey(profile.id), url); } catch { /* per-browser convenience only */ }
-    try { const response = await api.networkProfiles.test(profile.id, url); setResult(`连接成功：目标网站返回 HTTP ${response.status}`); }
+    try {
+      const { status } = await api.networkProfiles.test(profile.id, url);
+      // Any 2xx (a connectivity check answers 204) is a success; other codes mean the path works but the site said no.
+      if (status >= 200 && status < 300) setResult(`连接成功：目标网站返回 HTTP ${status}`);
+      else setError(`已经连上目标网站，但它返回 HTTP ${status}，不是 2xx 成功状态。${status >= 300 && status < 400 ? '测试不跟随重定向，请改用跳转后的网址。' : '请检查测试网址，或网站是否拒绝了这组配置的出口 IP、User-Agent 或请求头。'}`);
+    }
     catch (error) { setError(messageOf(error)); } finally { setBusy(false); }
   }
   return <form onSubmit={submit} className="modal-body">

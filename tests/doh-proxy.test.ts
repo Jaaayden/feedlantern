@@ -37,7 +37,8 @@ async function fixtures() {
   });
   const closeDoh = track(doh);
   const dohPort = await listen(doh);
-  const site = createHttpServer((_request, response) => {
+  const site = createHttpServer((request, response) => {
+    if (request.url === '/generate_204') { response.writeHead(204); response.end(); return; }
     response.writeHead(200, { 'content-type': 'application/rss+xml' });
     response.end('<?xml version="1.0"?><rss version="2.0"><channel><title>Via proxy</title><item><title>One</title><link>https://news.example/1</link><guid>1</guid></item></channel></rss>');
   });
@@ -130,6 +131,8 @@ test('RSS 抓取和“测试连接”经代理完成 DoH 查询并连接检查�
     assert.equal(result.items.length, 1);
     assert.ok(env.connects.includes(`http ${PUBLIC_IP}:80`), 'the target is given to the proxy as the checked IP');
     assert.deepEqual(await probeTarget('http://news.example/', policy, { proxy: env.socksProxy }), { status: 200 });
+    // A connectivity check endpoint answers 204, which the test reports as is.
+    assert.deepEqual(await probeTarget('http://news.example/generate_204', policy, { proxy: env.httpProxy }), { status: 204 });
     assert.ok(env.queries.filter(name => name === 'news.example').length >= 2);
   } finally { await env.close(); }
 });
