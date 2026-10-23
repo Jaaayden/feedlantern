@@ -54,6 +54,15 @@ Store 的无 owner 参数列表方法保留给整站后台调度和备份使用�
 | `/api/backups/preview`、`restore` | 预览/覆盖恢复；初始化场景使用 setupToken |
 | `GET/POST /api/backups/config` | 轻量配置导出/预览与确认导入 |
 | `/feeds/:id/:token.xml` | 无管理员登录的密钥授权 RSS 2.0 |
+| `/feeds/:id/:token.atom`、`.json` | 同一密钥授权的 Atom 1.0、JSON Feed 1.1 |
+| `PATCH /api/feeds/:id` | 名称、间隔、翻译模式，以及 `itemFilter`（`null` 清除）和 `outputLimit` |
+| `POST /api/feeds/:id/output-preview` | `{itemFilter?,outputLimit?}` 预览未保存设置下每个条目的输出状态 |
+
+### 输出选择
+
+RSS、Atom、JSON Feed、浏览器预览页和管理端都通过 `src/server/feed-output.ts` 的 `classifyItems` 决定发布哪些条目：先去掉未完成翻译的条目，再应用 `itemFilter`，最后按 `outputLimit` 截断。每个条目的状态为 `published`、`untranslated`、`excluded`、`not-included` 或 `over-limit`；`GET /api/feeds/:id` 在 `outputStatus`（按条目 ID）中返回，ETag 也基于同一结果计算，修改规则后阅读器会拿到新内容。
+
+正则过滤的安全限制：保存时用 `u` 标志编译检查，`unsafeRegexReason` 拒绝反向引用以及“重复的组内还有重复或分支”（如 `(a+)+`、`(a|ab)*`）；运行时标题截取 500 字符、摘要 2000 字符，并在 `node:vm` 中以 100 毫秒超时执行，V8 会在回溯中途中断。超时结果按规则和内容缓存，本次输出不应用过滤并记录一次警告；保存时如果在已有条目上超时则直接拒绝。
 
 `ScreenFrame` 是从页面顶部截取的第一段截图（JPEG 质量 75，data URL，每段最高 8000 像素）。`height` 为已截取的高度，`documentHeight` 为可截取的总高度（最高 48000 像素；网页更长时 `truncated: true`），`viewportHeight` 为远端视口高度。`POST /api/browser/:id/segment {top}` 截取下一段，`top` 必须等于已截取的高度，否则拒绝，避免重复或跳段；返回 `{top, height, image, documentHeight, map}`。`map` 是元素地图：`boxes` 每 5 个数一组（x、y、宽、高、最近的上层元素序号，根为 -1），坐标相对整页顶部，另含 `labels`、`links`（仅 http/https）和 `innerScroll`。地图是累计的：后续分段只追加新元素，已有序号不变。编辑器据此在本地完成悬停高亮、↑/↓ 调整范围和滚动。
 
@@ -61,7 +70,7 @@ Store 的无 owner 参数列表方法保留给整站后台调度和备份使用�
 
 `POST /api/browser/:id/scroll` 接受 `{deltaY,x?,y?}`，坐标须同时提供并位于远端视口内；省略时使用视口中心。编辑器只在 `map.innerScroll` 为真时用它滚动页面内部的滚动区域。显式关闭编辑会话会取消进行中的操作并释放容量。
 
-完整备份格式版本为 3（兼容导入 version 1、2），独立于数据库迁移版本；敏感值只在加密包内部携带可迁移明文，目标实例使用自己的主密钥重新加密。
+数据库版本 9 为 `feeds` 增加 `item_filter_json`（JSON，可空）和 `output_limit`（默认 100）；完整备份中两列为可选字段，旧备份恢复后使用默认值。完整备份格式版本为 3（兼容导入 version 1、2），独立于数据库迁移版本；敏感值只在加密包内部携带可迁移明文，目标实例使用自己的主密钥重新加密。
 
 ## 发布
 
@@ -112,7 +121,7 @@ SQLite 版本 8 移除单管理员索引并增加加密 `user_notifications`。�
 
 | 数据 | 清理规则 | 位置 |
 | --- | --- | --- |
-| 每个订阅的文章 | 最新 200 条 | `Store.upsertItems` |
+| 每个订阅的文章 | 网页订阅 max(200, 输出条数)，RSS 翻译订阅 max(100, 输出条数)，下次抓取时清理 | `storedItemLimit`（`Store.upsertItems`、`RssTranslations.upsert`） |
 | 翻译进度事件 | 每个订阅最新 200 条，且不超过 7 天；界面只读最近 100 条 | `RssTranslations.prune` |
 | 翻译片段缓存 | 最近使用的 20000 条（`TRANSLATION_CACHE_LIMIT`，备份格式共用同一上限） | `RssTranslations.prune` |
 | 抓取日志 | 按「日志保留天数」，默认 30 天 | `FetchHistory.prune` |

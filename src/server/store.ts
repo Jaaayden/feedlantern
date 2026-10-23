@@ -5,12 +5,13 @@ import { TRANSLATION_CACHE_LIMIT, type Tables } from './backups.js';
 import { FetchHistory } from './fetch-history.js';
 import { AppError } from './auth.js';
 import { applicationSettingsSchema } from './settings.js';
+import { clampOutputLimit, parseItemFilter, storedItemLimit } from './feed-output.js';
 import { defaultApplicationSettings, type ApplicationSettings } from '../shared/types.js';
 import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import type { CredentialSummary, ExtractedItem, Feed, FeedInput, FeedSettingsInput, FeedItem, ImportJob, RuleOrigins, SelectionRules } from '../shared/types.js';
+import type { CredentialSummary, ExtractedItem, Feed, FeedInput, FeedSettingsInput, FeedItem, ImportJob, ItemFilter, RuleOrigins, SelectionRules } from '../shared/types.js';
 import type { ServerConfig } from './config.js';
 
 export interface CredentialValue {
@@ -124,7 +125,13 @@ function mergeRuleOrigins(current: RuleOrigins | undefined, next: RuleOrigins | 
   return { ...(current ?? {}), ...next };
 }
 
+/** A stored filter that no longer validates is dropped rather than breaking the feed. */
+function storedItemFilter(value: unknown): ItemFilter | undefined {
+  try { return parseItemFilter(parseJson<unknown>(value, null)) ?? undefined; } catch { return undefined; }
+}
+
 function rowToFeed(row: Record<string, unknown>): Feed {
+  const itemFilter = storedItemFilter(row.item_filter_json);
   return {
     id: String(row.id),
     ownerId: String(row.owner_id),
@@ -146,6 +153,8 @@ function rowToFeed(row: Record<string, unknown>): Feed {
     nextFetchAt: String(row.next_fetch_at),
     lastError: row.last_error ? String(row.last_error) : null,
     itemCount: Number(row.item_count ?? 0),
+    ...(itemFilter ? { itemFilter } : {}),
+    outputLimit: clampOutputLimit(row.output_limit === undefined || row.output_limit === null ? undefined : Number(row.output_limit)),
   };
 }
 
@@ -290,6 +299,15 @@ export class Store {
       DROP INDEX IF EXISTS users_single_admin;
       CREATE TABLE user_notifications (user_id TEXT PRIMARY KEY, value TEXT NOT NULL);
       PRAGMA user_version=8; COMMIT;`);
+    if (version < 9) {
+      // Per-feed output settings. Columns are added only when missing, so a
+      // database rebuilt from an older layout still upgrades cleanly.
+      const columns = new Set(this.db.prepare('PRAGMA table_info(feeds)').all().map(row => String(row.name)));
+      this.db.exec(`BEGIN;
+        ${columns.has('item_filter_json') ? '' : 'ALTER TABLE feeds ADD COLUMN item_filter_json TEXT;'}
+        ${columns.has('output_limit') ? '' : 'ALTER TABLE feeds ADD COLUMN output_limit INTEGER NOT NULL DEFAULT 100;'}
+        PRAGMA user_version=9; COMMIT;`);
+    }
     this.translations = new RssTranslations(this.db, id => this.userSignal(id));
     this.history = new FetchHistory(this.db, () => this.getSettings(), id => this.getBarkForFeed(id));
     this.migrateBark();
@@ -706,6 +724,10 @@ export class Store {
       ? feed.nextFetchAt : new Date(Date.now() + interval * 60_000).toISOString();
     this.db.prepare('UPDATE feeds SET name = ?, channel_title = ?, interval_minutes = ?, next_fetch_at = ? WHERE id = ?')
       .run(title, title, interval, nextFetchAt, id);
+    // Output settings only change what is published. Lowering the limit keeps
+    // stored items until the next fetch trims them (see storedItemLimit).
+    if (input.itemFilter !== undefined) this.db.prepare('UPDATE feeds SET item_filter_json = ? WHERE id = ?').run(input.itemFilter ? JSON.stringify(input.itemFilter) : null, id);
+    if (input.outputLimit !== undefined) this.db.prepare('UPDATE feeds SET output_limit = ? WHERE id = ?').run(clampOutputLimit(input.outputLimit), id);
     this.translations.syncWebsite(this.getFeed(id)!);
     return this.getFeed(id);
   }
@@ -882,11 +904,17 @@ export class Store {
     return expected.length === actual.length && timingSafeEqual(expected, actual);
   }
 
-  getItems(id: string, limit = 200): FeedItem[] {
+  /** Newest first. Without a limit, every item the feed currently stores. */
+  getItems(id: string, limit?: number): FeedItem[] {
+    if (limit === undefined) limit = Math.max(this.countItems(id), 1);
     const rows = this.db.prepare('SELECT id, title, link, description, image, published_at, published_at_source, first_seen_at FROM feed_items WHERE feed_id = ? ORDER BY first_seen_at DESC, rowid ASC LIMIT ?').all(id, limit) as Array<Record<string, unknown>>;
     const items = rows.map(rowToItem);
     const feed = this.getFeed(id);
     return feed && translationEnabled(feed) ? this.translations.decorate(feed, items) : items;
+  }
+
+  private countItems(id: string): number {
+    return Number((this.db.prepare('SELECT COUNT(*) AS c FROM feed_items WHERE feed_id = ?').get(id) as { c: number }).c);
   }
 
   upsertItems(feed: Feed, extracted: ExtractedItem[], counts?: { itemCount: number; newItemCount: number }): FeedItem[] {
@@ -916,7 +944,8 @@ export class Store {
           inserted++;
         }
       }
-      this.db.prepare(`DELETE FROM feed_items WHERE feed_id = ? AND id NOT IN (SELECT id FROM feed_items WHERE feed_id = ? ORDER BY first_seen_at DESC, rowid ASC LIMIT 200)`).run(feed.id, feed.id);
+      const keep = storedItemLimit(this.getFeed(feed.id) ?? feed);
+      this.db.prepare(`DELETE FROM feed_items WHERE feed_id = ? AND id NOT IN (SELECT id FROM feed_items WHERE feed_id = ? ORDER BY first_seen_at DESC, rowid ASC LIMIT ?)`).run(feed.id, feed.id, keep);
       this.translations.syncWebsite(this.getFeed(feed.id)!);
       this.db.exec('RELEASE items');
     } catch (error) {
@@ -924,7 +953,7 @@ export class Store {
       throw error;
     }
     if (counts) { counts.itemCount = unique.size; counts.newItemCount = inserted; }
-    return this.getItems(feed.id, 200);
+    return this.getItems(feed.id);
   }
 
   markFetchStart(id: string, nextFetchAt: string): void {
