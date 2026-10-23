@@ -659,6 +659,13 @@ section[aria-label="订阅集合"] > p.muted { padding: 30px; text-align: center
 .settings-form > .button.primary, .settings-form > .inline, .settings-form > form > .button.primary { justify-self: start; }
 .settings-form form { display: grid; gap: 16px; }
 .settings-form > .detail-actions { gap: 8px; }
+.channel-list { display: grid; gap: 14px; }
+.settings-form .channel-card { gap: 12px; padding: 16px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); min-width: 0; }
+.channel-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.channel-heading h3 { font-size: 15px; }
+.channel-card > .hint { margin-top: -6px; }
+.channel-card textarea { resize: vertical; font-family: var(--font-mono); font-size: 12.5px; }
+.channel-card > p[role="status"] { padding: 10px 14px; border-radius: var(--r-md); background: var(--success-soft); color: var(--success); }
 .settings-form details { margin: 0; }
 .settings-form summary, .translation-progress summary { font-size: 13px; font-weight: 600; color: var(--ink-2); cursor: pointer; }
 
@@ -784,7 +791,7 @@ section[aria-label="订阅集合"] > p.muted { padding: 30px; text-align: center
 .fetch-log-heading > span:not(.badge) { color: var(--muted); font-weight: 500; }
 .fetch-log-heading .badge { margin-left: auto; }
 .fetch-log > p { font-size: 12.5px; }
-.fetch-log-notification { color: var(--muted); }
+.fetch-log-notification { color: var(--muted); overflow-wrap: anywhere; }
 .fetch-logs > .button { justify-self: center; }
 .translation-progress {
   display: grid; gap: 10px; padding: 16px 18px;

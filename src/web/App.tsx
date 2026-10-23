@@ -1,5 +1,5 @@
 import type { UserSummary } from '../shared/types';
-import { BarkPanel } from './BarkPanel';
+import { NotificationsPanel } from './NotificationsPanel';
 import { UsersPanel } from './UsersPanel';
 import { translationEnabled } from '../shared/types';
 import { TranslationProgress } from './TranslationProgress';
@@ -489,7 +489,7 @@ function SettingsView({ auth, logout, notify, target }: { auth: AuthState; logou
       <nav className="settings-nav" aria-label="设置分组">{sections.map(section => <button key={section.id} className={active === section.id ? 'selected' : ''} aria-current={active === section.id ? 'true' : undefined} onClick={() => jump(section.id)}><section.icon size={16} />{section.label}</button>)}</nav>
       <div className="settings-sections">
         {admin && <div id="settings-general" className="settings-section"><ApplicationSettingsPanel revision={settingsRevision} /></div>}
-        <div id="settings-notifications" className="settings-section"><BarkPanel key={settingsRevision} username={target?.username ?? auth.username!} enabled={target?.enabled !== false} /></div>
+        <div id="settings-notifications" className="settings-section"><NotificationsPanel key={settingsRevision} username={target?.username ?? auth.username!} enabled={target?.enabled !== false} /></div>
         <div id="settings-credentials" className="settings-section"><CredentialsView notify={notify} /></div>
         {!target && <div id="settings-account" className="settings-section"><form className="panel settings-form" onSubmit={submit}><div className="panel-heading"><h2>修改密码</h2><KeyRound size={19} /></div><p className="muted">当前用户：{auth.username}。修改后会退出此账号的所有现有会话。</p><Field label="当前密码"><input required type="password" value={currentPassword} onChange={e => setCurrentPassword(e.target.value)} autoComplete="current-password" /></Field><div className="form-row"><Field label="新密码"><input required type="password" minLength={8} maxLength={1024} value={newPassword} onChange={e => setNewPassword(e.target.value)} autoComplete="new-password" /></Field><Field label="确认新密码"><input required type="password" minLength={8} value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} autoComplete="new-password" /></Field></div><ErrorNote error={error} /><button className="button primary" disabled={busy}>{busy ? <Busy /> : '更新密码'}</button></form></div>}
         {admin && <div id="settings-backup" className="settings-section"><BackupPanel onRestored={logout} onImported={() => setSettingsRevision(v => v + 1)} /></div>}

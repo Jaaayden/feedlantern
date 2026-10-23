@@ -1,7 +1,9 @@
 import type { TranslationProgressData } from './TranslationProgress';
 import type {
   UserSummary,
-  BarkSummary,
+  NotificationChannel,
+  NotificationSummary,
+  NotificationUpdate,
   AuthState,
   ApplicationSettings,
   ImportJob,
@@ -103,9 +105,10 @@ export const api = {
     confirm: (id: string, entryId: string, input: FeedInput) => request<{ feed: Feed; feedUrl: string }>(`/api/import-jobs/${id}/confirm`, { method: 'POST', body: { entryId, input } }),
   },
   notifications: {
-    get: () => request<BarkSummary>('/api/notifications/bark'),
-    save: (body: Partial<ApplicationSettings['bark']>) => request<BarkSummary>('/api/notifications/bark', { method: 'PUT', body }),
-    test: (body: Partial<ApplicationSettings['bark']>) => request<{ ok: boolean }>('/api/notifications/bark/test', { method: 'POST', body }),
+    get: () => request<NotificationSummary>('/api/notifications'),
+    save: (body: NotificationUpdate) => request<NotificationSummary>('/api/notifications', { method: 'PUT', body }),
+    /** Sends a test through one channel using the saved settings overridden by `fields`; nothing is saved. */
+    test: (channel: NotificationChannel, fields: Record<string, unknown>) => request<{ ok: boolean }>('/api/notifications/test', { method: 'POST', body: { ...fields, channel } }),
   },
   users: {
     update: (id: string, body: Partial<Pick<UserSummary, 'username' | 'enabled' | 'role'>>) => request<UserSummary>(`/api/users/${encodeURIComponent(id)}`, { method: 'PATCH', body }),
