@@ -137,10 +137,10 @@ export function NotificationsPanel({ username, enabled }: { username: string; en
   const [summary, setSummary] = useState<NotificationSummary | null>(null);
   const [error, setError] = useState('');
   useEffect(() => { let live = true; void api.notifications.get().then(v => { if (live) setSummary(v); }).catch(e => { if (live) setError(messageOf(e, '加载失败')); }); return () => { live = false; }; }, []);
-  if (!summary) return <section className="panel settings-form">{error || '正在加载个人通知…'}</section>;
-  return <section className="panel settings-form notification-panel" aria-label="个人通知">
-    <h2>个人通知</h2>
-    <p className="muted">接收账号：{username}。只接收此账号订阅的抓取、翻译故障和规则失效预警，会同时发到所有已启用的渠道。</p>
+  if (!summary) return <section className="panel settings-form">{error || '正在加载通知…'}</section>;
+  return <section className="panel settings-form notification-panel" aria-label="通知">
+    <h2>通知</h2>
+    <p className="muted">只发送给账号 {username}：包括此账号订阅的抓取、翻译故障和规则失效预警，会同时发到所有已启用的渠道。</p>
     <div className="channel-list">
       {notificationChannels.map(channel => <ChannelCard key={channel} channel={channel} summary={summary} username={username} userEnabled={enabled} onSaved={setSummary} />)}
     </div>

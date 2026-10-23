@@ -87,14 +87,14 @@ test('管理员切换用户工作台、配置个人通知、改名和永久删�
     await page.keyboard.press('Escape');
     await page.getByRole('button', { name: '设置', exact: true }).click();
     await expect(page.getByRole('navigation', { name: '设置分组' }).getByRole('button', { name: '服务器与网络' })).toHaveCount(0);
-    const notifications = page.getByRole('region', { name: '个人通知' }), bark = notifications.getByRole('form', { name: 'Bark 渠道' });
-    await expect(notifications).toContainText(`接收账号：${names[0]}`);
+    const notifications = page.getByRole('region', { name: '通知' }), bark = notifications.getByRole('form', { name: 'Bark 渠道' });
+    await expect(notifications).toContainText(`只发送给账号 ${names[0]}`);
     await bark.getByLabel('Bark 推送地址').fill('https://example.test/workspace-test-key');
     await bark.getByRole('button', { name: '保存 Bark' }).click();
     await expect(bark.getByRole('status')).toContainText('已保存');
     await openUser(names[1]);
     await page.getByRole('button', { name: '设置', exact: true }).click();
-    await expect(notifications).toContainText(`接收账号：${names[1]}`);
+    await expect(notifications).toContainText(`只发送给账号 ${names[1]}`);
     await expect(bark.getByText(/已保存：/)).toHaveCount(0);
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.screenshot({ path: testInfo.outputPath('workspace-desktop.png'), fullPage: true });

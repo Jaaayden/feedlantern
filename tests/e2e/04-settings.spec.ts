@@ -11,9 +11,9 @@ test('网页设置保存、配置导出导入及手机显示', async ({ page }) 
     // One group per page: the instance groups are separate entries, not one long form.
     await expect(nav.getByRole('button')).toHaveText(['日志与显示', '翻译服务', '服务器与网络', '通知', 'Cookie 凭据', '网络配置', '账号与密码', '访问令牌', '备份与迁移', '关于']);
     await expect(page.getByRole('form', { name: '日志与显示' })).toBeVisible();
-    await expect(page.getByRole('region', { name: '个人通知' })).toHaveCount(0);
+    await expect(page.getByRole('region', { name: '通知' })).toHaveCount(0);
     await open('通知', 'notifications');
-    const notifications = page.getByRole('region', { name: '个人通知' });
+    const notifications = page.getByRole('region', { name: '通知' });
     const bark = notifications.getByRole('form', { name: 'Bark 渠道' }), policy = notifications.getByRole('form', { name: '告警策略' });
     await bark.getByLabel('Bark 推送地址').fill('https://api.day.app/e2e-private-key/');
     await bark.getByRole('button', { name: '发送测试通知' }).click();
