@@ -78,7 +78,7 @@ export class FetchHistory {
     return this.notificationOptions(String(row?.feed_id ?? '')).policy;
   }
 
-  private raise(feedId: string, kind: 'fetch' | 'translation', body: string, payload: AlertPayload, channels: NotificationChannel[], now: number): string {
+  private raise(feedId: string, kind: 'fetch' | 'translation' | 'health', body: string, payload: AlertPayload, channels: NotificationChannel[], now: number): string {
     const id = randomUUID();
     this.db.prepare("INSERT INTO fetch_alerts(id,feed_id,status,body,next_attempt_at,kind,payload) VALUES (?,?,'pending',?,?,?,?)").run(id, feedId, body, now, kind, JSON.stringify(payload));
     const insert = this.db.prepare("INSERT INTO fetch_alert_deliveries(id,alert_id,channel,status,next_attempt_at) VALUES (?,?,?,'pending',?)");
@@ -96,6 +96,23 @@ export class FetchHistory {
     const id = this.raise(feed.id, 'translation', body, { feedName: safeDiagnostic(feed.name), error, time: new Date(now).toISOString() }, channels, now);
     this.db.prepare('INSERT INTO translation_incidents(feed_id,alert_id) VALUES (?,?) ON CONFLICT(feed_id) DO UPDATE SET alert_id=excluded.alert_id').run(feed.id, id);
     return true;
+  }
+
+  /**
+   * Rule-health warning: at most one alert per warning episode, sent to every
+   * enabled channel and deduplicated apart from fetch failures. `lastAlertedAt`
+   * is the previous rule-health alert of this feed (cooldown against flapping).
+   */
+  ruleHealthAlert(feed: Feed, reasons: string[], lastAlertedAt: number | null, now = Date.now()): { id: string | null; disabled: boolean } {
+    const { policy, channels } = this.notificationOptions(feed.id);
+    if (!channels.length || policy.ruleHealthAlerts === false) return { id: null, disabled: true };
+    if (lastAlertedAt !== null && now - lastAlertedAt < policy.cooldownMinutes * 60_000) return { id: null, disabled: false };
+    let host = '';
+    try { host = new URL(feed.url).hostname; } catch { /* stored URLs are validated */ }
+    const time = new Date(now).toISOString();
+    const error = safeDiagnostic(reasons.join('；'));
+    const body = `${safeDiagnostic(feed.name)}\n目标：${host}\n发现时间：${time}\n${reasons.map(reason => `· ${safeDiagnostic(reason)}`).join('\n')}\n抓取仍记为成功。请在订阅面板中重新识别规则，或忽略此警告。`;
+    return { id: this.raise(feed.id, 'health', body, { feedName: safeDiagnostic(feed.name), error, time }, channels, now), disabled: false };
   }
 
   translationRecovered(feedId: string): void {
@@ -169,6 +186,7 @@ export class FetchHistory {
       itemCount: row.item_count as number | null, newItemCount: row.new_item_count as number | null, error: row.error as string | null,
       notification: row.alert_status ? { status: row.alert_status as AlertStatus, error: row.alert_error as string | null, channels: deliveries.get(String(row.alert_id)) ?? [] }
         : row.notification_disabled ? { status: 'disabled', error: null } : null,
+      ...(row.warning ? { warning: String(row.warning) } : {}),
     }));
     return { logs, nextCursor: rows.length > limit ? String(logs.at(-1)!.id) : null, retentionDays: this.settings().logRetentionDays };
   }

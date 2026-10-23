@@ -30,6 +30,8 @@ SQLite `PRAGMA user_version` 记录迁移：版本 1 增加频道名称与设置
 
 迁移版本 11 增加 `api_tokens` 表（令牌 ID、所属用户、名称、SHA-256 哈希、显示前缀、权限、创建／过期／最近使用时间），删除用户时级联删除。
 
+迁移版本 15 新增规则健康统计：`feed_health`（每个订阅当前的预警和最近一次推送时间）与 `feed_health_samples`（每次成功抓取的条目数、不重复链接数和各字段有效率），并为 `fetch_logs` 增加 `warning` 列。它们和抓取日志一样属于诊断数据，不进入完整备份；删除订阅时级联删除。判断逻辑在 `src/server/rule-health.ts`（`measureItems` / `evaluateHealth`，阈值集中在 `RULE_HEALTH`），在抓取事务提交之后单独执行，出错只写服务端日志，不影响抓取结果和条目存储。样本按“网址 + 规则”的签名区分，修改规则或网址后旧样本作废。
+
 多用户迁移版本为 7：统一 `users` 表替代 `admin`，会话引用用户 ID，订阅、凭据和批量任务记录 `owner_id`。原数据迁移到稳定 ID `admin`，旧会话清空。HTTP 层所有资源入口检查归属，批量操作逐项校验；队列执行时重新检查。用户停用递增 `generation`、撤销会话及发出取消信号，后台结果只有代次仍一致时可落库；翻译同时使用任务 revision。
 
 聚合订阅迁移版本为 14（按 `bundles` 表是否存在判断，与合并顺序无关）：新增 `bundles`（所有者、名称、条数上限、加密密钥与哈希）和 `bundle_feeds`（成员与顺序）。`bundle_feeds.feed_id` 外键 `ON DELETE CASCADE`，删除订阅自动移出所有聚合；删除用户同时删除其聚合。存取在 `src/server/bundle-store.ts`，合并与 RSS 输出在 `src/server/bundles.ts`：每个成员先经 `publishedItems`（与单个订阅 RSS 相同的条目选择），再合并去重；条目复用 `renderRssItem`、`renderAtomEntry`、`jsonFeedItem`，聚合只追加来源（RSS/Atom 的 category、JSON Feed 的 tags）。聚合只读已存条目，不进入抓取任务池。
@@ -60,6 +62,9 @@ Store 的无 owner 参数列表方法保留给整站后台调度和备份使用�
 | `GET/POST /api/tokens`、`DELETE /api/tokens/:id` | 列出、创建（`{name, scope:'read'\|'write', expiresInDays?}`，返回只出现一次的 `secret`）、吊销自己的访问令牌；仅限网页会话 |
 | `GET /api/openapi.json` | 公开的 OpenAPI 3.1 文档 |
 | `/feeds/:id/:token.xml` | 无管理员登录的密钥授权 RSS 2.0 |
+| `POST /api/feeds/:id/health/redetect` | 网页订阅：后台按当前规则抽取并运行自动识别，返回 `{current:{count,items,error?}, detection}`（每个候选最多 5 条预览），不保存规则 |
+| `POST /api/feeds/:id/health/preview` | `{rules}`，在订阅网页上预览字段组合，返回 `{count,items,error?}` |
+| `POST /api/feeds/:id/health/ignore` | 清除“规则可能失效”并以最新样本作为新基线，返回 `{feed,feedUrl}` |
 | `/feeds/:id/:token.atom`、`.json` | 同一密钥授权的 Atom 1.0、JSON Feed 1.1 |
 | `PATCH /api/feeds/:id` | 名称、间隔、翻译模式，以及 `itemFilter`（`null` 清除）和 `outputLimit` |
 | `POST /api/feeds/:id/output-preview` | `{itemFilter?,outputLimit?}` 预览未保存设置下每个条目的输出状态 |
@@ -189,7 +194,7 @@ SQLite 版本 8 移除单管理员索引并增加加密 `user_notifications`。�
 
 ## 通知渠道
 
-告警按“告警 + 渠道投递”两层保存：`fetch_alerts` 每次故障一行，记录正文、`kind`（`fetch`／`translation`）、结构化 `payload`（订阅名称、错误、时间）以及汇总状态；`fetch_alert_deliveries` 每个渠道一行，各自记录 `attempts`、`next_attempt_at`、`error` 和状态。告警产生时为所有者所有已启用且填写完整的渠道各建一条投递；`NotificationWorker`（`src/server/notify.ts`）逐条发送，阈值、超时、重试和冷却沿用所有者的告警策略。汇总状态规则：仍有待发送即“待发送”，任一渠道送达即“已发送”（不再重复推送），全部失败才“发送失败”并在冷却后允许重新告警。取消告警（恢复成功、删除订阅、修改通知目标）由触发器同时取消其待发送投递。数据库迁移 `user_version=10` 把升级前的告警转换为 Bark 投递，已有日志继续显示 Bark 的发送结果。
+告警按“告警 + 渠道投递”两层保存：`fetch_alerts` 每次故障一行，记录正文、`kind`（`fetch`／`translation`／`health`，后者为规则失效预警，Webhook 事件 `rules.warning`）、结构化 `payload`（订阅名称、错误、时间）以及汇总状态；`fetch_alert_deliveries` 每个渠道一行，各自记录 `attempts`、`next_attempt_at`、`error` 和状态。告警产生时为所有者所有已启用且填写完整的渠道各建一条投递；`NotificationWorker`（`src/server/notify.ts`）逐条发送，阈值、超时、重试和冷却沿用所有者的告警策略。汇总状态规则：仍有待发送即“待发送”，任一渠道送达即“已发送”（不再重复推送），全部失败才“发送失败”并在冷却后允许重新告警。取消告警（恢复成功、删除订阅、修改通知目标）由触发器同时取消其待发送投递。数据库迁移 `user_version=10` 把升级前的告警转换为 Bark 投递，已有日志继续显示 Bark 的发送结果。
 
 渠道配置与 Bark 设置一起加密存放在 `user_notifications.value`：原有 Bark 字段（含告警策略）保持不变，新增可选 `channels: {webhook, ntfy, telegram}`，因此旧数据和旧备份无需转换。所有渠道（包括 Bark）通过 `postJson`（`src/server/outbound.ts`）发送：先用 `NetworkPolicy` 解析并检查目标，再把连接固定到检查过的地址，不跟随重定向，响应体最多读取 64 KB。投递错误只保存固定文案。
 
@@ -211,6 +216,7 @@ SQLite 版本 8 移除单管理员索引并增加加密 `user_notifications`。�
 | 翻译进度事件 | 每个订阅最新 200 条，且不超过 7 天；界面只读最近 100 条 | `RssTranslations.prune` |
 | 翻译片段缓存 | 最近使用的 20000 条（`TRANSLATION_CACHE_LIMIT`，备份格式共用同一上限） | `RssTranslations.prune` |
 | 抓取日志 | 按「日志保留天数」，默认 30 天 | `FetchHistory.prune` |
+| 规则健康样本 | 每个订阅最近 10 条正常样本和 10 条可疑样本，并按「日志保留天数」清理 | `RuleHealth.record` / `RuleHealth.prune` |
 | 登录会话 | 过期后每小时清理 | `Store.purgeExpiredSessions` |
 | 访问令牌 | 过期 30 天后每小时清理；每个账号最多 50 个 | `ApiTokens.purgeExpired` |
 

@@ -1,4 +1,5 @@
 import type { TranslationProgressData } from './TranslationProgress';
+import type { RulePreview, RuleRedetectResult, SelectionRules } from '../shared/types';
 import type {
   ApiTokenScope,
   ApiTokenSummary,
@@ -165,6 +166,11 @@ export const api = {
     update: (id: string, body: CredentialPayload) =>
       request<CredentialSummary>(`/api/credentials/${encodeURIComponent(id)}`, { method: 'PUT', body }),
     remove: (id: string) => request<void>(`/api/credentials/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  },
+  ruleHealth: {
+    redetect: (id: string) => request<RuleRedetectResult>(`/api/feeds/${encodeURIComponent(id)}/health/redetect`, { method: 'POST', body: {} }),
+    preview: (id: string, rules: SelectionRules) => request<RulePreview>(`/api/feeds/${encodeURIComponent(id)}/health/preview`, { method: 'POST', body: { rules } }),
+    ignore: (id: string) => request<{ feed: Feed; feedUrl: string }>(`/api/feeds/${encodeURIComponent(id)}/health/ignore`, { method: 'POST', body: {} }),
   },
   feeds: {
     previewRss: (url: string) => request<{ title: string; items: ExtractedItem[] }>('/api/rss/preview', { method: 'POST', body: { url } }),

@@ -112,16 +112,18 @@ function PolicyForm({ summary, onSaved }: { summary: NotificationSummary; onSave
   const [busy, setBusy] = useState(false), [notice, setNotice] = useState<Notice>({});
   async function save(event: FormEvent) {
     event.preventDefault(); setBusy(true); setNotice({});
-    const { failureThreshold, timeoutSeconds, maxAttempts, retryDelaySeconds, laterRetryDelaySeconds, cooldownMinutes } = policy;
-    try { onSaved(await api.notifications.save({ failureThreshold, timeoutSeconds, maxAttempts, retryDelaySeconds, laterRetryDelaySeconds, cooldownMinutes })); setNotice({ message: '告警策略已保存。' }); }
+    const { failureThreshold, timeoutSeconds, maxAttempts, retryDelaySeconds, laterRetryDelaySeconds, cooldownMinutes, ruleHealthAlerts } = policy;
+    try { onSaved(await api.notifications.save({ failureThreshold, timeoutSeconds, maxAttempts, retryDelaySeconds, laterRetryDelaySeconds, cooldownMinutes, ruleHealthAlerts })); setNotice({ message: '告警策略已保存。' }); }
     catch (error) { setNotice({ error: messageOf(error, '保存失败') }); } finally { setBusy(false); }
   }
-  const number = (key: keyof NotificationPolicy, label: string, min: number, max: number) => <label className="field"><span>{label}</span><input type="number" required min={min} max={max} value={policy[key]} onChange={e => setPolicy({ ...policy, [key]: Number(e.target.value) })} /></label>;
+  const number = (key: Exclude<keyof NotificationPolicy, 'ruleHealthAlerts'>, label: string, min: number, max: number) => <label className="field"><span>{label}</span><input type="number" required min={min} max={max} value={policy[key]} onChange={e => setPolicy({ ...policy, [key]: Number(e.target.value) })} /></label>;
   return <form className="channel-card" aria-label="告警策略" onSubmit={save}>
     <div className="channel-heading"><h3>告警策略</h3></div>
     <p className="hint">对所有渠道生效；每个渠道分别重试并记录发送结果。</p>
     <fieldset disabled={busy}>
       {number('failureThreshold', '连续抓取失败告警阈值（次）', 1, 1000)}
+      <label className="inline"><input type="checkbox" checked={policy.ruleHealthAlerts !== false} onChange={e => setPolicy({ ...policy, ruleHealthAlerts: e.target.checked })} />规则可能失效时通知</label>
+      <p className="hint">抓取成功但条目数骤降、字段大面积缺失或链接全部相同时提醒；每次出现只通知一次，与抓取失败告警分开计算。</p>
       <div className="form-row">{number('timeoutSeconds', '推送超时（秒）', 1, 60)}{number('maxAttempts', '每个渠道最多发送次数', 1, 5)}</div>
       <div className="form-row">{number('retryDelaySeconds', '首次重试间隔（秒）', 1, 3600)}{number('laterRetryDelaySeconds', '后续重试间隔（秒）', 1, 3600)}</div>
       {number('cooldownMinutes', '发送失败后冷却（分钟）', 1, 1440)}
@@ -138,7 +140,7 @@ export function NotificationsPanel({ username, enabled }: { username: string; en
   if (!summary) return <section className="panel settings-form">{error || '正在加载个人通知…'}</section>;
   return <section className="panel settings-form notification-panel" aria-label="个人通知">
     <h2>个人通知</h2>
-    <p className="muted">接收账号：{username}。只接收此账号订阅的抓取和翻译故障通知，会同时发到所有已启用的渠道。</p>
+    <p className="muted">接收账号：{username}。只接收此账号订阅的抓取、翻译故障和规则失效预警，会同时发到所有已启用的渠道。</p>
     <div className="channel-list">
       {notificationChannels.map(channel => <ChannelCard key={channel} channel={channel} summary={summary} username={username} userEnabled={enabled} onSaved={setSummary} />)}
     </div>

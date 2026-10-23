@@ -105,7 +105,7 @@ export function channelsSummary(bark: { enabled: boolean; url: string }, channel
  * Senders
  * ------------------------------------------------------------------ */
 
-export type NotificationEvent = 'fetch.failed' | 'translation.failed' | 'test';
+export type NotificationEvent = 'fetch.failed' | 'translation.failed' | 'rules.warning' | 'test';
 export interface NotificationMessage {
   event: NotificationEvent; title: string; body: string;
   feedId: string | null; feedName: string | null; error: string | null; time: string; panelUrl: string;
@@ -155,7 +155,7 @@ export const defaultSenders: NotificationSenders = {
 };
 
 export function alertTitle(event: NotificationEvent): string {
-  return event === 'test' ? '订阅灯：测试通知' : event === 'translation.failed' ? '订阅灯：RSS 翻译失败' : '订阅灯：订阅抓取失败';
+  return event === 'test' ? '订阅灯：测试通知' : event === 'translation.failed' ? '订阅灯：RSS 翻译失败' : event === 'rules.warning' ? '订阅灯：规则可能失效' : '订阅灯：订阅抓取失败';
 }
 
 /** Fixed error text: neither URLs, tokens nor raw network errors are ever shown or stored. */
@@ -211,7 +211,7 @@ export class NotificationWorker {
   }
 
   private message(job: PendingAlert): NotificationMessage {
-    const event: NotificationEvent = job.kind === 'translation' ? 'translation.failed' : 'fetch.failed';
+    const event: NotificationEvent = job.kind === 'translation' ? 'translation.failed' : job.kind === 'health' ? 'rules.warning' : 'fetch.failed';
     return {
       event, title: alertTitle(event), body: job.body, feedId: job.feedId,
       feedName: job.payload?.feedName ?? job.body.split('\n')[0], error: job.payload?.error ?? null,
@@ -226,6 +226,8 @@ export class NotificationWorker {
       const target = this.options.target(job.feedId);
       const config = target.configs[job.channel];
       if (!config) { this.history.cancelDelivery(job.id); continue; }
+      // Rule-health alerts were switched off after this one was raised.
+      if (job.kind === 'health' && target.policy.ruleHealthAlerts === false) { this.history.cancelDelivery(job.id); continue; }
       if (job.attempts >= target.policy.maxAttempts) { this.history.finishAttempt(job.id, false); continue; }
       if (!this.history.beginAttempt(job.id)) continue;
       this.activeId = job.id;

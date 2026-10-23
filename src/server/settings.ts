@@ -38,6 +38,8 @@ export const barkObjectSchema = z.object({
   retryDelaySeconds: z.number().int().min(1).max(3600),
   laterRetryDelaySeconds: z.number().int().min(1).max(3600),
   cooldownMinutes: z.number().int().min(1).max(1440),
+  /** Also alert when a feed's rules may have stopped matching (deduplicated apart from failures). */
+  ruleHealthAlerts: z.boolean().default(defaultApplicationSettings.bark.ruleHealthAlerts),
 }).strict();
 const barkSchema = barkObjectSchema.refine(value => !value.enabled || !!value.url, '启用 Bark 时请填写推送地址');
 

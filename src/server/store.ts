@@ -3,6 +3,7 @@ import { isTargetLanguage, isTranslationProvider, translationEnabled } from '../
 import { RssTranslations } from './rss-translation.js';
 import { TRANSLATION_CACHE_LIMIT, type Tables } from './backups.js';
 import { FetchHistory } from './fetch-history.js';
+import { RuleHealth } from './rule-health.js';
 import { BUNDLE_SCHEMA, BundleStore } from './bundle-store.js';
 import { ApiTokens } from './api-tokens.js';
 import { AppError } from './auth.js';
@@ -178,6 +179,7 @@ function rowToItem(row: Record<string, unknown>): FeedItem {
 
 export class Store {
   readonly history: FetchHistory;
+  readonly ruleHealth: RuleHealth;
   readonly translations: RssTranslations;
   readonly bundles: BundleStore;
   readonly tokens: ApiTokens;
@@ -348,6 +350,22 @@ export class Store {
       this.db.exec(`BEGIN; ${BUNDLE_SCHEMA} PRAGMA user_version=${Math.max(14, current)}; COMMIT;`);
     }
     this.bundles = new BundleStore(this.db, value => encrypt(this.masterKey, value), value => decrypt(this.masterKey, value), id => this.isUserActive(id));
+    // Rule health statistics (derived diagnostics, not part of backups). 15 is
+    // reserved for this migration; like 13 and 14 it checks for its own tables.
+    if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='feed_health_samples'").get()) {
+      const current = Number((this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
+      this.db.exec(`BEGIN;
+        CREATE TABLE IF NOT EXISTS feed_health (feed_id TEXT PRIMARY KEY REFERENCES feeds(id) ON DELETE CASCADE,
+          signature TEXT NOT NULL, warning_json TEXT, alerted_at INTEGER);
+        CREATE TABLE IF NOT EXISTS feed_health_samples (id INTEGER PRIMARY KEY AUTOINCREMENT,
+          feed_id TEXT NOT NULL REFERENCES feeds(id) ON DELETE CASCADE, signature TEXT NOT NULL, recorded_at TEXT NOT NULL,
+          item_count INTEGER NOT NULL, distinct_links INTEGER NOT NULL, title_rate REAL NOT NULL, link_rate REAL NOT NULL,
+          date_rate REAL NOT NULL, image_rate REAL NOT NULL, description_rate REAL NOT NULL, flagged INTEGER NOT NULL DEFAULT 0);
+        CREATE INDEX IF NOT EXISTS feed_health_samples_feed ON feed_health_samples(feed_id, flagged, id DESC);
+        CREATE INDEX IF NOT EXISTS feed_health_samples_retention ON feed_health_samples(recorded_at);
+        PRAGMA user_version=${Math.max(15, current)}; COMMIT;`);
+    }
+    this.ruleHealth = new RuleHealth(this.db, () => this.getSettings(), this.history);
     this.migrateBark();
     this.ensureSetupToken();
   }
@@ -747,6 +765,7 @@ export class Store {
     this.db.prepare(`UPDATE feeds SET name = ?, channel_title = ?, url = ?, rules_json = ?, rule_origins_json = ?, credential_id = ?, interval_minutes = ?, wait_ms = ?, wait_for_selector = ?, next_fetch_at = ?, last_error = NULL WHERE id = ?`)
       .run(input.name, input.name, input.url, JSON.stringify(input.rules), origins ? JSON.stringify(origins) : null, input.credentialId, input.intervalMinutes, input.waitMs, input.waitForSelector ?? null, nextFetchAt, id);
     this.translations.syncWebsite(this.getFeed(id)!);
+    this.ruleHealth.sync(this.getFeed(id)!);
     return this.getFeed(id);
   }
 
@@ -894,6 +913,10 @@ export class Store {
     this.transaction(() => {
       this.writeNotifications(userId, next.bark, next.channels);
       if (destinations(previous) !== destinations(next)) this.history.resetNotifications(userId);
+      // Turning rule-health alerts off drops the ones not sent yet; failure alerts are unaffected.
+      if (previous.bark.ruleHealthAlerts !== false && next.bark.ruleHealthAlerts === false) {
+        this.db.prepare("UPDATE fetch_alerts SET status='canceled' WHERE status='pending' AND kind='health' AND feed_id IN (SELECT id FROM feeds WHERE owner_id=?)").run(userId);
+      }
     });
   }
   setNotificationChannels(userId: string, channels: NotificationChannelSettings): void {
@@ -941,6 +964,8 @@ export class Store {
     if (!row) return null;
     const feed = rowToFeed(row);
     if (translationEnabled(feed)) feed.translation = this.translations.stats(feed.id);
+    const ruleHealth = this.ruleHealth.warning(feed.id);
+    if (ruleHealth) feed.ruleHealth = ruleHealth;
     return feed;
   }
 
@@ -949,6 +974,8 @@ export class Store {
     return rows.map(row => {
       const feed = rowToFeed(row);
       if (translationEnabled(feed)) feed.translation = this.translations.stats(feed.id);
+      const ruleHealth = this.ruleHealth.warning(feed.id);
+      if (ruleHealth) feed.ruleHealth = ruleHealth;
       return feed;
     });
   }

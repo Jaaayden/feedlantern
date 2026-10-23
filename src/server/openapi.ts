@@ -73,16 +73,26 @@ const schemas: Record<string, Schema> = {
   ItemFilter: object({ include: array(str({ maxLength: 200 }), { maxItems: 30 }), exclude: array(str({ maxLength: 200 }), { maxItems: 30 }), regex: bool }, ['include', 'exclude', 'regex'], { description: '条目过滤：排除优先，include 非空时必须命中其一；只影响输出' }),
   FeedSettingsInput: object({ translationMode, targetLanguage, translationProvider, channelTitle: str({ minLength: 1, maxLength: 200 }), intervalMinutes: int({ minimum: 5, maximum: 1440 }), itemFilter: nullable(ref('ItemFilter')), outputLimit: int({ minimum: 10, maximum: 500 }) }, [], { description: '至少提供一个字段；itemFilter 为 null 时删除过滤' }),
   OutputStatus: object({ outputStatus: { type: 'object', additionalProperties: str({ enum: ['published', 'untranslated', 'excluded', 'not-included', 'over-limit'] }), description: '条目 ID → 是否输出及原因' }, filterTimedOut: bool }, ['outputStatus']),
-  NotificationSummary: { type: 'object', description: '告警策略（阈值、超时、重试、冷却）和各渠道状态；不返回任何密钥', properties: { channels: { type: 'object' } } },
+  NotificationSummary: { type: 'object', description: '告警策略（阈值、超时、重试、冷却、规则失效预警开关 ruleHealthAlerts）和各渠道状态；不返回任何密钥', properties: { channels: { type: 'object' } } },
   NotificationUpdate: { type: 'object', description: '局部更新：省略的字段保持原值，空字符串清除密钥；headers 整体替换', properties: { channels: { type: 'object', properties: { bark: { type: 'object' }, webhook: { type: 'object' }, ntfy: { type: 'object' }, telegram: { type: 'object' } } } } },
   Feed: { allOf: [ref('FeedInput'), object({
     id: str(), ownerId: str(), channelTitle: str(), enabled: bool, createdAt: dateTime, lastFetchedAt: nullable(dateTime), lastSuccessAt: nullable(dateTime),
     nextFetchAt: dateTime, lastError: nullable(str()), itemCount: int(), itemFilter: ref('ItemFilter'), outputLimit: int({ minimum: 10, maximum: 500, default: 100 }), translation: object({ pending: int(), success: int(), failed: int() }),
+    ruleHealth: ref('RuleHealthWarning'),
   }, ['id', 'enabled', 'createdAt', 'lastFetchedAt', 'lastSuccessAt', 'nextFetchAt', 'lastError', 'itemCount'])] },
   FeedItem: object({
     id: str(), title: str(), link: str(), description: str(), image: str(), publishedAt: dateTime, publishedAtSource: str({ enum: ['absolute', 'relative'] }),
     firstSeenAt: dateTime, contentHtml: str(), translationStatus: str({ enum: ['pending', 'success', 'failed'] }), translationError: str(),
   }, ['title', 'link']),
+  RuleHealthWarning: object({
+    detectedAt: dateTime, checkedAt: dateTime, itemCount: int(), baselineSamples: int({ description: '参与比较的最近正常抓取次数' }),
+    reasons: array(object({
+      code: str({ enum: ['item-count', 'field-rate', 'duplicate-links', 'same-link'] }), field: str({ enum: ['title', 'link', 'date', 'image', 'description'] }),
+      baseline: { type: 'number' }, current: { type: 'number' }, message: str({ description: '面向用户的中文说明' }),
+    }, ['code', 'baseline', 'current', 'message'])),
+  }, ['detectedAt', 'checkedAt', 'itemCount', 'baselineSamples', 'reasons'], { description: '只在“规则可能失效”时出现；抓取本身仍记为成功' }),
+  RulePreview: object({ count: int(), items: array(ref('ExtractedItem'), { maxItems: 5 }), error: str({ description: '没有抽取到内容时的原因' }) }, ['count', 'items']),
+  RuleRedetectResult: object({ current: ref('RulePreview'), detection: ref('DetectionResult') }, ['current', 'detection']),
   FeedPayload: object({ feed: ref('Feed'), feedUrl: str({ format: 'uri', description: '带密钥的 RSS 地址' }) }, ['feed', 'feedUrl']),
   Bundle: object({
     id: str(), name: str(), feedIds: array(str(), { description: '成员订阅 ID，按添加顺序' }),
@@ -100,9 +110,11 @@ const schemas: Record<string, Schema> = {
   CredentialSummary: object({ id: str(), name: str(), url: str(), format: str({ enum: ['header', 'json'] }), domains: array(str()), count: int(), updatedAt: dateTime, expiresAt: nullable(dateTime) }, ['id', 'name', 'url', 'format', 'domains', 'count', 'updatedAt', 'expiresAt']),
   BarkSettings: object({
     enabled: bool, url: str(), failureThreshold: int(), timeoutSeconds: int(), maxAttempts: int(), retryDelaySeconds: int(), laterRetryDelaySeconds: int(), cooldownMinutes: int(),
+    ruleHealthAlerts: { ...bool, description: '规则可能失效时通知，默认 true' },
   }),
   BarkSummary: object({
     enabled: bool, configured: bool, maskedUrl: str(), failureThreshold: int(), timeoutSeconds: int(), maxAttempts: int(), retryDelaySeconds: int(), laterRetryDelaySeconds: int(), cooldownMinutes: int(),
+    ruleHealthAlerts: bool,
   }),
   ApplicationSettings: object({
     translation: object({
@@ -169,6 +181,9 @@ const operations: Operation[] = [
   { method: 'PUT', path: '/api/feeds/:id', tag: 'feeds', summary: '替换订阅的网址和规则', description: '启用中的订阅会立即重新抓取。', workspace: true, body: ref('FeedInput'), response: ref('FeedPayload') },
   { method: 'PATCH', path: '/api/feeds/:id', tag: 'feeds', summary: '修改名称、刷新间隔或翻译输出', workspace: true, body: ref('FeedSettingsInput'), response: ref('FeedPayload') },
   { method: 'DELETE', path: '/api/feeds/:id', tag: 'feeds', summary: '删除订阅', workspace: true, response: ok },
+  { method: 'POST', path: '/api/feeds/:id/health/redetect', tag: 'feeds', summary: '规则可能失效时重新识别', description: '网页订阅：在订阅网页上按当前规则抽取并运行自动识别，返回两者供对比；不保存规则。替换规则用 PUT /api/feeds/:id。需要 write 令牌。', workspace: true, response: ref('RuleRedetectResult') },
+  { method: 'POST', path: '/api/feeds/:id/health/preview', tag: 'feeds', summary: '在订阅网页上预览规则组合', description: '不修改订阅；需要 write 令牌。', workspace: true, body: object({ rules: ref('SelectionRules') }, ['rules']), response: ref('RulePreview') },
+  { method: 'POST', path: '/api/feeds/:id/health/ignore', tag: 'feeds', summary: '忽略“规则可能失效”', description: '清除警告并以最近一次抓取结果作为新的比较基线；需要 write 令牌。', workspace: true, response: ref('FeedPayload') },
   { method: 'POST', path: '/api/feeds/:id/refresh', tag: 'feeds', summary: '立即抓取', workspace: true, response: ref('FeedPayload') },
   { method: 'POST', path: '/api/feeds/:id/toggle', tag: 'feeds', summary: '暂停或恢复', workspace: true, response: ref('FeedPayload') },
   { method: 'POST', path: '/api/feeds/:id/rotate-token', tag: 'feeds', summary: '更换 RSS 地址密钥', description: '旧 RSS 地址立即失效。', workspace: true, response: ref('FeedPayload') },

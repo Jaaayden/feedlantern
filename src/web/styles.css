@@ -1561,3 +1561,30 @@ button.user-failing:hover { text-decoration: underline; text-underline-offset: 3
   .bundle-grid { grid-template-columns: 1fr; }
   .bundle-editor .form-row { grid-template-columns: 1fr; }
 }
+
+/* Rule health: "rules may be broken" is a warning, not a failure. */
+.badge.warn { background: var(--warning-soft); color: var(--warning); border-color: transparent; }
+.card-warning { color: var(--warning); font-size: 12.5px; line-height: 1.5; overflow-wrap: anywhere; }
+button.card-warning { display: block; max-width: 100%; padding: 0; border: 0; background: none; text-align: left; cursor: pointer; font-family: inherit; }
+button.card-warning:hover { text-decoration: underline; text-underline-offset: 3px; }
+.feed-identity .card-warning { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rule-health { display: grid; gap: 10px; padding: 12px 14px; border-radius: var(--r-md); background: var(--warning-soft); border: 1px solid var(--warning-line); }
+.rule-health-head { display: flex; gap: 10px; align-items: flex-start; color: var(--warning); }
+.rule-health-head > svg { flex: none; margin-top: 2px; }
+.rule-health-head strong { font-size: 14px; }
+.rule-health-head ul { margin: 4px 0; padding-left: 18px; color: var(--ink); font-size: 13.5px; line-height: 1.6; }
+.rule-health-head .hint { margin: 0; }
+.rule-health-actions { flex-wrap: wrap; }
+.rule-health-compare { display: grid; gap: 10px; padding-top: 10px; border-top: 1px solid var(--warning-line); min-width: 0; }
+.rule-health-columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+.rule-health-column { min-width: 0; padding: 10px 12px; border-radius: var(--r-md); background: var(--surface); border: 1px solid var(--line); }
+.rule-health-column h4 { display: flex; justify-content: space-between; gap: 8px; margin: 0 0 6px; font-size: 13.5px; }
+.rule-health-column ol { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.6; }
+.rule-health-column li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rule-health-fields { width: 100%; border-collapse: collapse; font-size: 12.5px; table-layout: fixed; }
+.rule-health-fields th, .rule-health-fields td { padding: 6px 4px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--warning-line); overflow-wrap: anywhere; }
+.rule-health-fields thead th:first-child { width: 44px; }
+.rule-health-fields thead th:nth-child(2) { width: 30%; }
+.rule-health-fields th .badge { margin-left: 6px; }
+.rule-health-fields code { font-size: 12px; }
+@media (max-width: 560px) { .rule-health-fields thead th:nth-child(2) { width: 34%; } }
