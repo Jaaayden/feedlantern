@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { isApplicationSettingsJson } from './settings.js';
 import { storedNotificationSchema } from './notify.js';
 import { BUNDLE_ITEM_LIMIT, BUNDLE_MAX_FEEDS, OUTPUT_LIMIT } from '../shared/types.js';
+import { forbiddenHeaderReason, NETWORK_LIMITS } from '../shared/network-rules.js';
 /** The translation cache is disposable; both pruning and backups keep only this many newest entries. */
 export const TRANSLATION_CACHE_LIMIT = 20_000;
 const text = z.string().max(1_000_000);
@@ -11,6 +12,17 @@ const nullable = text.nullable();
 const date = z.string().datetime();
 const url = z.string().url().refine(s => { const u = new URL(s); return ['http:', 'https:'].includes(u.protocol) && !u.username && !u.password; });
 const flag = z.union([z.literal(0), z.literal(1)]);
+const visible = (max: number) => z.string().max(max).regex(/^[\t\x20-\x7e]*$/);
+/** The decrypted part of a network profile; validated before it is encrypted again. */
+export const networkProfileSecretSchema = z.object({
+  proxy: z.object({
+    type: z.enum(['http', 'https', 'socks5']), host: z.string().min(1).max(255).regex(/^[a-z0-9.:_-]+$/), port: z.number().int().min(1).max(65535),
+    username: z.string().max(NETWORK_LIMITS.proxyUser).optional(), password: z.string().max(NETWORK_LIMITS.proxyUser).optional(),
+  }).strict().nullable(),
+  userAgent: visible(NETWORK_LIMITS.userAgent).optional(),
+  referer: url.optional(),
+  headers: z.array(z.object({ name: z.string().min(1).max(NETWORK_LIMITS.headerName).regex(/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/).refine(name => !forbiddenHeaderReason(name)), value: visible(NETWORK_LIMITS.headerValue) }).strict()).max(NETWORK_LIMITS.headers),
+}).strict();
 export const backupTables = {
   rss_sources: z.array(z.object({ feed_id: short, etag: nullable, modified: nullable, seen_json: text.refine(value => { try { const a=JSON.parse(value); return Array.isArray(a) && a.length<=100 && a.every(k=>typeof k==='string'); } catch { return false; } }).default('[]') }).strict()).max(10000).default([]),
   translations: z.array(z.object({ item_id: short, feed_id: short, revision: short, status: z.enum(['pending','running','success','failed']), attempts: z.number().int().min(0).max(3), next_at: z.number().int().nonnegative(), error: nullable,
@@ -20,7 +32,9 @@ export const backupTables = {
   user_notifications: z.array(z.object({ user_id: short, value: text.refine(value => { try { return storedNotificationSchema.safeParse(JSON.parse(value)).success; } catch { return false; } }) }).strict()).max(10000).default([]),
   users: z.array(z.object({ id: short, role: z.enum(['admin','user']), enabled: flag, generation: z.number().int().nonnegative(), username: z.string().regex(/^\S{1,100}$/), password_hash: z.string().regex(/^scrypt\$16384\$8\$1\$[A-Za-z0-9_-]{22}\$[A-Za-z0-9_-]{86}$/), created_at: date, updated_at: date }).strict()).min(1).max(10000).refine(rows => rows.some(u => u.role === 'admin' && u.enabled === 1) && new Set(rows.map(u => u.id)).size === rows.length && new Set(rows.map(u => u.username)).size === rows.length, '用户列表无效'),
   credentials: z.array(z.object({ owner_id: short, id: short, name: short, url, format: z.enum(['header', 'json']), encrypted_value: text, domains_json: text, cookie_count: z.number().int().nonnegative(), updated_at: date, expires_at: date.nullable() }).strict()).max(10000),
-  feeds: z.array(z.object({ owner_id: short, source_type: z.enum(['website', 'rss']).default('website'), translation_mode: z.enum(['original', 'translated', 'chinese', 'bilingual']).optional(), target_language: z.enum(['zh-CN', 'zh-TW', 'en', 'ja', 'ko']).default('zh-CN'), translation_provider: z.enum(['google', 'deepl', 'openai']).nullable().default(null), id: short, name: short, channel_title: z.string().min(1).max(200).nullable(), url, rules_json: text, rule_origins_json: nullable, credential_id: short.nullable(), interval_minutes: z.number().int().min(5).max(1440), wait_ms: z.number().int().min(0).max(10000), wait_for_selector: nullable, pagination_json: nullable.optional(), enabled: flag, created_at: date, last_fetched_at: date.nullable(), last_success_at: date.nullable(), next_fetch_at: date, last_error: nullable, item_count: z.number().int().nonnegative(), token_ciphertext: z.string().regex(/^[A-Za-z0-9_-]{43}$/), token_hash: z.string().regex(/^[a-f0-9]{64}$/), item_filter_json: nullable.optional(), output_limit: z.number().int().min(OUTPUT_LIMIT.min).max(OUTPUT_LIMIT.max).optional() }).strict()
+  network_profiles: z.array(z.object({ id: short, owner_id: short, name: z.string().min(1).max(NETWORK_LIMITS.name), proxy_type: z.enum(['http', 'https', 'socks5']).nullable(), proxy_host: z.string().max(255).nullable(), proxy_port: z.number().int().min(1).max(65535).nullable(), proxy_auth: flag, user_agent: nullable, referer: nullable, header_names_json: text,
+    encrypted_value: text.refine(value => { try { return networkProfileSecretSchema.safeParse(JSON.parse(value)).success; } catch { return false; } }, '网络配置无效'), updated_at: date }).strict()).max(10000).default([]),
+  feeds: z.array(z.object({ owner_id: short, network_profile_id: short.nullable().default(null), source_type: z.enum(['website', 'rss']).default('website'), translation_mode: z.enum(['original', 'translated', 'chinese', 'bilingual']).optional(), target_language: z.enum(['zh-CN', 'zh-TW', 'en', 'ja', 'ko']).default('zh-CN'), translation_provider: z.enum(['google', 'deepl', 'openai']).nullable().default(null), id: short, name: short, channel_title: z.string().min(1).max(200).nullable(), url, rules_json: text, rule_origins_json: nullable, credential_id: short.nullable(), interval_minutes: z.number().int().min(5).max(1440), wait_ms: z.number().int().min(0).max(10000), wait_for_selector: nullable, pagination_json: nullable.optional(), enabled: flag, created_at: date, last_fetched_at: date.nullable(), last_success_at: date.nullable(), next_fetch_at: date, last_error: nullable, item_count: z.number().int().nonnegative(), token_ciphertext: z.string().regex(/^[A-Za-z0-9_-]{43}$/), token_hash: z.string().regex(/^[a-f0-9]{64}$/), item_filter_json: nullable.optional(), output_limit: z.number().int().min(OUTPUT_LIMIT.min).max(OUTPUT_LIMIT.max).optional() }).strict()
     // Backups made before 0.7 call the translation-only mode `chinese`.
     .transform(row => ({ ...row, translation_mode: row.translation_mode === 'chinese' ? 'translated' as const : row.translation_mode ?? (row.source_type === 'rss' ? 'bilingual' as const : 'original' as const) }))).max(10000),
   feed_items: z.array(z.object({ id: short, feed_id: short, normalized_key: short, title: text, link: url, description: nullable, image: nullable, published_at: date.nullable(), published_at_source: z.enum(['absolute', 'relative']).nullable().default(null), first_seen_at: date }).strict()).max(2_000_000),
@@ -64,8 +78,12 @@ export const snapshotSchema = z.preprocess(value => {
   }
   return snapshot;
 }, currentSnapshotSchema).superRefine((snapshot, context) => {
-  const { users, feeds, credentials, user_notifications, bundles, bundle_feeds } = snapshot.tables;
+  const { users, feeds, credentials, user_notifications, bundles, bundle_feeds, network_profiles } = snapshot.tables;
   const owners = new Set(users.map(u => u.id)), creds = new Map(credentials.map(c => [c.id, c.owner_id]));
+  const profiles = new Map(network_profiles.map(p => [p.id, p.owner_id]));
+  if (profiles.size !== network_profiles.length || network_profiles.some(p => !owners.has(p.owner_id)) || feeds.some(f => f.network_profile_id && profiles.get(f.network_profile_id) !== f.owner_id)) {
+    context.addIssue({ code: 'custom', message: '备份中的网络配置归属无效' });
+  }
   if (new Set(user_notifications.map(n => n.user_id)).size !== user_notifications.length || user_notifications.some(n => !owners.has(n.user_id)) || feeds.some(f => !owners.has(f.owner_id) || f.credential_id && creds.get(f.credential_id) !== f.owner_id) || credentials.some(c => !owners.has(c.owner_id))) {
     context.addIssue({ code: 'custom', message: '备份中的数据归属无效' });
   }

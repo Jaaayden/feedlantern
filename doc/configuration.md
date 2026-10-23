@@ -10,7 +10,7 @@
 | `DATA_DIR` | 源码 `data/`；容器 `/app/data` |
 | `COOKIE_SECURE` | HTTPS 反代请求自动启用；可显式强制开启 |
 | `TRUSTED_PROXIES` | 默认空，不信任转发 IP；允许明确 IP/CIDR，逗号分隔。仅首次初始化时导入，且 Compose 不会把它传进容器；Docker 部署请在「设置 → 服务器与网络」里填写，步骤见 [Nginx](nginx.md) |
-| `ALLOWED_TARGET_HOSTS` | 默认空；确有需求时精确放行内网 `host:port`，逗号分隔 |
+| `ALLOWED_TARGET_HOSTS` | 默认空；确有需求时精确放行内网 `host:port`，逗号分隔。同样适用于网络配置中的代理地址，例如局域网代理 `192.168.1.10:1080` |
 | `DNS_OVER_HTTPS` | 默认 false，Fake-IP DNS 环境可显式 true，查询仍执行地址安全校验 |
 | `BACKGROUND_CONCURRENCY` | 默认 1，允许整数 1–4；刷新与批量识别共享容量。同一来源 hostname（跨协议、端口）串行，编辑会话独立 |
 | `BROWSER_EXECUTABLE_PATH` | 默认使用随 Playwright 安装的 Chromium |
@@ -20,7 +20,7 @@
 
 Cookie 明文仅在输入和服务端实际抓取时使用，查询接口仅返回元数据。本机 `master.key` 与数据库必须一起保管；丢失密钥无法读取原数据库中的 Cookie 和 RSS 密钥。跨服务器优先使用网页加密备份恢复。
 
-默认阻止私网、回环、链路本地及云元数据抓取地址，并校验 DNS、重定向与浏览器请求。不要为了一个网站而放开整个网络。运行目录、Cookie、备份和 `.env` 均不提交到 Git。
+默认阻止私网、回环、链路本地及云元数据抓取地址，并校验 DNS、重定向与浏览器请求。订阅的网络配置使用代理时，代理地址按同样规则校验，目标网址仍在本机解析和校验，代理只收到已校验的 IP。放行一个局域网代理意味着经它访问的流量不再受本机内网拦截约束，只放行可信的代理。不要为了一个网站而放开整个网络。运行目录、Cookie、备份和 `.env` 均不提交到 Git。
 
 反代域名仅接受回环地址或私有网络中的直接代理（含 Docker 网桥）发来的 `X-Forwarded-Host` 和 `X-Forwarded-Proto`。Nginx 必须覆盖这两个头，容器端口保持绑定 `127.0.0.1`；客户端 IP 的信任仍由 `TRUSTED_PROXIES` 单独控制，默认登录限速按代理连接来源共享：检测到转发请求但未设置时，日志会提示一次，此时 8 次失败会锁定所有人 15 分钟，请按[Nginx 指南](nginx.md)填写代理地址。
 

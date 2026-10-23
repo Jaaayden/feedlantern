@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { connect as netConnect, type Socket } from 'node:net';
 
 const host = process.env.FIXTURE_HOST ?? '127.0.0.1';
 const port = Number(process.env.FIXTURE_PORT ?? 8766);
@@ -332,6 +333,19 @@ const server = createServer(async (request, response) => {
       ${[1, 2, 3].map(n => `<a class="frow" href="/article/relative-${n}"><span class="fttl">相对时间文章 ${n}</span><span class="fmeta"><span>猎奇</span><span>NodeSeek</span> · 3分前</span></a>`).join('')}`);
     return;
   }
+  if (requestUrl.pathname === '/network/list') {
+    // Echoes the request headers a network profile sets, so a feed shows them.
+    const ua = escapeHtml(String(request.headers['user-agent'] ?? ''));
+    const token = escapeHtml(String(request.headers['x-e2e-token'] ?? 'none'));
+    const referer = escapeHtml(String(request.headers.referer ?? 'none'));
+    sendHtml(response, 200, page('Network fixture', `<main>${[1, 2, 3].map(n => `<article class="net-card"><a class="net-link" href="/article/net-${n}"><h2 class="net-title">Network ${n} ua=${ua} token=${token} referer=${referer}</h2></a></article>`).join('')}</main>`));
+    return;
+  }
+  if (requestUrl.pathname === '/proxy-log') {
+    response.writeHead(200, { 'Content-Type': 'application/json' });
+    response.end(JSON.stringify(proxyLog));
+    return;
+  }
   if (requestUrl.pathname === '/paged' || requestUrl.pathname === '/paged-internal') {
     // Three list pages linked by rel="next"; the internal variant links page 2 to a private address.
     const number = Math.min(3, Math.max(1, Number(requestUrl.searchParams.get('page') ?? 1) || 1));
@@ -353,6 +367,25 @@ const server = createServer(async (request, response) => {
   }
 
   sendHtml(response, 404, page('Fixture not found', '<p>Not found</p>'));
+});
+
+// The fixture is also an authenticated HTTP CONNECT proxy for network profile
+// tests. It only tunnels to itself, never to another host.
+const proxyLog: Array<{ target: string; authorized: boolean }> = [];
+const proxyAuth = `Basic ${Buffer.from('e2e-proxy-user:e2e-proxy-pass').toString('base64')}`;
+server.on('connect', (request: IncomingMessage, client: Socket, head: Buffer) => {
+  const authorized = request.headers['proxy-authorization'] === proxyAuth;
+  proxyLog.push({ target: request.url ?? '', authorized });
+  client.on('error', () => client.destroy());
+  if (!authorized) { client.end('HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm="fixture"\r\nContent-Length: 0\r\n\r\n'); return; }
+  if (request.url !== `${host}:${port}`) { client.end('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n'); return; }
+  const upstream = netConnect(port, host, () => {
+    client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+    if (head.length) upstream.write(head);
+    client.pipe(upstream); upstream.pipe(client);
+  });
+  upstream.on('error', () => client.destroy());
+  client.on('close', () => upstream.destroy());
 });
 
 server.listen(port, host, () => {

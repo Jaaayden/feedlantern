@@ -1,7 +1,8 @@
 import { defaultApplicationSettings, isTargetLanguage, isTranslationProvider, OUTPUT_LIMIT, translationEnabled, translationProviderLabels, type TranslationProviderId, type TranslationProvidersInfo } from '../shared/types.js';
 import { providerProblem } from './translation-providers.js';
-import { fetchSource, type SourceFetcher } from './rss-source.js';
+import { fetchSource, probeTarget, type SourceFetcher } from './rss-source.js';
 import { NetworkPolicy, NetworkPolicyError } from './network.js';
+import { networkOptions, parseNetworkProfileInput, type FetchNetworkOptions } from './fetch-options.js';
 import { TranslationError, TranslationWorker, type Translator } from './rss-translation.js';
 import type { BarkSender } from './bark.js';
 import { NotificationWorker, alertTitle, channelsSummary, defaultSenders, ntfySchema, notificationChannelsSchema, telegramSchema, webhookSchema, type ChannelConfigs, type ChannelSender, type NotificationEvent, type NotificationSenders } from './notify.js';
@@ -24,6 +25,7 @@ import type {
   AuthState,
   ApplicationSettings,
   CredentialSummary,
+  NetworkProfileSummary,
   DetectionResult,
   ExtractedItem,
   Feed,
@@ -77,8 +79,8 @@ export function registeredRoutes(app: FastifyInstance): RegisteredRoute[] {
 }
 
 export interface BrowserServiceLike {
-  discover?(options: { url: string; signal?: AbortSignal; cookies?: Cookie[]; waitMs: number }): Promise<{ title: string; detection: DetectionResult }>;
-  open(options: { url: string; signal?: AbortSignal; cookies?: Cookie[]; waitMs: number; waitForSelector?: string }): Promise<ScreenFrame> | ScreenFrame;
+  discover?(options: { url: string; signal?: AbortSignal; cookies?: Cookie[]; waitMs: number; network?: FetchNetworkOptions }): Promise<{ title: string; detection: DetectionResult }>;
+  open(options: { url: string; signal?: AbortSignal; cookies?: Cookie[]; waitMs: number; waitForSelector?: string; network?: FetchNetworkOptions }): Promise<ScreenFrame> | ScreenFrame;
   snapshot(id: string): Promise<ScreenFrame> | ScreenFrame;
   scroll(id: string, deltaY: number, point?: { x: number; y: number }): Promise<ScreenFrame> | ScreenFrame;
   click(id: string, x: number, y: number): Promise<ScreenFrame> | ScreenFrame;
@@ -86,7 +88,7 @@ export interface BrowserServiceLike {
   segment?(id: string, top: number): Promise<SegmentResult> | SegmentResult;
   pick(id: string, request: PickRequest): Promise<PickResult> | PickResult;
   extract(id: string, rules: SelectionRules): Promise<ExtractedItem[]> | ExtractedItem[];
-  scrape(options: { url: string; signal?: AbortSignal; cookies?: Cookie[]; waitMs: number; waitForSelector?: string; rules: SelectionRules; pagination?: PaginationRules | null; isKnown?: (link: string) => boolean; onReport?: (report: PaginationReport, firstPage: ExtractedItem[]) => void }): Promise<ExtractedItem[]> | ExtractedItem[];
+  scrape(options: { url: string; signal?: AbortSignal; cookies?: Cookie[]; waitMs: number; waitForSelector?: string; rules: SelectionRules; network?: FetchNetworkOptions; pagination?: PaginationRules | null; isKnown?: (link: string) => boolean; onReport?: (report: PaginationReport, firstPage: ExtractedItem[]) => void }): Promise<ExtractedItem[]> | ExtractedItem[];
   paginate?(id: string, rules: SelectionRules, pagination: PaginationRules): Promise<{ items: ExtractedItem[]; report: PaginationReport }>;
   detect?(id: string): Promise<DetectionResult> | DetectionResult;
   close(id: string): Promise<void> | void;
@@ -267,6 +269,18 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return cookiesForTarget(credential, feed.url);
   };
 
+  /**
+   * The one place a feed's network profile becomes fetch options. Editor
+   * preview, batch discovery and background refresh all call it, so the three
+   * paths always use the same proxy, User-Agent, Referer and headers.
+   */
+  const networkFor = (profileId: string | null | undefined, ownerId?: string): FetchNetworkOptions | undefined => {
+    if (!profileId) return undefined;
+    const profile = store.getNetworkProfile(profileId);
+    if (!profile || (ownerId !== undefined && profile.ownerId !== ownerId)) throw new AppError(400, '订阅引用的网络配置不存在');
+    return networkOptions(profile);
+  };
+
   const refreshOnce = async (id: string, source: FetchSource, actorSignal?: AbortSignal): Promise<Feed | null> => {
     const feed = store.getFeed(id);
     if (!feed || !store.isUserActive(feed.ownerId)) return null;
@@ -279,14 +293,16 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       return store.history.start(feed.id, source);
     });
     try {
-      const rss = feed.sourceType === 'rss' ? await getRss(feed.url, { ...store.translations.sourceState(feed.id), signal: AbortSignal.any([store.userSignal(feed.ownerId), ...(actorSignal ? [actorSignal] : [])]) }) : undefined;
+      // The same profile applies to every page of a multi-page collection (one browser context).
+      const network = networkFor(feed.networkProfileId, feed.ownerId);
+      const rss = feed.sourceType === 'rss' ? await getRss(feed.url, { ...store.translations.sourceState(feed.id), signal: AbortSignal.any([store.userSignal(feed.ownerId), ...(actorSignal ? [actorSignal] : [])]), ...(network ? { network } : {}) }) : undefined;
       let pages: PaginationReport | undefined;
       // Rule health compares page 1 only: how many pages a run reads changes with
       // the incremental stop and the page limit, which must not look like a broken rule.
       let firstPage: ExtractedItem[] | undefined;
       const multiPage = !rss && !!feed.pagination && feed.pagination.maxPages > 1;
       const items = rss ? [] : await browser.scrape({
-        url: feed.url, signal: AbortSignal.any([store.userSignal(feed.ownerId), ...(actorSignal ? [actorSignal] : [])]), cookies: credentialsForFeed(feed), waitMs: feed.waitMs, waitForSelector: feed.waitForSelector, rules: feed.rules,
+        url: feed.url, signal: AbortSignal.any([store.userSignal(feed.ownerId), ...(actorSignal ? [actorSignal] : [])]), cookies: credentialsForFeed(feed), waitMs: feed.waitMs, waitForSelector: feed.waitForSelector, rules: feed.rules, ...(network ? { network } : {}),
         ...(multiPage ? { pagination: feed.pagination, isKnown: store.knownLinks(feed), onReport: (report: PaginationReport, first: ExtractedItem[]) => { pages = report; firstPage = first; } } : {}),
       });
       if (!rss && !items.length) throw new Error('没有抽取到有效条目：可能是页面结构或规则变化，请检查匹配规则、Cookie 或页面渲染');
@@ -363,12 +379,15 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (!browser.discover) throw new AppError(501, '当前浏览器不支持批量识别');
     const credential = entry.credentialId ? store.getCredentialValue(entry.credentialId) : null;
     if (entry.credentialId && !credential) throw new AppError(400, 'Cookie 凭据不存在');
-    return browser.discover({ signal, url: entry.url, waitMs: 1000, cookies: credential ? cookiesForTarget(credential, entry.url) : [] });
+    // Ownership of the profile was checked when the job was created.
+    const network = networkFor(entry.networkProfileId);
+    return browser.discover({ signal, url: entry.url, waitMs: 1000, cookies: credential ? cookiesForTarget(credential, entry.url) : [], ...(network ? { network } : {}) });
   }, async (input, signal) => {
     const credential = input.credentialId ? store.getCredentialValue(input.credentialId) : null;
     if (input.credentialId && !credential) throw new AppError(400, 'Cookie 凭据不存在');
-    return browser.scrape({ ...input, signal, cookies: credential ? cookiesForTarget(credential, input.url) : [] });
-  }, error => friendlyError(error, '识别失败：请检查网址、网络或 Cookie，然后重试或手动调整。'), config.backgroundConcurrency, (entry, signal) => getRss(entry.url, { signal }), () => translations.wake());
+    const network = networkFor(input.networkProfileId);
+    return browser.scrape({ ...input, signal, cookies: credential ? cookiesForTarget(credential, input.url) : [], ...(network ? { network } : {}) });
+  }, error => friendlyError(error, '识别失败：请检查网址、网络或 Cookie，然后重试或手动调整。'), config.backgroundConcurrency, (entry, signal) => { const network = networkFor(entry.networkProfileId); return getRss(entry.url, { signal, ...(network ? { network } : {}) }); }, () => translations.wake());
 
   app.addHook('onRequest', async (request, reply) => {
     if (maintenance) throw new AppError(503, '服务维护中，请稍后重试');
@@ -502,12 +521,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       browserOwners.delete(sessionId); await browser.close(sessionId);
     }));
   };
-  const requireOwned = (request: FastifyRequest, table: 'feeds' | 'credentials' | 'import_jobs', id: string) => {
+  const requireOwned = (request: FastifyRequest, table: 'feeds' | 'credentials' | 'import_jobs' | 'network_profiles', id: string) => {
     const context = workspace(request);
-    if (!store.owns(table, id, context.userId)) throw new AppError(404, table === 'feeds' ? '订阅不存在' : table === 'credentials' ? 'Cookie 凭据不存在' : '批量任务不存在');
+    if (!store.owns(table, id, context.userId)) throw new AppError(404, table === 'feeds' ? '订阅不存在' : table === 'credentials' ? 'Cookie 凭据不存在' : table === 'network_profiles' ? '网络配置不存在' : '批量任务不存在');
     return context;
   };
-  const resourceGuard = (request: FastifyRequest, table?: 'feeds' | 'credentials' | 'import_jobs') => {
+  const resourceGuard = (request: FastifyRequest, table?: 'feeds' | 'credentials' | 'import_jobs' | 'network_profiles') => {
     const context = authenticated(request);
     // The request hook already enforces this; repeated here so no route depends on that alone.
     if (context.token && !tokenAllowedRoute(request.method, request.routeOptions.url ?? '')) throw new AppError(403, '此接口只能在网页登录后使用，访问令牌无权调用');
@@ -525,6 +544,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (id !== undefined && id !== null && id !== '') {
       if (typeof id !== 'string') throw new AppError(400, 'Cookie 凭据格式无效');
       requireOwned(request, 'credentials', id);
+    }
+  };
+  const checkNetworkProfile = (request: FastifyRequest, id: unknown) => {
+    if (id !== undefined && id !== null && id !== '') {
+      if (typeof id !== 'string') throw new AppError(400, '网络配置格式无效');
+      requireOwned(request, 'network_profiles', id);
     }
   };
   const credentialsGuard = (request: FastifyRequest) => { const actor = resourceGuard(request, 'credentials'); workspace(request, request.method === 'POST'); return actor; };
@@ -705,6 +730,52 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return { ok: true };
   });
 
+  const profilesGuard = (request: FastifyRequest) => { const actor = resourceGuard(request, 'network_profiles'); workspace(request, request.method === 'POST'); return actor; };
+  const policyFor = () => new NetworkPolicy({ allowedHosts: config.allowedHosts, dnsOverHttps: config.dnsOverHttps });
+  const parseProfile = async (body: unknown, existingId?: string) => {
+    const existing = existingId ? store.getNetworkProfile(existingId) : null;
+    const value = parseNetworkProfileInput(asRecord(body), existing ?? undefined);
+    // Reject a loopback, private or metadata proxy now, not on the first refresh.
+    if (value.proxy) {
+      try { await policyFor().resolveProxy(value.proxy); } catch (error) { if (error instanceof NetworkPolicyError) throw new AppError(400, error.message); throw error; }
+    }
+    return value;
+  };
+  app.get('/api/network-profiles', async (request): Promise<NetworkProfileSummary[]> => { profilesGuard(request); return store.listNetworkProfiles(workspace(request).userId); });
+  app.post('/api/network-profiles', async request => {
+    profilesGuard(request);
+    return store.createNetworkProfile(await parseProfile(request.body), workspace(request).userId);
+  });
+  app.put('/api/network-profiles/:id', async request => {
+    profilesGuard(request);
+    const id = String(asRecord(request.params).id);
+    const value = await parseProfile(request.body, id);
+    // Running refreshes keep the settings they started with; the next one uses these.
+    const result = store.updateNetworkProfile(id, value);
+    if (!result) throw new AppError(404, '网络配置不存在');
+    return result;
+  });
+  app.delete('/api/network-profiles/:id', async request => {
+    profilesGuard(request);
+    const id = String(asRecord(request.params).id);
+    if (store.isNetworkProfileReferenced(id)) throw new AppError(409, '该网络配置仍被订阅使用，请先在订阅中改用其他配置');
+    if (!store.deleteNetworkProfile(id)) throw new AppError(404, '网络配置不存在');
+    return { ok: true };
+  });
+  app.post('/api/network-profiles/:id/test', async request => {
+    profilesGuard(request);
+    const id = String(asRecord(request.params).id);
+    const url = parseHttpUrl(asRecord(request.body).url, '测试网址');
+    try {
+      const { status } = await probeTarget(url, policyFor(), networkFor(id, workspace(request).userId), operationSignal(request));
+      return { ok: true, status };
+    } catch (error) {
+      const shown = friendlyError(error, '连接测试失败，请检查代理地址和网络');
+      logHiddenError('网络配置连接测试失败', error, shown);
+      throw new AppError(400, shown);
+    }
+  });
+
   const feedsGuard = (request: FastifyRequest) => {
     const table = request.routeOptions.url?.startsWith('/api/import-jobs') ? 'import_jobs' : 'feeds';
     const context = resourceGuard(request, table);
@@ -714,7 +785,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     workspace(request, active);
     checkCredential(request, body.credentialId);
     checkCredential(request, asRecord(body.input).credentialId);
-    if (Array.isArray(body.entries)) for (const entry of body.entries) checkCredential(request, asRecord(entry).credentialId);
+    checkNetworkProfile(request, body.networkProfileId);
+    checkNetworkProfile(request, asRecord(body.input).networkProfileId);
+    if (Array.isArray(body.entries)) for (const entry of body.entries) { checkCredential(request, asRecord(entry).credentialId); checkNetworkProfile(request, asRecord(entry).networkProfileId); }
     return context;
   };
 
@@ -831,12 +904,21 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
   app.get('/api/backups/config', async request => {
     adminGuard(request);
+    const profiles = new Map(store.listNetworkProfiles(authenticated(request).userId).map(p => [p.id, p]));
+    // Only the non-secret part of a network profile is exported. A profile
+    // with a proxy login or header values has to be bound again after import.
+    const profileExport = (id: string | null | undefined) => {
+      const profile = id ? profiles.get(id) : undefined;
+      if (!profile) return {};
+      if (profile.proxy?.authenticated || profile.headerNames.length) return { requiresNetworkProfile: true };
+      return { networkProfile: { name: profile.name, proxyUrl: profile.proxy?.url ?? null, userAgent: profile.userAgent, referer: profile.referer } };
+    };
     // The configuration file is not encrypted, so translation API keys stay out of it.
     const settings = maskKeys(store.getSettings());
     for (const service of ['deepl', 'openai'] as const) delete settings.translation[service].apiKeyConfigured;
     const notifications = store.getNotifications(authenticated(request).userId);
     const feeds = store.listFeeds(authenticated(request).userId);
-    return { format: 'feedlantern-config', version: 2, settings: { ...settings, bark: notifications.bark }, notificationChannels: notifications.channels, bundles: exportConfigBundles(store, authenticated(request).userId, feeds.map(f => f.id)), feeds: feeds.map(f => ({ sourceType: f.sourceType, translationMode: f.translationMode, targetLanguage: f.targetLanguage, translationProvider: f.translationProvider, name: f.name, channelTitle: f.channelTitle, url: f.url, rules: f.rules, ruleOrigins: f.ruleOrigins, ...(f.pagination ? { pagination: f.pagination } : {}), intervalMinutes: f.intervalMinutes, waitMs: f.waitMs, waitForSelector: f.waitForSelector, enabled: f.enabled, requiresCredential: !!f.credentialId, ...(f.itemFilter ? { itemFilter: f.itemFilter } : {}), outputLimit: f.outputLimit })) };
+    return { format: 'feedlantern-config', version: 2, settings: { ...settings, bark: notifications.bark }, notificationChannels: notifications.channels, bundles: exportConfigBundles(store, authenticated(request).userId, feeds.map(f => f.id)), feeds: feeds.map(f => ({ sourceType: f.sourceType, translationMode: f.translationMode, targetLanguage: f.targetLanguage, translationProvider: f.translationProvider, name: f.name, channelTitle: f.channelTitle, url: f.url, rules: f.rules, ruleOrigins: f.ruleOrigins, ...(f.pagination ? { pagination: f.pagination } : {}), intervalMinutes: f.intervalMinutes, waitMs: f.waitMs, waitForSelector: f.waitForSelector, enabled: f.enabled, requiresCredential: !!f.credentialId, ...profileExport(f.networkProfileId), ...(f.itemFilter ? { itemFilter: f.itemFilter } : {}), outputLimit: f.outputLimit })) };
   });
   app.post('/api/backups/config', { bodyLimit: 10_000_000 }, async request => {
     adminGuard(request);
@@ -849,20 +931,24 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (importedChannels && !importedChannels.success) throw new AppError(400, `配置中的通知渠道无效：${issueMessage(importedChannels.error, '请检查地址和格式')}`);
     const entries = archive.feeds.map(raw => {
       const value = asRecord(raw);
+      const profile = value.networkProfile === undefined || value.networkProfile === null ? undefined : parseNetworkProfileInput({ ...asRecord(value.networkProfile), headers: [] });
       const output = parseFeedSettings({ ...(value.itemFilter !== undefined ? { itemFilter: value.itemFilter } : {}), ...(value.outputLimit !== undefined ? { outputLimit: value.outputLimit } : {}) }, true);
-      return { input: parseFeedInput({ ...value, credentialId: null }), output, title: asOptionalString(value.channelTitle, '频道名称', 200), enabled: value.enabled !== false, needsCookie: value.requiresCredential === true };
+      return { input: parseFeedInput({ ...value, credentialId: null, networkProfileId: null }), output, title: asOptionalString(value.channelTitle, '频道名称', 200), enabled: value.enabled !== false, needsCookie: value.requiresCredential === true, needsNetwork: value.requiresNetworkProfile === true, profile };
     });
     const bundles = parseConfigBundles(archive.bundles, entries.length);
     const signature = (f: FeedInput) => JSON.stringify([f.sourceType ?? 'website', f.translationMode ?? 'bilingual', ...(f.targetLanguage && f.targetLanguage !== 'zh-CN' ? [f.targetLanguage] : []), normalizeSource(f.url), ...['item', 'title', 'link', 'description', 'image', 'date'].map(k => f.rules[k as keyof SelectionRules] ?? '')]);
     if (body.confirm !== true) {
       const seen = new Set(store.listFeeds(authenticated(request).userId).map(signature));
-      return { settings: importedSettings ? { ...settingsPreview(importedSettings), ...(importedChannels ? { notificationChannels: channelsPreview(importedChannels.data) } : {}) } : null, entries: entries.map(e => { const duplicate = seen.has(signature(e.input)); seen.add(signature(e.input)); return { name: e.input.name, url: e.input.url, duplicate, needsCookie: e.needsCookie }; }), ...(bundles.length ? { bundles: previewConfigBundles(store, authenticated(request).userId, bundles) } : {}) };
+      return { settings: importedSettings ? { ...settingsPreview(importedSettings), ...(importedChannels ? { notificationChannels: channelsPreview(importedChannels.data) } : {}) } : null, entries: entries.map(e => { const duplicate = seen.has(signature(e.input)); seen.add(signature(e.input)); return { name: e.input.name, url: e.input.url, duplicate, needsCookie: e.needsCookie, needsNetwork: e.needsNetwork }; }), ...(bundles.length ? { bundles: previewConfigBundles(store, authenticated(request).userId, bundles) } : {}) };
     }
     return enqueueRefresh(async () => {
       adminGuard(request);
       let result: { created: number; skipped: number; bundles?: { created: number; skipped: number } } = { created: 0, skipped: 0 };
       const write = () => store.transaction(() => {
       const seen = new Set(store.listFeeds(authenticated(request).userId).map(signature));
+      // Imported secret-free profiles are reused by identical settings.
+      const profileKey = (p: { name: string; proxy: { type: string; host: string; port: number } | null; userAgent?: string | null; referer?: string | null }) => JSON.stringify([p.name, p.proxy && [p.proxy.type, p.proxy.host, p.proxy.port], p.userAgent ?? null, p.referer ?? null]);
+      const reusable = new Map(store.listNetworkProfiles(authenticated(request).userId).filter(p => !p.proxy?.authenticated && !p.headerNames.length).map(p => [profileKey(p), p.id]));
       // Bundles refer to config entries; a skipped duplicate maps to the feed already there.
       const existing = new Map(store.listFeeds(authenticated(request).userId).map(f => [signature(f), f.id])), entryIds: Array<string | undefined> = [];
       let created = 0, skipped = 0;
@@ -870,11 +956,18 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         const key = signature(entry.input);
         entryIds.push(existing.get(key));
         if (seen.has(key)) { skipped++; continue; }
-        const { feed } = store.createFeed(entry.input, authenticated(request).userId);
+        let networkProfileId: string | null = null;
+        if (entry.profile) {
+          const profileId = reusable.get(profileKey(entry.profile)) ?? store.createNetworkProfile(entry.profile, authenticated(request).userId).id;
+          reusable.set(profileKey(entry.profile), profileId);
+          networkProfileId = profileId;
+        }
+        const { feed } = store.createFeed({ ...entry.input, networkProfileId }, authenticated(request).userId);
         if (entry.title) store.setChannelTitle(feed.id, entry.title);
         if (Object.keys(entry.output).length) store.updateFeedSettings(feed.id, entry.output);
-        if (!entry.enabled || entry.needsCookie) store.toggleFeed(feed.id);
+        if (!entry.enabled || entry.needsCookie || entry.needsNetwork) store.toggleFeed(feed.id);
         if (entry.needsCookie) store.markFetchFailure(feed.id, '请绑定 Cookie 凭据后恢复订阅', feed.nextFetchAt);
+        else if (entry.needsNetwork) store.markFetchFailure(feed.id, '请绑定网络配置后恢复订阅', feed.nextFetchAt);
         seen.add(key); existing.set(key, feed.id); entryIds[entryIds.length - 1] = feed.id; created++;
       }
       if (importedSettings) { const originalBark = store.getBark('admin'); store.setSettings({ ...importedSettings, bark: originalBark }); store.setBark(authenticated(request).userId, importedSettings.bark); }
@@ -902,12 +995,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       const url = normalizeSource(parseHttpUrl(entry.url, '网址'));
       const credentialId = entry.credentialId ? asNonEmptyString(entry.credentialId, 'credentialId', 200) : null;
       if (sourceType === 'rss' && credentialId) throw new AppError(400, 'RSS 翻译不支持 Cookie 凭据');
+      const networkProfileId = entry.networkProfileId ? asNonEmptyString(entry.networkProfileId, 'networkProfileId', 200) : null;
       if (credentialId) {
         const credential = store.getCredentialValue(credentialId);
         if (!credential) throw new AppError(400, 'Cookie 凭据不存在');
         cookiesForTarget(credential, url);
       }
-      return { url, credentialId, sourceType, translationMode, targetLanguage, translationProvider, intervalMinutes: asInteger(body.intervalMinutes, '刷新间隔', 5, 1440, 60) };
+      return { url, credentialId, networkProfileId, sourceType, translationMode, targetLanguage, translationProvider, intervalMinutes: asInteger(body.intervalMinutes, '刷新间隔', 5, 1440, 60) };
     });
     return jobs.create(entries, workspace(request, true).userId, authenticated(request).userId);
   });
@@ -979,6 +1073,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         throw new AppError(400, '刷新间隔必须是 5 到 1440 之间的整数');
       }
       input.intervalMinutes = body.intervalMinutes;
+    }
+    if ('networkProfileId' in body) {
+      // Ownership is checked by feedsGuard.
+      if (body.networkProfileId !== null && body.networkProfileId !== '' && typeof body.networkProfileId !== 'string') throw new AppError(400, '网络配置格式无效');
+      input.networkProfileId = body.networkProfileId ? String(body.networkProfileId) : null;
     }
     if (!allowEmpty && !Object.keys(input).length) throw new AppError(400, '请提供需要修改的订阅设置');
     return input;
@@ -1060,9 +1159,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   app.post('/api/rss/preview', async request => {
     feedsGuard(request);
     const url = parseHttpUrl(asRecord(request.body).url, 'RSS 地址');
+    const profileId = asOptionalString(asRecord(request.body).networkProfileId, 'networkProfileId', 200);
     return enqueueRefresh(async () => {
       feedsGuard(request);
-      try { const signal = operationSignal(request); const result = await getRss(url, { signal }); feedsGuard(request); if (signal.aborted) throw new AppError(409, '操作已取消'); return { title: result.title, items: result.items.slice(0, 3).map(item => ({ title: item.title, link: item.link, contentHtml: item.html })) }; }
+      try { const signal = operationSignal(request); const network = networkFor(profileId, workspace(request).userId); const result = await getRss(url, { signal, ...(network ? { network } : {}) }); feedsGuard(request); if (signal.aborted) throw new AppError(409, '操作已取消'); return { title: result.title, items: result.items.slice(0, 3).map(item => ({ title: item.title, link: item.link, contentHtml: item.html })) }; }
       catch (error) { throw new AppError(400, safeDiagnostic(friendlyError(error, 'RSS 获取失败'))); }
     }, [siteKey(url)]);
   });
@@ -1186,7 +1286,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       return { ok: true };
     });
   });
-  registerRuleHealthRoutes(app, { store, browser: () => browser, guard: feedsGuard, signal: operationSignal, enqueue: enqueueRefresh, keys: refreshKeys, cookies: credentialsForFeed, payload: feedPayload });
+  registerRuleHealthRoutes(app, { store, browser: () => browser, guard: feedsGuard, signal: operationSignal, enqueue: enqueueRefresh, keys: refreshKeys, cookies: credentialsForFeed, network: feed => networkFor(feed.networkProfileId, feed.ownerId), payload: feedPayload });
 
   const browserGuard = (request: FastifyRequest) => {
     resourceGuard(request);
@@ -1195,6 +1295,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (typeof id === 'string' && (browserOwners.get(id)?.userId !== context.userId || browserOwners.get(id)?.actorId !== context.actorId)) throw new AppError(404, '浏览器会话不存在');
     if (typeof id === 'string') browserOwners.set(id, { userId: context.userId, actorId: context.actorId, touchedAt: Date.now() });
     checkCredential(request, asRecord(request.body).credentialId);
+    checkNetworkProfile(request, asRecord(request.body).networkProfileId);
     return context;
   };
   app.post('/api/browser', async (request) => {
@@ -1212,7 +1313,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
     try {
       const { userId, actorId } = workspace(request, true), generation = store.userGeneration(userId);
-      const frame = await browser.open({ url, cookies, waitMs, waitForSelector, signal: operationSignal(request) });
+      const network = networkFor(asOptionalString(body.networkProfileId, 'networkProfileId', 200), userId);
+      const frame = await browser.open({ url, cookies, waitMs, waitForSelector, signal: operationSignal(request), ...(network ? { network } : {}) });
       try {
         workspace(request, true);
         if (generation !== store.userGeneration(userId)) throw new AppError(401, '账号已停用，请重新登录');

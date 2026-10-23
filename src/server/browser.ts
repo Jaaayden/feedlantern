@@ -21,6 +21,7 @@ import { redactForLog } from './log';
 import { extractPage } from './extraction';
 import { collectPages, PAGINATION_BUDGET_MS, type CollectResult } from './pagination';
 import { prepareScrollContent } from './page-preparation';
+import type { FetchNetworkOptions } from './fetch-options';
 import {
   allowedHostListFromEnv,
   createRestrictedForwardProxy,
@@ -54,6 +55,8 @@ export interface BrowserOpenOptions {
   cookies?: Cookie[];
   waitMs: number;
   waitForSelector?: string;
+  /** The feed's network profile: proxy, User-Agent, Referer and extra headers. */
+  network?: FetchNetworkOptions;
 }
 
 export interface BrowserScrapeOptions extends BrowserOpenOptions {
@@ -99,6 +102,7 @@ interface BrowserSession {
   idleTimer?: NodeJS.Timeout;
   pointer?: { x: number; y: number };
   waitMs: number;
+  network?: FetchNetworkOptions;
   /** Page global holding the elements of the latest element map. */
   mapKey: string;
   map?: ElementMap;
@@ -368,6 +372,7 @@ function cleanError(error: unknown, fallback: string): BrowserServiceError {
 
 function normalizeSelectorError(error: unknown, fallback: string): BrowserServiceError {
   const message = error instanceof Error ? error.message : String(error);
+  if (/ERR_TUNNEL_CONNECTION_FAILED|ERR_PROXY_CONNECTION_FAILED|ERR_PROXY_AUTH|ERR_NO_SUPPORTED_PROXIES/.test(message)) return new BrowserServiceError('无法通过网络配置中的代理建立连接，请检查代理地址、端口和认证信息');
   if (/ERR_BLOCKED_BY_CLIENT/.test(message)) return new BrowserServiceError('网页或重定向被网络安全策略阻止，请检查目标 DNS 是否解析到私网或保留地址');
   if (/Timeout|timed out/i.test(message)) return new BrowserServiceError('网页加载超时，请检查网络连接或调整等待条件');
   if (/ERR_CERT/.test(message)) return new BrowserServiceError('目标网站的 HTTPS 证书无效，无法安全加载');
@@ -380,6 +385,8 @@ export class BrowserService {
   private readonly executablePath?: string;
   private readonly sessions = new Map<string, BrowserSession>();
   private readonly activeContexts = new Set<BrowserContext>();
+  /** Contexts with a network profile proxy each own a dedicated loopback proxy. */
+  private readonly contextProxies = new WeakMap<BrowserContext, RestrictedForwardProxy>();
   private browser?: Browser;
   private browserPromise?: Promise<Browser>;
   private proxy?: RestrictedForwardProxy;
@@ -443,22 +450,47 @@ export class BrowserService {
     }
   }
 
-  private async createContext(cookies: Cookie[] | undefined, url: string): Promise<BrowserContext> {
-    await new NetworkPolicy(this.networkOptions).assertAllowed(url);
-    const browser = await this.ensureBrowser();
-    const context = await browser.newContext({
+  /** Options passed to every browser.newContext(); exposed for isolation tests. */
+  contextOptions(proxy: RestrictedForwardProxy | undefined, network?: FetchNetworkOptions) {
+    return {
       viewport: VIEWPORT,
       deviceScaleFactor: 1,
-      serviceWorkers: 'block',
+      serviceWorkers: 'block' as const,
       acceptDownloads: false,
+      ...(network?.userAgent ? { userAgent: network.userAgent } : {}),
       // Chromium has a built-in loopback bypass.  The explicit token makes
       // even localhost fixture traffic pass through our fixed-address proxy;
       // otherwise a loopback redirect could escape the DNS/IP policy.
-      proxy: this.proxy ? { server: this.proxy.url, bypass: '<-loopback>' } : undefined,
-    });
+      // A profile proxy gets its own restricted proxy with a random login, so
+      // the user's real proxy credentials never reach Chromium and another
+      // context cannot share the tunnel.
+      proxy: proxy ? { server: proxy.url, bypass: '<-loopback>', ...(proxy.credentials ?? {}) } : undefined,
+    };
+  }
+
+  private async createContext(cookies: Cookie[] | undefined, url: string, network?: FetchNetworkOptions): Promise<BrowserContext> {
+    const policy = new NetworkPolicy(this.networkOptions);
+    await policy.assertAllowed(url);
+    // Fail early, and clearly, when the proxy itself is not allowed.
+    if (network?.proxy) await policy.resolveProxy(network.proxy);
+    const browser = await this.ensureBrowser();
+    const contextProxy = network?.proxy
+      ? await createRestrictedForwardProxy({ ...this.networkOptions, upstream: network.proxy, requireAuth: true })
+      : undefined;
+    let context: BrowserContext;
+    try {
+      context = await browser.newContext(this.contextOptions(contextProxy ?? this.proxy, network));
+    } catch (error) {
+      await contextProxy?.close().catch(() => undefined);
+      throw cleanError(error, '创建浏览器上下文失败');
+    }
+    if (contextProxy) {
+      this.contextProxies.set(context, contextProxy);
+      context.once('close', () => { void contextProxy.close().catch(() => undefined); });
+    }
     this.activeContexts.add(context);
     try {
-      await installNetworkPolicy(context, this.networkOptions);
+      await installNetworkPolicy(context, this.networkOptions, network?.headers?.length ? { scopeUrl: url, headers: network.headers } : undefined);
       if (cookies && cookies.length > 0) {
         const filtered = cookiesForUrl(cookies, url);
         if (filtered.length > 0) await context.addCookies(toPlaywrightCookies(filtered));
@@ -471,10 +503,23 @@ export class BrowserService {
     }
   }
 
+  /** The upstream proxy failure behind a navigation error, if any. */
+  private proxyFailure(page: Page): BrowserServiceError | undefined {
+    const message = this.contextProxies.get(page.context())?.lastError;
+    return message ? new BrowserServiceError(`通过代理访问失败：${message}`) : undefined;
+  }
+
+  /**
+   * Open `options.url` in `page`. Later pages of a paginated feed pass the
+   * previous page as `referer`; the first page uses the network profile's.
+   */
   private async preparePage(page: Page, options: BrowserOpenOptions, rejectHttpErrors = false, referer?: string): Promise<void> {
     const waitMs = boundedWait(options.waitMs);
+    this.contextProxies.get(page.context())?.resetError();
     try {
-      const response = await page.goto(options.url, { waitUntil: 'domcontentloaded', timeout: NAVIGATION_TIMEOUT_MS, ...(referer ? { referer } : {}) });
+      const response = await page.goto(options.url, { waitUntil: 'domcontentloaded', timeout: NAVIGATION_TIMEOUT_MS, ...((referer ?? options.network?.referer) ? { referer: referer ?? options.network?.referer } : {}) });
+      // A plain-HTTP page whose proxy failed arrives as our proxy's 502 page.
+      if (!response || response.status() >= 500) { const failure = this.proxyFailure(page); if (failure) throw failure; }
       if (rejectHttpErrors && response && response.status() >= 400) {
         const hint = response.status() === 401 || response.status() === 403 ? '，请检查 Cookie 或访问权限' : '';
         throw new BrowserServiceError(`目标网页返回 HTTP ${response.status()}${hint}`);
@@ -485,7 +530,7 @@ export class BrowserService {
       if (waitMs > 0) await page.waitForTimeout(waitMs);
       await prepareScrollContent(page);
     } catch (error) {
-      throw normalizeSelectorError(error, '打开页面失败');
+      throw this.proxyFailure(page) ?? normalizeSelectorError(error, '打开页面失败');
     }
   }
 
@@ -637,7 +682,7 @@ export class BrowserService {
     options.signal?.addEventListener('abort', abort, { once: true });
     try {
       options.signal?.throwIfAborted();
-      context = await this.createContext(options.cookies, options.url);
+      context = await this.createContext(options.cookies, options.url, options.network);
       options.signal?.throwIfAborted();
       page = await context.newPage();
       const tabs = { opening: false };
@@ -654,7 +699,7 @@ export class BrowserService {
       await page.mouse.move(pointer.x, pointer.y);
       const session: BrowserSession = {
         id, context, page, busy: false, lastUsedAt: Date.now(), pointer, waitMs: boundedWait(options.waitMs), mapKey: `__feedlantern_${randomUUID().replace(/-/g, '')}`,
-        sourceUrl: options.url, waitForSelector: options.waitForSelector,
+        sourceUrl: options.url, waitForSelector: options.waitForSelector, network: options.network,
         get openingTab() { return tabs.opening; }, set openingTab(value: boolean) { tabs.opening = value; },
       };
       this.sessions.set(id, session);
@@ -769,7 +814,7 @@ export class BrowserService {
       const href = session.map ? linkFor(session.map, node) : undefined;
       if (!href) throw new BrowserServiceError('这里不是可以打开的链接');
       await new NetworkPolicy(this.networkOptions).assertAllowed(href);
-      await this.preparePage(session.page, { url: href, waitMs: session.waitMs });
+      await this.preparePage(session.page, { url: href, waitMs: session.waitMs, network: session.network && { ...session.network, referer: undefined } });
       return this.frame(session);
     });
   }
@@ -796,7 +841,8 @@ export class BrowserService {
       try {
         tab = await session.context.newPage();
         session.openingTab = false;
-        const options = { url: session.sourceUrl, waitMs: session.waitMs, waitForSelector: session.waitForSelector };
+        // Same context, so the network profile's proxy, User-Agent and headers apply too.
+        const options = { url: session.sourceUrl, waitMs: session.waitMs, waitForSelector: session.waitForSelector, network: session.network };
         await this.preparePage(tab, options, true);
         return await this.collect(tab, { ...options, rules, pagination });
       } catch (error) {
@@ -844,7 +890,7 @@ export class BrowserService {
     options.signal?.addEventListener('abort', abort, { once: true });
     try {
       options.signal?.throwIfAborted();
-      context = await this.createContext(options.cookies, options.url);
+      context = await this.createContext(options.cookies, options.url, options.network);
       options.signal?.throwIfAborted();
       const page = await context.newPage();
       let timeout: NodeJS.Timeout | undefined;

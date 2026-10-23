@@ -20,8 +20,9 @@ import { levelsBetween, liftNode } from '../shared/element-map';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type React from 'react';
 import type { FormEvent, ReactNode } from 'react';
-import { Archive, ChevronRight, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bell, Check, ChevronDown, CircleHelp, Cookie, Copy, ExternalLink, Globe2, Info, KeyRound, KeySquare, Languages, Layers, ListPlus, LoaderCircle, LogOut, Monitor, Moon, MousePointer2, Pencil, Plus, Radio, RefreshCw, Rss, Search, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Sun, Trash2 } from 'lucide-react';
+import { Archive, ChevronRight, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bell, Check, ChevronDown, CircleHelp, Cookie, Copy, ExternalLink, Globe2, Info, KeyRound, KeySquare, Languages, Layers, ListPlus, LoaderCircle, LogOut, Monitor, Moon, Network, MousePointer2, Pencil, Plus, Radio, RefreshCw, Rss, Search, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Sun, Trash2 } from 'lucide-react';
 import { Modal } from './Modal';
+import { NetworkProfileSelect, NetworkProfilesView, useNetworkProfiles } from './NetworkProfiles';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
 import { absoluteTime, copyText, relativeTime, sameAddress, summaryText } from './format';
 import type { StatusFilter } from './FeedCollection';
@@ -113,6 +114,8 @@ export function Editor({ initial, draft, existing = [], submitFeed, saved, cance
   const [url, setUrl] = useState(initial?.url ?? draft?.url ?? '');
   const [credentialId, setCredentialId] = useState(initial?.credentialId ?? draft?.credentialId ?? '');
   const [credentials, setCredentials] = useState<CredentialSummary[]>([]);
+  const [networkProfileId, setNetworkProfileId] = useState(initial?.networkProfileId ?? draft?.networkProfileId ?? '');
+  const profiles = useNetworkProfiles(message => setError(message));
   const [name, setName] = useState(initial?.name ?? draft?.name ?? '');
   const [intervalMinutes, setIntervalMinutes] = useState(initial?.intervalMinutes ?? draft?.intervalMinutes ?? 60);
   const [waitMs, setWaitMs] = useState(initial?.waitMs ?? 1000);
@@ -146,7 +149,7 @@ export function Editor({ initial, draft, existing = [], submitFeed, saved, cance
   const sessionRef = useRef<string | null>(null);
   const mountedRef = useRef(false);
   const previewSeq = useRef(0);
-  const currentKey = JSON.stringify([url, credentialId, waitMs, waitForSelector]);
+  const currentKey = JSON.stringify([url, credentialId, networkProfileId, waitMs, waitForSelector]);
   const sourceUnchanged = sourceKey === currentKey;
   useEffect(() => {
     mountedRef.current = true;
@@ -231,9 +234,9 @@ export function Editor({ initial, draft, existing = [], submitFeed, saved, cance
     event?.preventDefault(); setError(''); setNote(''); setBusy('正在打开网页并分析内容');
     try {
       if (sessionRef.current) { await api.browser.close(sessionRef.current).catch(() => {}); sessionRef.current = null; }
-      const result = await api.browser.open({ url: target, credentialId: credentialId || null, waitMs, waitForSelector: waitForSelector || undefined });
+      const result = await api.browser.open({ url: target, credentialId: credentialId || null, networkProfileId: networkProfileId || null, waitMs, waitForSelector: waitForSelector || undefined });
       if (!mountedRef.current) { await api.browser.close(result.sessionId).catch(() => {}); return; }
-      sessionRef.current = result.sessionId; setFrame(result); setSourceKey(JSON.stringify([target, credentialId, waitMs, waitForSelector])); setRects([]); setNavigated(false); setLastPick(null);
+      sessionRef.current = result.sessionId; setFrame(result); setSourceKey(JSON.stringify([target, credentialId, networkProfileId, waitMs, waitForSelector])); setRects([]); setNavigated(false); setLastPick(null);
       if (!name) setName(result.title || hostLabel(target));
       if (initial) { await preview(rules, result.sessionId); setNote('已载入保存的匹配规则。需要时可以重新识别。'); }
       else await detect(result.sessionId);
@@ -347,13 +350,13 @@ export function Editor({ initial, draft, existing = [], submitFeed, saved, cance
       return;
     }
     setBusy('正在保存订阅'); setError('');
-    try { const body: FeedInput = { name, url, credentialId: credentialId || null, rules, ruleOrigins: origins, intervalMinutes, waitMs, waitForSelector: waitForSelector || undefined, pagination }; const result = submitFeed ? await submitFeed(body) : initial ? await api.feeds.update(initial.id, body) : await api.feeds.create(body); saved(result.feed.id); }
+    try { const body: FeedInput = { name, url, credentialId: credentialId || null, networkProfileId: networkProfileId || null, rules, ruleOrigins: origins, intervalMinutes, waitMs, waitForSelector: waitForSelector || undefined, pagination }; const result = submitFeed ? await submitFeed(body) : initial ? await api.feeds.update(initial.id, body) : await api.feeds.create(body); saved(result.feed.id); }
     catch (error) { setError(messageOf(error)); } finally { setBusy(''); }
   }
   const chosen = detection?.candidates.find(item => item.id === candidateId);
   const duplicate = !initial ? existing.find(feed => (feed.sourceType ?? 'website') === 'website' && sameAddress(feed.url, url)) : undefined;
   return <><button className="back-link" onClick={cancel}><ArrowLeft size={16} />返回订阅</button><div className="page-heading"><div><span className="section-kicker">A NEW WAY TO FOLLOW</span><h1>{initial ? '编辑匹配规则' : '让网页成为订阅'}</h1><p>我们先找到内容，你只需确认值得关注。</p></div><span className="step-label">{frame ? '02 / 预览与保存' : '01 / 连接网页'}</span></div>
-    <form className="source-panel" onSubmit={open}><div className="source-row"><Field label="源网址"><div className="input-icon"><Globe2 size={18} /><input required type="url" placeholder="https://example.com/articles" value={url} onChange={e => setUrl(e.target.value)} /></div></Field><Field label="Cookie 凭据" hint={credentials.length ? undefined : '需要登录的网页，可先在「设置 → Cookie 凭据」中添加。'}><select value={credentialId} onChange={e => setCredentialId(e.target.value)}><option value="">公开网页，无需 Cookie</option>{credentials.map(item => <option value={item.id} key={item.id}>{item.name}</option>)}</select></Field><button className="button primary source-submit" disabled={!!busy}>{busy ? <Busy label="处理中" /> : <><Sparkles size={17} />打开并自动识别</>}</button></div><details className="advanced"><summary>加载设置<ChevronDown size={14} /></summary><div className="form-row"><Field label="额外等待时间（毫秒）"><input type="number" min={0} max={10000} step={100} value={waitMs} onChange={e => setWaitMs(Number(e.target.value))} /></Field><Field label="等待元素（可选）"><input value={waitForSelector} onChange={e => setWaitForSelector(e.target.value)} placeholder="CSS 选择器，例如 .article-list" /></Field></div></details></form>
+    <form className="source-panel" onSubmit={open}><div className="source-row"><Field label="源网址"><div className="input-icon"><Globe2 size={18} /><input required type="url" placeholder="https://example.com/articles" value={url} onChange={e => setUrl(e.target.value)} /></div></Field><Field label="Cookie 凭据" hint={credentials.length ? undefined : '需要登录的网页，可先在「设置 → Cookie 凭据」中添加。'}><select value={credentialId} onChange={e => setCredentialId(e.target.value)}><option value="">公开网页，无需 Cookie</option>{credentials.map(item => <option value={item.id} key={item.id}>{item.name}</option>)}</select></Field><button className="button primary source-submit" disabled={!!busy}>{busy ? <Busy label="处理中" /> : <><Sparkles size={17} />打开并自动识别</>}</button></div><details className="advanced" open={!!networkProfileId || undefined}><summary>加载与网络设置<ChevronDown size={14} /></summary><div className="form-row"><NetworkProfileSelect value={networkProfileId} onChange={setNetworkProfileId} profiles={profiles} /></div><div className="form-row"><Field label="额外等待时间（毫秒）"><input type="number" min={0} max={10000} step={100} value={waitMs} onChange={e => setWaitMs(Number(e.target.value))} /></Field><Field label="等待元素（可选）"><input value={waitForSelector} onChange={e => setWaitForSelector(e.target.value)} placeholder="CSS 选择器，例如 .article-list" /></Field></div></details></form>
     {duplicate && <div className="notice duplicate-note"><CircleHelp size={16} /><span>已有订阅「{duplicate.name}」使用这个网址，仍可保存为新的订阅。</span></div>}
     <ErrorNote error={error} />{busy && <div className="progress-strip" role="status"><Busy label={busy} /></div>}
     {!frame && !busy && <div className="editor-welcome"><div className="welcome-step"><span>01</span><Globe2 size={23} /><h3>打开网页</h3><p>支持动态内容与 Cookie 登录态</p></div><div className="welcome-step"><span>02</span><Sparkles size={23} /><h3>自动识别</h3><p>找到列表，匹配标题、图片与摘要</p></div><div className="welcome-step"><span>03</span><Rss size={23} /><h3>持续关注</h3><p>复制 RSS 地址到你喜欢的阅读器</p></div></div>}
@@ -492,7 +495,10 @@ function FeedSettingsTab({ feed, items, busy, setBusy, setError, dirty, reload, 
   const filterDirty = filterKey !== JSON.stringify(feed.itemFilter ?? null);
   const limitNumber = Number(limit);
   const limitValid = !!limit && Number.isInteger(limitNumber) && limitNumber >= OUTPUT_LIMIT.min && limitNumber <= OUTPUT_LIMIT.max;
-  const isDirty = title !== feed.name || interval !== String(feed.intervalMinutes) || mode !== (feed.translationMode ?? 'bilingual') || limit !== String(savedLimit) || filterDirty || retranslates;
+  const [networkProfileId, setNetworkProfileId] = useState(feed.networkProfileId ?? '');
+  const profiles = useNetworkProfiles(setError);
+  const networkDirty = networkProfileId !== (feed.networkProfileId ?? '');
+  const isDirty = title !== feed.name || interval !== String(feed.intervalMinutes) || mode !== (feed.translationMode ?? 'bilingual') || limit !== String(savedLimit) || filterDirty || retranslates || networkDirty;
   dirty.current = isDirty;
   // Ask the server which stored items the draft would publish; it runs the same code as the feed output.
   useEffect(() => {
@@ -526,8 +532,9 @@ function FeedSettingsTab({ feed, items, busy, setBusy, setError, dirty, reload, 
         ...(interval !== String(feed.intervalMinutes) ? { intervalMinutes: minutes } : {}),
         ...(limit !== String(savedLimit) ? { outputLimit: limitNumber } : {}),
         ...(filterDirty ? { itemFilter: filter } : {}),
+        ...(networkDirty ? { networkProfileId: networkProfileId || null } : {}),
       });
-      saved(result); setTitle(result.feed.name); setIntervalValue(String(result.feed.intervalMinutes)); setMode(result.feed.translationMode ?? 'bilingual'); resetOutput(result.feed);
+      saved(result); setTitle(result.feed.name); setIntervalValue(String(result.feed.intervalMinutes)); setMode(result.feed.translationMode ?? 'bilingual'); resetOutput(result.feed); setNetworkProfileId(result.feed.networkProfileId ?? '');
       setLanguage(result.feed.targetLanguage ?? 'zh-CN'); setProvider(result.feed.translationProvider ?? '');
       changed(); notify('订阅设置已保存');
     } catch (error) { setError(messageOf(error)); } finally { setBusy(''); }
@@ -551,6 +558,7 @@ function FeedSettingsTab({ feed, items, busy, setBusy, setError, dirty, reload, 
         <Field label="刷新间隔（分钟）" hint="支持 5–1440 分钟。修改后从保存时重新计时，不会立即抓取；已暂停的订阅继续保持暂停。"><input type="number" required min={5} max={1440} step={1} disabled={!!busy} value={interval} onChange={e => setIntervalValue(e.target.value)} /></Field>
         <Field label="输出模式" hint="开启翻译后，仅发布翻译完成的标题和已抓取内容；不会额外抓取文章全文。"><select aria-label="输出模式" disabled={!!busy} value={mode} onChange={e => setMode(e.target.value as typeof mode)}><option value="original">原文（不翻译）</option><option value="bilingual">双语（译文在前）</option><option value="translated">仅译文</option></select></Field>
       </div>
+      <NetworkProfileSelect value={networkProfileId} onChange={setNetworkProfileId} profiles={profiles} disabled={!!busy} />
       {mode !== 'original' && <div className="form-row">
         <Field label="目标语言"><select aria-label="目标语言" disabled={!!busy} value={language} onChange={e => setLanguage(e.target.value as TargetLanguage)}><LanguageOptions /></select></Field>
         <Field label="翻译服务" hint="服务由管理员在“设置”中配置。"><select aria-label="翻译服务" disabled={!!busy} value={provider} onChange={e => setProvider(e.target.value as TranslationProviderId | '')}><ProviderOptions info={providers} current={feed.translationProvider} /></select></Field>
@@ -595,6 +603,7 @@ function SettingsView({ auth, logout, notify, target }: { auth: AuthState; logou
     ...(admin ? [{ id: 'general', label: '应用设置', icon: SlidersHorizontal }] : []),
     { id: 'notifications', label: '通知', icon: Bell },
     { id: 'credentials', label: 'Cookie 凭据', icon: Cookie },
+    { id: 'network', label: '网络配置', icon: Network },
     ...(!target ? [{ id: 'account', label: '账号与密码', icon: KeyRound }, { id: 'tokens', label: '访问令牌', icon: KeySquare }] : []),
     ...(admin ? [{ id: 'backup', label: '备份与迁移', icon: Archive }] : []),
     { id: 'about', label: '关于', icon: Info },
@@ -622,6 +631,7 @@ function SettingsView({ auth, logout, notify, target }: { auth: AuthState; logou
         {admin && <div id="settings-general" className="settings-section"><ApplicationSettingsPanel revision={settingsRevision} /></div>}
         <div id="settings-notifications" className="settings-section"><NotificationsPanel key={settingsRevision} username={target?.username ?? auth.username!} enabled={target?.enabled !== false} /></div>
         <div id="settings-credentials" className="settings-section"><CredentialsView notify={notify} /></div>
+        <div id="settings-network" className="settings-section"><NetworkProfilesView notify={notify} /></div>
         {!target && <div id="settings-account" className="settings-section"><form className="panel settings-form" onSubmit={submit}><div className="panel-heading"><h2>修改密码</h2><KeyRound size={19} /></div><p className="muted">当前用户：{auth.username}。修改后会退出此账号的所有现有会话，并吊销全部访问令牌。</p><Field label="当前密码"><input required type="password" value={currentPassword} onChange={e => setCurrentPassword(e.target.value)} autoComplete="current-password" /></Field><div className="form-row"><Field label="新密码"><input required type="password" minLength={8} maxLength={1024} value={newPassword} onChange={e => setNewPassword(e.target.value)} autoComplete="new-password" /></Field><Field label="确认新密码"><input required type="password" minLength={8} value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} autoComplete="new-password" /></Field></div><ErrorNote error={error} /><button className="button primary" disabled={busy}>{busy ? <Busy /> : '更新密码'}</button></form></div>}
         {!target && <div id="settings-tokens" className="settings-section"><ApiTokensPanel notify={notify} /></div>}
         {admin && <div id="settings-backup" className="settings-section"><BackupPanel onRestored={logout} onImported={() => setSettingsRevision(v => v + 1)} /></div>}

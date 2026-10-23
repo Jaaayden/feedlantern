@@ -1,5 +1,6 @@
 import { API_TOKEN_MAX_DAYS, tokenAllowedRoute } from './api-tokens.js';
 import { BUNDLE_ITEM_LIMIT, BUNDLE_MAX_FEEDS } from '../shared/types.js';
+import { NETWORK_LIMITS } from '../shared/network-rules.js';
 
 /**
  * Hand-written OpenAPI 3.1 description of `/api/*`. tests/openapi.test.ts fails
@@ -40,6 +41,7 @@ const translationMode = str({ enum: ['original', 'translated', 'bilingual'], des
 const targetLanguage = str({ enum: ['zh-CN', 'zh-TW', 'en', 'ja', 'ko'], default: 'zh-CN', description: '翻译目标语言' });
 const translationProvider = nullable(str({ enum: ['google', 'deepl', 'openai'], description: '翻译服务；null 跟随实例默认服务' }));
 const providerId = str({ enum: ['google', 'deepl', 'openai'] });
+const networkProfileId = nullable(str({ description: '网络配置 ID；null 表示默认网络（直连，无额外请求头）' }));
 
 const schemas: Record<string, Schema> = {
   Error: object({ error: str({ description: '面向用户的中文错误说明' }) }, ['error']),
@@ -70,6 +72,7 @@ const schemas: Record<string, Schema> = {
     ruleOrigins: { type: 'object', additionalProperties: str({ enum: ['auto', 'manual'] }) },
     credentialId: nullable(str()), intervalMinutes: int({ minimum: 5, maximum: 1440 }), waitMs: int({ minimum: 0, maximum: 10000 }), waitForSelector: str(),
     pagination: nullable(ref('PaginationRules')),
+    networkProfileId: { ...networkProfileId, description: '网络配置 ID（代理、User-Agent、Referer、额外请求头）。更新时省略表示保留，null 表示改回默认网络' },
   }, ['name', 'url', 'rules', 'credentialId', 'intervalMinutes', 'waitMs']),
   PaginationRules: object({
     mode: str({ enum: ['next', 'template', 'loadMore'], description: 'next：点击“下一页”链接或按钮；template：按 URL 模板代入页码；loadMore：点击“加载更多”按钮' }),
@@ -81,7 +84,7 @@ const schemas: Record<string, Schema> = {
     stoppedAt: int(), stop: str({ enum: ['single', 'max', 'end', 'repeat', 'known', 'empty', 'failed', 'blocked', 'budget', 'limit'] }), message: str({ description: '在哪一页、因为什么原因停止' }),
   }, ['pages', 'stoppedAt', 'stop', 'message']),
   ItemFilter: object({ include: array(str({ maxLength: 200 }), { maxItems: 30 }), exclude: array(str({ maxLength: 200 }), { maxItems: 30 }), regex: bool }, ['include', 'exclude', 'regex'], { description: '条目过滤：排除优先，include 非空时必须命中其一；只影响输出' }),
-  FeedSettingsInput: object({ translationMode, targetLanguage, translationProvider, channelTitle: str({ minLength: 1, maxLength: 200 }), intervalMinutes: int({ minimum: 5, maximum: 1440 }), itemFilter: nullable(ref('ItemFilter')), outputLimit: int({ minimum: 10, maximum: 500 }) }, [], { description: '至少提供一个字段；itemFilter 为 null 时删除过滤' }),
+  FeedSettingsInput: object({ translationMode, targetLanguage, translationProvider, channelTitle: str({ minLength: 1, maxLength: 200 }), intervalMinutes: int({ minimum: 5, maximum: 1440 }), itemFilter: nullable(ref('ItemFilter')), outputLimit: int({ minimum: 10, maximum: 500 }), networkProfileId }, [], { description: '至少提供一个字段；itemFilter 为 null 时删除过滤；networkProfileId 为 null 时改回默认网络' }),
   OutputStatus: object({ outputStatus: { type: 'object', additionalProperties: str({ enum: ['published', 'untranslated', 'excluded', 'not-included', 'over-limit'] }), description: '条目 ID → 是否输出及原因' }, filterTimedOut: bool }, ['outputStatus']),
   NotificationSummary: { type: 'object', description: '告警策略（阈值、超时、重试、冷却、规则失效预警开关 ruleHealthAlerts）和各渠道状态；不返回任何密钥', properties: { channels: { type: 'object' } } },
   NotificationUpdate: { type: 'object', description: '局部更新：省略的字段保持原值，空字符串清除密钥；headers 整体替换', properties: { channels: { type: 'object', properties: { bark: { type: 'object' }, webhook: { type: 'object' }, ntfy: { type: 'object' }, telegram: { type: 'object' } } } } },
@@ -116,6 +119,20 @@ const schemas: Record<string, Schema> = {
   BundlePayload: object({ bundle: ref('Bundle'), bundleUrl: str({ format: 'uri', description: '带密钥的聚合 RSS 地址；把 .xml 换成 .atom 或 .json 得到 Atom / JSON Feed' }) }, ['bundle', 'bundleUrl']),
   FeedDetail: { allOf: [ref('FeedPayload'), ref('OutputStatus'), object({ items: array(ref('FeedItem')) }, ['items'])] },
   FetchLogPage: object({ logs: array({ type: 'object' }), nextCursor: nullable(str()), retentionDays: int() }, ['logs', 'nextCursor', 'retentionDays']),
+  NetworkProfileInput: object({
+    name: str({ minLength: 1, maxLength: NETWORK_LIMITS.name }),
+    proxyUrl: nullable(str({ description: 'http://、https:// 或 socks5:// 加主机和端口；null 或空表示不使用代理。代理地址受内网拦截，需管理员加入 allowedHosts 才能指向内网', examples: ['socks5://proxy.example.com:1080'] })),
+    proxyUsername: nullable(str({ maxLength: NETWORK_LIMITS.proxyUser, description: '修改时省略表示保留已保存的认证，null 表示移除；更改代理地址时必须重新填写' })),
+    proxyPassword: nullable(str({ maxLength: NETWORK_LIMITS.proxyUser })),
+    userAgent: nullable(str({ maxLength: NETWORK_LIMITS.userAgent })),
+    referer: nullable(str({ format: 'uri', maxLength: NETWORK_LIMITS.referer })),
+    headers: array(object({ name: str({ maxLength: NETWORK_LIMITS.headerName }), value: str({ maxLength: NETWORK_LIMITS.headerValue, description: '修改时省略表示保留已保存的值' }) }, ['name']), { maxItems: NETWORK_LIMITS.headers, description: '只发往订阅网址所在网站及其子域名。禁止 Host、Cookie、Cookie2、Set-Cookie、Connection、Keep-Alive、Transfer-Encoding、TE、Trailer、Upgrade、Content-Length、Content-Encoding、Expect、HTTP2-Settings、Accept-Encoding、User-Agent、Referer，以及 Proxy-*、Sec-*、X-FeedLantern* 开头的请求头' }),
+  }, ['name'], { description: '至少设置代理、User-Agent、Referer 或一个请求头' }),
+  NetworkProfileSummary: object({
+    id: str(), name: str(),
+    proxy: nullable(object({ type: str({ enum: ['http', 'https', 'socks5'] }), host: str(), port: int(), url: str(), authenticated: bool }, ['type', 'host', 'port', 'url', 'authenticated'])),
+    userAgent: nullable(str()), referer: nullable(str()), headerNames: array(str()), feedCount: int(), updatedAt: dateTime,
+  }, ['id', 'name', 'proxy', 'userAgent', 'referer', 'headerNames', 'feedCount', 'updatedAt'], { description: '不含代理用户名、密码和请求头的值' }),
   CredentialInput: object({ name: str({ minLength: 1 }), url: str({ format: 'uri' }), format: str({ enum: ['header', 'json'] }), value: { description: 'Cookie 请求头文本或 Cookie JSON' } }, ['name', 'url', 'format', 'value']),
   CredentialSummary: object({ id: str(), name: str(), url: str(), format: str({ enum: ['header', 'json'] }), domains: array(str()), count: int(), updatedAt: dateTime, expiresAt: nullable(dateTime) }, ['id', 'name', 'url', 'format', 'domains', 'count', 'updatedAt', 'expiresAt']),
   BarkSettings: object({
@@ -179,6 +196,11 @@ const operations: Operation[] = [
   { method: 'POST', path: '/api/notifications/test', tag: 'notifications', summary: '向一个渠道发送测试通知（不保存）', workspace: true, body: object({ channel: str({ enum: ['bark', 'webhook', 'ntfy', 'telegram'] }) }, ['channel'], { additionalProperties: true }), response: ok },
   { method: 'POST', path: '/api/notifications/bark/test', tag: 'notifications', summary: '发送个人测试通知', workspace: true, body: ref('BarkSettings'), response: ok },
   // Credentials
+  { method: 'GET', path: '/api/network-profiles', tag: 'network-profiles', summary: '列出网络配置（不含密钥）', workspace: true, response: array(ref('NetworkProfileSummary')) },
+  { method: 'POST', path: '/api/network-profiles', tag: 'network-profiles', summary: '添加网络配置', description: '代理密码和请求头的值加密保存，之后不再返回。', workspace: true, body: ref('NetworkProfileInput'), response: ref('NetworkProfileSummary') },
+  { method: 'PUT', path: '/api/network-profiles/:id', tag: 'network-profiles', summary: '修改网络配置', description: '省略的密钥保持原值；下一次抓取起生效。', workspace: true, body: ref('NetworkProfileInput'), response: ref('NetworkProfileSummary') },
+  { method: 'DELETE', path: '/api/network-profiles/:id', tag: 'network-profiles', summary: '删除网络配置', description: '仍被订阅引用时返回 409。', workspace: true, response: ok },
+  { method: 'POST', path: '/api/network-profiles/:id/test', tag: 'network-profiles', summary: '用网络配置测试连接', description: '用这组配置对网址发一次 GET（不跟随重定向），返回目标的 HTTP 状态；代理不可达或认证失败时返回 400 和原因。会发出网络请求，需要 write 令牌。', workspace: true, body: object({ url: str({ format: 'uri' }) }, ['url']), response: object({ ok: { const: true }, status: int() }, ['ok', 'status']) },
   { method: 'GET', path: '/api/credentials', tag: 'credentials', summary: '列出 Cookie 凭据（不含明文）', workspace: true, response: array(ref('CredentialSummary')) },
   { method: 'POST', path: '/api/credentials', tag: 'credentials', summary: '添加 Cookie 凭据', workspace: true, body: ref('CredentialInput'), response: ref('CredentialSummary') },
   { method: 'PUT', path: '/api/credentials/:id', tag: 'credentials', summary: '更新 Cookie 凭据', workspace: true, body: ref('CredentialInput'), response: ref('CredentialSummary') },
@@ -207,7 +229,7 @@ const operations: Operation[] = [
     response: object({ defaultProvider: providerId, providers: array(object({ id: providerId, label: str(), configured: bool }, ['id', 'label', 'configured'])) }, ['defaultProvider', 'providers']) },
   { method: 'POST', path: '/api/feeds/:id/translation/retry', tag: 'feeds', summary: '重试失败的翻译', workspace: true, response: ref('FeedPayload') },
   { method: 'POST', path: '/api/feeds/:id/output-preview', tag: 'feeds', summary: '按未保存的过滤和条数预览输出', description: '不修改订阅；仍是 POST，因此需要 write 令牌。', workspace: true, body: object({ itemFilter: nullable(ref('ItemFilter')), outputLimit: int({ minimum: 10, maximum: 500 }) }), response: ref('OutputStatus') },
-  { method: 'POST', path: '/api/rss/preview', tag: 'feeds', summary: '预览 RSS 源的前 3 条', workspace: true, body: object({ url: str({ format: 'uri' }) }, ['url']), response: object({ title: str(), items: array(ref('ExtractedItem')) }) },
+  { method: 'POST', path: '/api/rss/preview', tag: 'feeds', summary: '预览 RSS 源的前 3 条', workspace: true, body: object({ url: str({ format: 'uri' }), networkProfileId }, ['url']), response: object({ title: str(), items: array(ref('ExtractedItem')) }) },
   // Bundles
   { method: 'GET', path: '/api/bundles', tag: 'bundles', summary: '列出聚合订阅', workspace: true, response: array(ref('BundlePayload')) },
   { method: 'POST', path: '/api/bundles', tag: 'bundles', summary: '创建聚合订阅', description: '把同一账号的多个订阅合并成一个地址；只读取已存储的条目，不触发抓取。每个账号最多 200 个。', workspace: true, body: ref('BundleInput'), response: ref('BundlePayload') },
@@ -219,7 +241,7 @@ const operations: Operation[] = [
   // Import jobs
   { method: 'GET', path: '/api/import-jobs', tag: 'import-jobs', summary: '列出批量添加任务', workspace: true, response: array(ref('ImportJob')) },
   { method: 'POST', path: '/api/import-jobs', tag: 'import-jobs', summary: '创建批量添加任务', workspace: true, body: object({
-    entries: array(object({ url: str({ format: 'uri' }), credentialId: nullable(str()) }, ['url']), { minItems: 1, maxItems: 100 }),
+    entries: array(object({ url: str({ format: 'uri' }), credentialId: nullable(str()), networkProfileId }, ['url']), { minItems: 1, maxItems: 100 }),
     intervalMinutes: int({ minimum: 5, maximum: 1440, default: 60 }), sourceType: str({ enum: ['website', 'rss'] }), translationMode: str({ enum: ['translated', 'bilingual'], description: '旧名 chinese 仍被接受' }), targetLanguage, translationProvider,
   }, ['entries']), response: ref('ImportJob') },
   { method: 'POST', path: '/api/import-jobs/:id/:action', tag: 'import-jobs', summary: '取消、重试或确认任务中的网址', description: 'confirm 需要 entryId 和完整 input，返回 FeedPayload；cancel/retry 返回 ImportJob。', workspace: true,
@@ -240,7 +262,7 @@ const operations: Operation[] = [
   { method: 'GET', path: '/api/backups/config', tag: 'backups', summary: '导出轻量配置', admin: true, response: { type: 'object' } },
   { method: 'POST', path: '/api/backups/config', tag: 'backups', summary: '预览或确认导入轻量配置', admin: true, bodyLimit: '10 MB', body: object({ archive: { type: 'object' }, confirm: bool }, ['archive']), response: { type: 'object' } },
   // Browser
-  { method: 'POST', path: '/api/browser', tag: 'browser', summary: '打开网页编辑会话', workspace: true, body: object({ url: str({ format: 'uri' }), credentialId: nullable(str()), waitMs: int({ minimum: 0, maximum: 10000 }), waitForSelector: str() }, ['url']), response: ref('ScreenFrame') },
+  { method: 'POST', path: '/api/browser', tag: 'browser', summary: '打开网页编辑会话', workspace: true, body: object({ url: str({ format: 'uri' }), credentialId: nullable(str()), networkProfileId, waitMs: int({ minimum: 0, maximum: 10000 }), waitForSelector: str() }, ['url']), response: ref('ScreenFrame') },
   { method: 'GET', path: '/api/browser/:id', tag: 'browser', summary: '重新截取第一段画面', workspace: true, response: ref('ScreenFrame') },
   { method: 'DELETE', path: '/api/browser/:id', tag: 'browser', summary: '关闭编辑会话', workspace: true, response: ok },
   { method: 'POST', path: '/api/browser/:id/scroll', tag: 'browser', summary: '滚动页面内部区域', workspace: true, body: object({ deltaY: { type: 'number' }, x: { type: 'number' }, y: { type: 'number' } }, ['deltaY']), response: ref('ScreenFrame') },
@@ -316,7 +338,7 @@ export function buildOpenApi(origin: string, version: string): Record<string, un
       license: { name: 'MIT', identifier: 'MIT' },
     },
     servers: [{ url: origin }],
-    tags: ['auth', 'meta', 'tokens', 'users', 'notifications', 'credentials', 'feeds', 'bundles', 'import-jobs', 'settings', 'backups', 'browser'].map(name => ({ name })),
+    tags: ['auth', 'meta', 'tokens', 'users', 'notifications', 'credentials', 'network-profiles', 'feeds', 'bundles', 'import-jobs', 'settings', 'backups', 'browser'].map(name => ({ name })),
     paths,
     components: {
       schemas,

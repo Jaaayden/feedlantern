@@ -16,8 +16,10 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSy
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import type { CredentialSummary, ExtractedItem, Feed, FeedInput, FeedSettingsInput, FeedItem, ImportJob, ItemFilter, PaginationRules, RuleOrigins, SelectionRules } from '../shared/types.js';
+import type { CredentialSummary, ExtractedItem, Feed, FeedInput, FeedSettingsInput, FeedItem, ImportJob, ItemFilter, NetworkProfileSummary, PaginationRules, RuleOrigins, SelectionRules } from '../shared/types.js';
 import type { ServerConfig } from './config.js';
+import { proxyUrl } from '../shared/network-rules.js';
+import type { NetworkProfileValue } from './fetch-options.js';
 
 export interface CredentialValue {
   id?: string;
@@ -137,6 +139,7 @@ function rowToFeed(row: Record<string, unknown>): Feed {
     rules: parseJson<SelectionRules>(row.rules_json, { item: '', title: '', link: '' }),
     ruleOrigins: parseJson<RuleOrigins | undefined>(row.rule_origins_json, undefined),
     credentialId: row.credential_id ? String(row.credential_id) : null,
+    networkProfileId: row.network_profile_id ? String(row.network_profile_id) : null,
     intervalMinutes: Number(row.interval_minutes),
     waitMs: Number(row.wait_ms),
     waitForSelector: row.wait_for_selector ? String(row.wait_for_selector) : undefined,
@@ -360,6 +363,32 @@ export class Store {
       const current = Number((this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
       this.db.exec(`BEGIN; ALTER TABLE feeds ADD COLUMN pagination_json TEXT; PRAGMA user_version=${Math.max(16, current)}; COMMIT;`);
     }
+    // Network profiles (proxy, User-Agent, Referer, headers). 17 is reserved for
+    // this migration; like 13–16 it checks for its own table and column, and
+    // every statement is idempotent.
+    const hasProfileTable = !!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='network_profiles'").get();
+    const hasProfileColumn = this.db.prepare('PRAGMA table_info(feeds)').all().some(column => column.name === 'network_profile_id');
+    if (!hasProfileTable || !hasProfileColumn) {
+      const current = Number((this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
+      this.db.exec(`BEGIN;
+        CREATE TABLE IF NOT EXISTS network_profiles (
+          id TEXT PRIMARY KEY,
+          owner_id TEXT NOT NULL,
+          name TEXT NOT NULL,
+          proxy_type TEXT CHECK (proxy_type IN ('http', 'https', 'socks5')),
+          proxy_host TEXT,
+          proxy_port INTEGER,
+          proxy_auth INTEGER NOT NULL DEFAULT 0 CHECK (proxy_auth IN (0, 1)),
+          user_agent TEXT,
+          referer TEXT,
+          header_names_json TEXT NOT NULL DEFAULT '[]',
+          encrypted_value TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS network_profiles_owner ON network_profiles(owner_id);
+        ${hasProfileColumn ? '' : 'ALTER TABLE feeds ADD COLUMN network_profile_id TEXT REFERENCES network_profiles(id) ON DELETE RESTRICT;'}
+        PRAGMA user_version=${Math.max(17, current)}; COMMIT;`);
+    }
     this.ruleHealth = new RuleHealth(this.db, () => this.getSettings(), this.history);
     this.migrateBark();
     this.ensureSetupToken();
@@ -490,7 +519,7 @@ export class Store {
       if (confirmation !== user.username) throw new AppError(400, '请输入目标用户名确认删除');
       if (user.role === 'admin' && user.enabled && !this.listUsers().some(u => u.id !== id && u.role === 'admin' && u.enabled)) throw new AppError(409, '必须保留至少一名启用的管理员');
       this.revokeUser(id);
-      for (const table of ['import_jobs', 'bundles', 'feeds', 'credentials']) this.db.prepare(`DELETE FROM ${table} WHERE owner_id=?`).run(id);
+      for (const table of ['import_jobs', 'bundles', 'feeds', 'credentials', 'network_profiles']) this.db.prepare(`DELETE FROM ${table} WHERE owner_id=?`).run(id);
       // The shared translation cache can contain this user's source fragments.
       this.db.prepare('DELETE FROM translation_cache').run();
       this.db.prepare('DELETE FROM user_notifications WHERE user_id=?').run(id);
@@ -556,7 +585,7 @@ export class Store {
     });
   }
 
-  owns(table: 'feeds' | 'credentials' | 'import_jobs' | 'bundles', id: string, userId: string): boolean {
+  owns(table: 'feeds' | 'credentials' | 'import_jobs' | 'bundles' | 'network_profiles', id: string, userId: string): boolean {
     return !!this.db.prepare(`SELECT 1 FROM ${table} WHERE id=? AND owner_id=?`).get(id, userId);
   }
 
@@ -728,8 +757,86 @@ export class Store {
     return Boolean(result.changes);
   }
 
+  /** Searchable, non-secret columns kept beside the encrypted profile. */
+  private static profileColumns(value: Omit<NetworkProfileValue, 'name'>): Record<string, string | number | null> {
+    return {
+      proxy_type: value.proxy?.type ?? null,
+      proxy_host: value.proxy?.host ?? null,
+      proxy_port: value.proxy?.port ?? null,
+      proxy_auth: value.proxy?.username !== undefined ? 1 : 0,
+      user_agent: value.userAgent ?? null,
+      referer: value.referer ?? null,
+      header_names_json: JSON.stringify(value.headers.map(header => header.name)),
+    };
+  }
+
+  private static profileSummary(row: Record<string, unknown>): NetworkProfileSummary {
+    const type = row.proxy_type as 'http' | 'https' | 'socks5' | null;
+    const proxy = type ? { type, host: String(row.proxy_host), port: Number(row.proxy_port) } : null;
+    return {
+      id: String(row.id),
+      name: String(row.name),
+      proxy: proxy ? { ...proxy, url: proxyUrl(proxy), authenticated: !!row.proxy_auth } : null,
+      userAgent: row.user_agent ? String(row.user_agent) : null,
+      referer: row.referer ? String(row.referer) : null,
+      headerNames: parseJson<string[]>(row.header_names_json, []),
+      feedCount: Number(row.feed_count ?? 0),
+      updatedAt: String(row.updated_at),
+    };
+  }
+
+  private writeProfile(id: string, ownerId: string, value: NetworkProfileValue, insert: boolean): void {
+    const { name, ...secret } = value;
+    const columns = { ...Store.profileColumns(secret), name, encrypted_value: encrypt(this.masterKey, JSON.stringify(secret)), updated_at: nowIso() };
+    const keys = Object.keys(columns) as Array<keyof typeof columns>;
+    if (insert) {
+      this.db.prepare(`INSERT INTO network_profiles(id, owner_id, ${keys.join(',')}) VALUES (?, ?, ${keys.map(() => '?').join(',')})`).run(id, ownerId, ...keys.map(key => columns[key]));
+    } else {
+      this.db.prepare(`UPDATE network_profiles SET ${keys.map(key => `${key}=?`).join(',')} WHERE id=?`).run(...keys.map(key => columns[key]), id);
+    }
+  }
+
+  createNetworkProfile(value: NetworkProfileValue, ownerId = 'admin'): NetworkProfileSummary {
+    const id = randomId('net');
+    this.writeProfile(id, ownerId, value, true);
+    return this.getNetworkProfileSummary(id)!;
+  }
+
+  updateNetworkProfile(id: string, value: NetworkProfileValue): NetworkProfileSummary | null {
+    if (!this.db.prepare('SELECT 1 FROM network_profiles WHERE id=?').get(id)) return null;
+    this.writeProfile(id, '', value, false);
+    return this.getNetworkProfileSummary(id);
+  }
+
+  /** The decrypted profile, for fetching only. Never send this to a client. */
+  getNetworkProfile(id: string): (NetworkProfileValue & { id: string; ownerId: string }) | null {
+    const row = this.db.prepare('SELECT id, owner_id, name, encrypted_value FROM network_profiles WHERE id=?').get(id) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    let secret: Omit<NetworkProfileValue, 'name'>;
+    try { secret = JSON.parse(decrypt(this.masterKey, String(row.encrypted_value))); } catch { throw new Error('network profile data is unreadable'); }
+    return { ...secret, headers: secret.headers ?? [], proxy: secret.proxy ?? null, name: String(row.name), id: String(row.id), ownerId: String(row.owner_id) };
+  }
+
+  getNetworkProfileSummary(id: string): NetworkProfileSummary | null {
+    const row = this.db.prepare('SELECT p.*, (SELECT COUNT(*) FROM feeds f WHERE f.network_profile_id=p.id) AS feed_count FROM network_profiles p WHERE p.id=?').get(id) as Record<string, unknown> | undefined;
+    return row ? Store.profileSummary(row) : null;
+  }
+
+  listNetworkProfiles(ownerId?: string): NetworkProfileSummary[] {
+    return (this.db.prepare('SELECT p.*, (SELECT COUNT(*) FROM feeds f WHERE f.network_profile_id=p.id) AS feed_count FROM network_profiles p WHERE (? IS NULL OR p.owner_id=?) ORDER BY p.updated_at DESC').all(ownerId ?? null, ownerId ?? null) as Array<Record<string, unknown>>).map(row => Store.profileSummary(row));
+  }
+
+  isNetworkProfileReferenced(id: string): boolean {
+    return Boolean(this.db.prepare('SELECT 1 FROM feeds WHERE network_profile_id=? LIMIT 1').get(id));
+  }
+
+  deleteNetworkProfile(id: string): boolean {
+    return Boolean(this.db.prepare('DELETE FROM network_profiles WHERE id=?').run(id).changes);
+  }
+
   createFeed(input: FeedInput, ownerId = 'admin'): { feed: Feed; token: string } {
     if (input.credentialId && !this.owns('credentials', input.credentialId, ownerId)) throw new Error('Cookie 凭据不存在');
+    if (input.networkProfileId && !this.owns('network_profiles', input.networkProfileId, ownerId)) throw new AppError(400, '网络配置不存在');
     const id = randomId('feed');
     const token = randomBytes(32).toString('base64url');
     const timestamp = nowIso();
@@ -742,6 +849,7 @@ export class Store {
       .run(id, input.name, input.url, JSON.stringify(input.rules), input.ruleOrigins ? JSON.stringify(input.ruleOrigins) : null, input.credentialId, input.intervalMinutes, input.waitMs, input.waitForSelector ?? null, timestamp, nextFetchAt, encrypt(this.masterKey, token), hashToken(token),
         input.name, input.sourceType ?? 'website', input.translationMode ?? (input.sourceType === 'rss' ? 'bilingual' : 'original'), ownerId, input.targetLanguage ?? 'zh-CN', input.translationProvider ?? null);
     if (input.pagination) this.db.prepare('UPDATE feeds SET pagination_json=? WHERE id=?').run(JSON.stringify(input.pagination), id);
+    if (input.networkProfileId) this.db.prepare('UPDATE feeds SET network_profile_id=? WHERE id=?').run(input.networkProfileId, id);
     return { feed: this.getFeed(id)!, token };
   }
 
@@ -749,7 +857,9 @@ export class Store {
     const existing = this.getFeed(id);
     if (!existing) return null;
     if (input.credentialId && !this.owns('credentials', input.credentialId, existing.ownerId!)) throw new Error('Cookie 凭据不存在');
+    if (input.networkProfileId && !this.owns('network_profiles', input.networkProfileId, existing.ownerId!)) throw new AppError(400, '网络配置不存在');
     this.translations.invalidate(id);
+    if (input.networkProfileId !== undefined) this.db.prepare('UPDATE feeds SET network_profile_id=? WHERE id=?').run(input.networkProfileId, id);
     if ((existing.sourceType === 'rss' || input.sourceType === 'rss') && (existing.url !== input.url || existing.sourceType !== (input.sourceType ?? 'website'))) {
       this.db.prepare('DELETE FROM feed_items WHERE feed_id=?').run(id);
       this.translations.resetSource(id);
@@ -787,6 +897,10 @@ export class Store {
     if (!feed) return null;
     if (input.translationMode && input.translationMode !== feed.translationMode) this.translations.invalidate(id);
     if (input.translationMode) this.db.prepare('UPDATE feeds SET translation_mode=? WHERE id=?').run(input.translationMode, id);
+    if (input.networkProfileId !== undefined) {
+      if (input.networkProfileId && !this.owns('network_profiles', input.networkProfileId, feed.ownerId!)) throw new AppError(400, '网络配置不存在');
+      this.db.prepare('UPDATE feeds SET network_profile_id=? WHERE id=?').run(input.networkProfileId, id);
+    }
     this.setTranslationTarget(feed, input);
     const title = input.channelTitle ?? feed.name;
     const interval = input.intervalMinutes ?? feed.intervalMinutes;
@@ -804,14 +918,14 @@ export class Store {
 
   exportTables(): Tables {
     const tables: Record<string, unknown> = {};
-    for (const table of ['users', 'user_notifications', 'credentials', 'feeds', 'feed_items', 'settings', 'rss_sources', 'translations', 'translation_cache', 'bundles', 'bundle_feeds']) {
+    for (const table of ['users', 'user_notifications', 'credentials', 'network_profiles', 'feeds', 'feed_items', 'settings', 'rss_sources', 'translations', 'translation_cache', 'bundles', 'bundle_feeds']) {
       // The cache is pruned hourly, so it can briefly exceed the limit the backup format allows.
       const rows = table === 'translation_cache'
         ? this.db.prepare('SELECT * FROM translation_cache ORDER BY touched_at DESC LIMIT ?').all(TRANSLATION_CACHE_LIMIT)
         : this.db.prepare(`SELECT * FROM ${table}`).all();
       tables[table] = rows.map(row => {
         if (table === 'user_notifications') return { ...row, value: decrypt(this.masterKey, String(row.value)) };
-        if (table === 'credentials') return { ...row, encrypted_value: decrypt(this.masterKey, String(row.encrypted_value)) };
+        if (table === 'credentials' || table === 'network_profiles') return { ...row, encrypted_value: decrypt(this.masterKey, String(row.encrypted_value)) };
         if (table === 'feeds' || table === 'bundles') return { ...row, token_ciphertext: decrypt(this.masterKey, String(row.token_ciphertext)) };
         if (table === 'settings' && row.key === 'application') return { ...row, value: decrypt(this.masterKey, String(row.value)) };
         return { ...row };
@@ -826,12 +940,13 @@ export class Store {
     this.userControllers.clear();
     this.transaction(() => {
       // Like sessions, access tokens are not part of a backup; a restore revokes them all.
-      for (const table of ['sessions', 'api_tokens', 'import_jobs', 'bundle_feeds', 'bundles', 'translations', 'rss_sources', 'translation_cache', 'feed_items', 'feeds', 'credentials', 'user_notifications', 'users', 'settings']) this.db.exec(`DELETE FROM ${table}`);
-      for (const table of ['users', 'user_notifications', 'credentials', 'feeds', 'feed_items', 'settings', 'rss_sources', 'translations', 'translation_cache', 'bundles', 'bundle_feeds'] as const) {
+      for (const table of ['sessions', 'api_tokens', 'import_jobs', 'bundle_feeds', 'bundles', 'translations', 'rss_sources', 'translation_cache', 'feed_items', 'feeds', 'credentials', 'network_profiles', 'user_notifications', 'users', 'settings']) this.db.exec(`DELETE FROM ${table}`);
+      for (const table of ['users', 'user_notifications', 'credentials', 'network_profiles', 'feeds', 'feed_items', 'settings', 'rss_sources', 'translations', 'translation_cache', 'bundles', 'bundle_feeds'] as const) {
         for (const value of tables[table] ?? []) {
           const row: Record<string, string | number | null> = { ...value };
           if (table === 'user_notifications') row.value = encrypt(this.masterKey, String(row.value));
           if (table === 'credentials') row.encrypted_value = encrypt(this.masterKey, String(row.encrypted_value));
+          if (table === 'network_profiles') Object.assign(row, Store.profileColumns(JSON.parse(String(row.encrypted_value)) as NetworkProfileValue), { encrypted_value: encrypt(this.masterKey, String(row.encrypted_value)) });
           if (table === 'settings' && row.key === 'application') row.value = encrypt(this.masterKey, JSON.stringify(applicationSettingsSchema.parse(JSON.parse(String(row.value)))));
           if (table === 'bundles') { row.token_hash = hashToken(String(row.token_ciphertext)); row.token_ciphertext = encrypt(this.masterKey, String(row.token_ciphertext)); }
           if (table === 'feeds') { row.name = String(row.channel_title ?? '').trim() || row.name; row.channel_title = row.name; row.token_hash = hashToken(String(row.token_ciphertext)); row.token_ciphertext = encrypt(this.masterKey, String(row.token_ciphertext)); }
