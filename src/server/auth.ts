@@ -1,9 +1,17 @@
 import { randomBytes } from 'node:crypto';
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import type { ApiTokenScope, AuthState } from '../shared/types.js';
+import { errorCodeForStatus, type ApiErrorCode, type ApiTokenScope, type AuthState } from '../shared/types.js';
 import type { ServerConfig } from './config.js';
 import { Store, verifyPassword } from './store.js';
-import { errorCode, instanceLocale, LocalizedError, textOf, type LocalizedText, type SimpleErrorKey } from './i18n.js';
+import { instanceLocale, LocalizedError, textOf, type LocalizedText, type SimpleErrorKey } from './i18n.js';
+import type { MessageKey } from '../shared/i18n.js';
+
+/** Messages that name a more specific `code` than their HTTP status. */
+const specificCodes: Partial<Record<MessageKey, ApiErrorCode>> = {
+  'error.readOnlyToken': 'token_read_only',
+  'error.tokenRouteForbidden': 'token_not_allowed',
+};
+export const specificErrorCode = (key: MessageKey): ApiErrorCode | undefined => specificCodes[key];
 
 export const SESSION_COOKIE = 'feedlantern_session';
 
@@ -13,12 +21,17 @@ export const SESSION_COOKIE = 'feedlantern_session';
  */
 export class AppError extends LocalizedError {
   readonly statusCode: number;
-  readonly code: string;
-  constructor(statusCode: number, text: LocalizedText | SimpleErrorKey) {
+  /** Stable, documented reason for scripts, the CLI and MCP (see `API_ERROR_CODES`). */
+  readonly code: ApiErrorCode;
+  /**
+   * `code` defaults to the reason implied by the message (for example
+   * `token_read_only`), else to the category of the HTTP status.
+   */
+  constructor(statusCode: number, text: LocalizedText | SimpleErrorKey, code?: ApiErrorCode) {
     super(textOf(text));
     this.name = 'AppError';
     this.statusCode = statusCode;
-    this.code = errorCode(this.text);
+    this.code = code ?? specificErrorCode(this.text.key) ?? errorCodeForStatus(statusCode);
   }
 }
 

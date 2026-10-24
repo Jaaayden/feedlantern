@@ -1656,6 +1656,37 @@ const messages = {
   'translation.targetLanguageLong': 'Translation target language',
   'users.credentialItems': { one: '{count} credential', other: '{count} credentials' },
   'network.profile': 'Network profile',
+  // Sources that answer with something other than a feed
+  'source.htmlPage': 'The source returned a web page instead of RSS/Atom. It may be the site\'s bot check or sign-in page, which FeedLantern doesn\'t try to get past; make sure the address is a feed address.',
+  'source.htmlPageStatus': 'The source returned a web page instead of RSS/Atom (HTTP {status}). It may be the site\'s bot check or sign-in page, which FeedLantern doesn\'t try to get past; make sure the address is a feed address.',
+  'source.challengePage': 'The source returned a bot check instead of RSS/Atom (the page contains “{marker}”). FeedLantern doesn\'t try to get past the site\'s checks; use the site\'s official API or try again later.',
+  'source.challengePageStatus': 'The source returned a bot check instead of RSS/Atom (HTTP {status}, the page contains “{marker}”). FeedLantern doesn\'t try to get past the site\'s checks; use the site\'s official API or try again later.',
+  'source.unexpectedStatus': 'The source returned HTTP {status}, not a normal feed response (expected HTTP 200).',
+  'source.status203': 'The source returned HTTP 203, not a normal feed response (expected HTTP 200): a proxy or the site\'s verification may have replaced the content.',
+  'source.challengeStatus': 'Couldn\'t fetch RSS (HTTP {status}): the source returned a bot check (the page contains “{marker}”). FeedLantern doesn\'t try to get past it.',
+
+  // PubMed through NCBI E-utilities
+  'ncbi.rateLimited': 'Too many requests to NCBI E-utilities (HTTP 429). Try again later; an administrator can add an NCBI API key in Settings → PubMed (NCBI) to raise the limit.',
+  'ncbi.invalidKey': 'NCBI rejected the API key. An administrator should check or remove it in Settings → PubMed (NCBI).',
+  'ncbi.httpError': 'The NCBI E-utilities request failed (HTTP {status}). Try again later.',
+  'ncbi.htmlPage': 'NCBI E-utilities returned a web page instead of data (HTTP {status}). Try again later.',
+  'ncbi.serviceError': 'NCBI E-utilities returned an error: {detail}',
+  'ncbi.unreadable': 'Couldn\'t read the data NCBI E-utilities returned. Try again later.',
+  'ncbi.journalNotFound': 'PubMed has no journal with NLM ID {nlmId}. Check the feed address.',
+  'error.ncbiApiKeyInvalid': 'The NCBI API key can only contain letters and digits.',
+  'error.ncbiEmailInvalid': 'The NCBI contact email isn\'t a valid address.',
+  'error.ncbiSettingsInvalid': 'Invalid NCBI settings.',
+  'error.tokenOnly': 'This endpoint only works with an access token. In the web app, see Settings → Access tokens.',
+  'pubmed.viaEutils': 'Fetched via NCBI E-utilities',
+  'pubmed.eutilsHint': 'PubMed journal RSS addresses are read through NCBI\'s official E-utilities API instead (newest articles, with abstracts); the items match the original RSS.',
+
+  // PubMed settings
+  'appSettings.pubmed.title': 'PubMed (NCBI)',
+  'appSettings.pubmed.intro': 'PubMed journal feeds are fetched through NCBI\'s official E-utilities API. These settings apply to every user\'s PubMed feeds.',
+  'appSettings.pubmed.save': 'Save PubMed settings',
+  'appSettings.ncbiKey': 'NCBI API key (optional)',
+  'appSettings.ncbiEmail': 'Contact email (optional)',
+  'appSettings.ncbiHint': 'NCBI asks programs to name their tool in requests (FeedLantern always sends tool=feedlantern) and recommends a contact email so they can reach you if something goes wrong; leave it empty to send none. Without an API key, all PubMed feeds share a limit of 3 requests per second; with one, it rises to 10. You can get a key for free in your NCBI account settings. It\'s stored encrypted and never shown on this page or in configuration exports.',
   // @end
 } as const;
 

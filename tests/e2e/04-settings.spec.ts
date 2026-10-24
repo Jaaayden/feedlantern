@@ -9,7 +9,7 @@ test('网页设置保存、配置导出导入及手机显示', async ({ page }) 
     const nav = page.getByRole('navigation', { name: '设置分组' });
     const open = async (label: string, path: string) => { await nav.getByRole('button', { name: label, exact: true }).click(); await expect(page).toHaveURL(new RegExp(`#/settings/${path}$`)); };
     // One group per page: the instance groups are separate entries, not one long form.
-    await expect(nav.getByRole('button')).toHaveText(['日志与显示', '翻译服务', '服务器与网络', '通知', 'Cookie 凭据', '网络配置', '账号与密码', '访问令牌', '备份与迁移', '关于']);
+    await expect(nav.getByRole('button')).toHaveText(['日志与显示', '翻译服务', '服务器与网络', 'PubMed（NCBI）', '通知', 'Cookie 凭据', '网络配置', '账号与密码', '访问令牌', '备份与迁移', '关于']);
     await expect(page.getByRole('form', { name: '日志与显示' })).toBeVisible();
     await expect(page.getByRole('region', { name: '通知' })).toHaveCount(0);
     await open('通知', 'notifications');

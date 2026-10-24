@@ -7,6 +7,7 @@ import { sameAddress } from './format';
 import { NetworkProfileSelect, useNetworkProfiles } from './NetworkProfiles';
 import { ArticleFrame } from './ItemList';
 import { t } from './i18n';
+import { pubmedJournalSource } from '../shared/pubmed';
 
 export function RssEditor({ initial, existing = [], saved, cancel }: { initial?: Feed; existing?: Feed[]; saved: (id: string) => void; cancel: () => void }) {
   const [url, setUrl] = useState(initial?.url ?? '');
@@ -38,6 +39,7 @@ export function RssEditor({ initial, existing = [], saved, cancel }: { initial?:
     <div className="notice">{t('rssEditor.notice')}</div>
     <form className="panel settings-form rss-editor-form" onSubmit={submit}>
       <label className="field"><span>{t('rssEditor.url')}</span><input type="url" required value={url} disabled={busy} onChange={e => { setUrl(e.target.value); setPreview(undefined); }} onKeyDown={e => { if (e.key === 'Enter' && url && preview?.url !== `${networkProfileId}\n${url}`) { e.preventDefault(); void inspect(); } }} placeholder="https://example.com/feed.xml" /></label>
+      {pubmedJournalSource(url) && <p className="hint" data-testid="pubmed-eutils-hint">{t('pubmed.eutilsHint')}</p>}
       <NetworkProfileSelect value={networkProfileId} disabled={busy} onChange={id => { setNetworkProfileId(id); setPreview(undefined); }} profiles={profiles} />
       <button type="button" className="button" disabled={busy || !url} onClick={() => void inspect()}>{busy ? t('common.working') : t('rssEditor.preview')}</button>
       <label className="field"><span>{t('label.feedName')}</span><input required maxLength={200} value={name} disabled={busy} onChange={e => setName(e.target.value)} /></label>

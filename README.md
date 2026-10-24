@@ -82,6 +82,7 @@ Works with ordinary DOM lists, dynamically rendered pages and pages behind a coo
 | Use FeedLantern day to day | [User guide](doc/en/user-guide.md) |
 | Back up, migrate, upgrade, manage database size | [Backup & migration](doc/backup-and-migration.md) · [Maintenance](doc/maintenance.md) (Chinese) |
 | Fix a problem | [Troubleshooting](doc/troubleshooting.md) (Chinese) |
+| Manage it from scripts or AI agents | [Agent CLI & MCP](doc/agent.md) (Chinese) |
 | Contribute | [Development & API](doc/development.md) (Chinese) · [CONTRIBUTING](CONTRIBUTING.md) · [SECURITY](SECURITY.md) |
 
 The full index is in the [documentation index](doc/README.md); changes are in the [CHANGELOG](CHANGELOG.md).

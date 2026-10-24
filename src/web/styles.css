@@ -743,6 +743,7 @@ section.feed-collection > p.muted { padding: 30px; text-align: center; border: 1
 .detail-source { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 13px; color: var(--muted); }
 .detail-source > svg { flex: none; }
 .detail-source a { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: 12.5px; }
+.detail-source .source-via { flex: none; }
 .detail-source a:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
 .copy-row {
   display: flex; gap: 6px; padding: 5px; align-items: center;

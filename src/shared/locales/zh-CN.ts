@@ -1653,6 +1653,37 @@ const messages: LocaleMessages = {
   'translation.targetLanguageLong': '翻译目标语言',
   'users.credentialItems': '{count} 个凭据',
   'network.profile': '网络配置',
+  // Sources that answer with something other than a feed
+  'source.htmlPage': '来源返回的是网页而不是 RSS/Atom。可能是对方的反爬验证页或登录页，FeedLantern 不会尝试绕过；请确认地址是订阅源地址。',
+  'source.htmlPageStatus': '来源返回的是网页而不是 RSS/Atom（HTTP {status}）。可能是对方的反爬验证页或登录页，FeedLantern 不会尝试绕过；请确认地址是订阅源地址。',
+  'source.challengePage': '来源返回的是反爬验证页而不是 RSS/Atom（页面含 {marker} 标记）。FeedLantern 不会尝试绕过对方的验证，请改用对方提供的官方接口或稍后重试。',
+  'source.challengePageStatus': '来源返回的是反爬验证页而不是 RSS/Atom（HTTP {status}，页面含 {marker} 标记）。FeedLantern 不会尝试绕过对方的验证，请改用对方提供的官方接口或稍后重试。',
+  'source.unexpectedStatus': '来源返回 HTTP {status}，不是正常的订阅响应（应为 HTTP 200）。',
+  'source.status203': '来源返回 HTTP 203，不是正常的订阅响应（应为 HTTP 200）：内容可能被中间代理或对方的验证机制替换。',
+  'source.challengeStatus': 'RSS 获取失败（HTTP {status}）：来源返回了反爬验证页（页面含 {marker} 标记），FeedLantern 不会尝试绕过。',
+
+  // PubMed through NCBI E-utilities
+  'ncbi.rateLimited': 'NCBI E-utilities 请求过于频繁（HTTP 429），请稍后重试；管理员可以在“设置 → PubMed（NCBI）”中填写 NCBI API Key 提高限额。',
+  'ncbi.invalidKey': 'NCBI 拒绝了 API Key，请管理员在“设置 → PubMed（NCBI）”中检查或删除它。',
+  'ncbi.httpError': 'NCBI E-utilities 请求失败（HTTP {status}），请稍后重试。',
+  'ncbi.htmlPage': 'NCBI E-utilities 返回的是网页而不是数据（HTTP {status}），请稍后重试。',
+  'ncbi.serviceError': 'NCBI E-utilities 返回错误：{detail}',
+  'ncbi.unreadable': 'NCBI E-utilities 返回的数据无法解析，请稍后重试。',
+  'ncbi.journalNotFound': 'PubMed 中没有找到 NLM ID 为 {nlmId} 的期刊，请检查订阅地址。',
+  'error.ncbiApiKeyInvalid': 'NCBI API Key 只能包含字母和数字',
+  'error.ncbiEmailInvalid': 'NCBI 联系邮箱格式无效',
+  'error.ncbiSettingsInvalid': 'NCBI 设置无效',
+  'error.tokenOnly': '此接口只能用访问令牌调用；网页中请在“设置 → 访问令牌”查看',
+  'pubmed.viaEutils': '通过 NCBI E-utilities 获取',
+  'pubmed.eutilsHint': 'PubMed 期刊 RSS 地址会改用 NCBI 官方的 E-utilities 接口读取最新文章（含摘要），条目与原 RSS 保持一致。',
+
+  // PubMed settings
+  'appSettings.pubmed.title': 'PubMed（NCBI）',
+  'appSettings.pubmed.intro': 'PubMed 期刊订阅通过 NCBI 官方的 E-utilities 接口获取。这里的设置对所有用户的 PubMed 订阅生效。',
+  'appSettings.pubmed.save': '保存 PubMed 设置',
+  'appSettings.ncbiKey': 'NCBI API Key（可选）',
+  'appSettings.ncbiEmail': '联系邮箱（可选）',
+  'appSettings.ncbiHint': 'NCBI 要求程序在请求中注明工具名（FeedLantern 固定发送 tool=feedlantern），并建议附上联系邮箱，以便在请求异常时联系你；留空则不发送邮箱。不填 API Key 时，所有 PubMed 订阅共用每秒最多 3 个请求的额度，填写后提高到每秒 10 个；API Key 可在 NCBI 账号设置中免费申请，加密保存，不会在页面或轻量配置文件中显示。',
   // @end
 };
 

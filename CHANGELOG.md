@@ -2,13 +2,36 @@
 
 ## 未发布
 
+### PubMed 期刊订阅改用 NCBI E-utilities
+
+- PubMed 的期刊 RSS 地址（`https://pubmed.ncbi.nlm.nih.gov/rss/journals/<NLM ID>/…`）现在对程序访问一律返回工作量证明验证页，原先这类订阅全部失败。FeedLantern 不会尝试绕过这类验证，而是改用 NCBI 官方的 E-utilities 读取同一期刊：esearch 按 NLM ID 检索、按出版日期取最新文章（条数与地址中的 `limit` 一致，默认 15，最多 100），efetch 取标题、作者、期刊、发表日期和摘要，摘要放进正文供翻译。原地址本身不再请求。
+- 已有的期刊订阅无需操作：条目身份沿用原 RSS 的 `pubmed:<PMID>`，已存文章和译文继续使用，不会重复推送；发表时间与原 RSS 相同。
+- 遵守 NCBI 使用规则：所有 PubMed 请求共用一个队列，不带 API Key 时每秒最多 3 个、带 Key 时 10 个，批量刷新依次排队；每个请求带 `tool=feedlantern`，填写后带联系邮箱；429 时整条队列暂停后重试一次。
+- 新增“设置 → PubMed（NCBI）”：可选的 NCBI API Key（加密保存，不回显，轻量配置导出不含）和联系邮箱。
+- 订阅面板的来源地址旁标出“通过 NCBI E-utilities 获取”；新建 RSS 翻译订阅时粘贴期刊地址会提示，预览照常可用。E-utilities 请求同样经过网络安全策略、DNS over HTTPS 和订阅的网络配置代理。
+- 检索式订阅（`/rss/search/…`）仍直接抓取。
+- 接口：应用设置新增 `ncbi`（`apiKey` 只写、`apiKeyConfigured`、`email`）。
+
+### 非订阅源响应的准确报错
+
+- RSS 来源返回网页（`Content-Type: text/html`，或正文以 `<!doctype html` / `<html` 开头）或 200 以外的 2xx 状态时，不再误报“RSS XML 无效或包含不支持的实体声明”，而是提示“来源返回的是网页而不是 RSS/Atom（HTTP 203）……FeedLantern 不会尝试绕过”。能识别出验证页（captcha、challenge、cookies-required 等）时注明标记。抓取日志、订阅列表的错误原因、告警和新建预览都使用新文案。
+- 被标成 `text/html` 的合法 RSS 仍正常解析；带外部实体或 DTD 的 XML 仍按原逻辑拒绝。
+
+### Agent CLI 与 MCP server
+
+- 新增 `feedlantern` 命令行（仓库内 workspace 包 `packages/cli`，npm 包名 `feedlantern-cli`），用访问令牌管理实例：`whoami`、`health`、`feeds list/get/create/update/delete/pause/resume/refresh/items/logs`、`detect`（自动识别并给出可直接创建的建议）、`preview`（按规则预览，报告各字段命中数和重复链接）、`rss preview`、`bundles`、`bulk`、`imports`、`tokens logs`，以及调用任意开放接口的 `api`。默认输出 JSON，`--pretty` / `--table` 给人看；退出码区分用法、鉴权、请求被拒、服务端和网络错误。
+- 所有写操作支持 `--dry-run`（只打印将要发出的请求）；删除类操作必须加 `--yes`。地址和令牌来自 `FEEDLANTERN_URL` / `FEEDLANTERN_TOKEN` 或 `feedlantern login` 写入的配置文件（权限 0600，支持多个档案）。
+- `feedlantern mcp` 以 stdio 方式提供同一批操作的 MCP 工具，可接入 Claude Code 和 Claude Desktop；删除类工具需要 `confirm: true`，写工具支持 `dryRun`，`--read-only` 只提供查询工具。CLI 版本号与服务端保持一致。说明见 `doc/agent.md`。
+- API 错误响应新增机器可读的 `code` 字段（例如 `token_read_only`、`token_not_allowed`、`unauthorized`、`not_found`、`validation`），脚本不必再匹配中文错误说明；预览 RSS 来源时，来源返回网页而不是 RSS/Atom 为 `source_not_feed`。
+- 接口：新增 `GET /api/tokens/current` 和 `GET /api/tokens/current/logs`，令牌可以查看自己的摘要和调用记录（只能看自己）。
+
 ### 国际化：English 与简体中文
 
 - 界面支持 English 和简体中文，覆盖全部页面、提示和日期、数字、相对时间格式（按语言用 `Intl` 格式化）。语言在顶栏或“设置 → 账号与密码 → 界面语言”中切换，按账号保存在服务端，登录后各设备一致；也可选择“跟随浏览器”。未选择时按浏览器语言显示，都不支持时使用服务器默认语言（英文）。`<html lang>` 随语言变化。
 - 登录页和初始化页按浏览器语言显示，并提供语言切换（保存在当前设备）。
 - 升级不改变现有界面：升级前已有的账号自动设为简体中文（数据库迁移 21）；旧版本的完整备份恢复后同样为简体中文。新建账号在用户选择前跟随浏览器。
-- 接口错误新增稳定的错误代码：响应为 `{ code, message, error, params? }`，`message`（以及保留兼容的 `error`）按账号语言、其次按 `Accept-Language` 翻译；网页界面优先按 `code` 显示文案。新增 `PUT /api/auth/locale` 保存账号语言，`GET /api/auth/status` 返回 `locale` 和 `defaultLocale`。
-- 通知（Bark、Webhook、ntfy、Telegram）的标题和正文、抓取日志、批量结果和翻译进度按订阅所有者的语言书写；Webhook 的 `event` 不变，集成应按 `event` 判断。
+- 接口错误统一为 `{ code, message, error, messageKey, params? }`：`code` 沿用 Agent CLI 引入的稳定错误代码（脚本、CLI、MCP 和网页都按它判断）；`message`（以及保留兼容的 `error`）按账号语言、其次按 `Accept-Language` 翻译；`messageKey` 和 `params` 标识具体文案，网页界面据此按当前语言显示。新增 `PUT /api/auth/locale` 保存账号语言，`GET /api/auth/status` 返回 `locale` 和 `defaultLocale`。
+- 通知（Bark、Webhook、ntfy、Telegram）的标题和正文、抓取日志（包括“来源返回的是网页而不是 RSS”和 PubMed/NCBI 的错误说明）、批量结果和翻译进度按订阅所有者的语言书写；Webhook 的 `event` 不变，集成应按 `event` 判断。
 - 在浏览器中直接打开订阅地址看到的预览页按访问者的 `Accept-Language` 显示。RSS、Atom、JSON 输出的语言不变：翻译订阅仍按目标语言输出，其他订阅保持原样。
 - 新增环境变量 `DEFAULT_LOCALE`（默认 `en`，可设 `zh-CN`），作为没有可用浏览器语言时的兜底语言；中文实例可设为 `zh-CN`。
 - 服务端日志统一改为英文；`pnpm admin:reset` 按终端语言显示。

@@ -5,9 +5,11 @@ import { api } from './api';
 import { t } from './i18n';
 
 /** The instance-wide settings, split into pages that each save only their own fields. */
-export type AppSettingsGroup = 'display' | 'translation' | 'server';
+export type AppSettingsGroup = 'display' | 'translation' | 'server' | 'pubmed';
 type Translation = ApplicationSettings['translation'];
 type Service = 'deepl' | 'openai';
+/** Everything with a write-only API key. */
+type KeyOwner = Service | 'ncbi';
 
 const titles = (group: AppSettingsGroup): [string, string] => [t(`appSettings.${group}.title`), t(`appSettings.${group}.intro`)];
 const providerName = (provider: TranslationProviderId) => t(`provider.${provider}`);
@@ -27,7 +29,14 @@ const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
  * Only what changed in this group goes to the server. API keys are write-only:
  * an empty field keeps the saved key, `null` removes it.
  */
-function patchFor(group: AppSettingsGroup, saved: ApplicationSettings, draft: ApplicationSettings, clearKey: Record<Service, boolean>): Record<string, unknown> {
+function patchFor(group: AppSettingsGroup, saved: ApplicationSettings, draft: ApplicationSettings, clearKey: Record<KeyOwner, boolean>): Record<string, unknown> {
+  if (group === 'pubmed') {
+    const ncbi: Record<string, unknown> = {};
+    if (draft.ncbi.email !== saved.ncbi.email) ncbi.email = draft.ncbi.email;
+    if (clearKey.ncbi) ncbi.apiKey = null;
+    else if (draft.ncbi.apiKey) ncbi.apiKey = draft.ncbi.apiKey;
+    return Object.keys(ncbi).length ? { ncbi } : {};
+  }
   if (group === 'display') return Object.fromEntries((['feedView', 'logRetentionDays'] as const).filter(key => draft[key] !== saved[key]).map(key => [key, draft[key]]));
   if (group === 'server') {
     const server = Object.fromEntries(Object.entries(draft.server).filter(([key, value]) => !same(value, saved.server[key as keyof ApplicationSettings['server']])));
@@ -54,7 +63,7 @@ export function ApplicationSettingsPanel({ group, revision, onDirty }: { group: 
   const [error, setError] = useState(''), [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
   /** Saved API keys are never sent back; these mark keys the administrator chose to remove. */
-  const [clearKey, setClearKey] = useState<Record<Service, boolean>>({ deepl: false, openai: false });
+  const [clearKey, setClearKey] = useState<Record<KeyOwner, boolean>>({ deepl: false, openai: false, ncbi: false });
   const [open, setOpen] = useState<Set<TranslationProviderId>>(new Set());
   const [testing, setTesting] = useState<TranslationProviderId | ''>(''), [testResult, setTestResult] = useState<{ provider: TranslationProviderId; ok: boolean; text: string }>();
   const onDirtyRef = useRef(onDirty);
@@ -63,7 +72,7 @@ export function ApplicationSettingsPanel({ group, revision, onDirty }: { group: 
     let live = true;
     void api.settings.get().then(v => {
       if (!live) return;
-      setSaved(v); setValue(v); setClearKey({ deepl: false, openai: false });
+      setSaved(v); setValue(v); setClearKey({ deepl: false, openai: false, ncbi: false });
       // The default service starts expanded; the others are a click away.
       setOpen(new Set([v.translation.defaultProvider]));
     }).catch(e => { if (live) setError(e.message); });
@@ -79,7 +88,7 @@ export function ApplicationSettingsPanel({ group, revision, onDirty }: { group: 
     setBusy(true); setError(''); setMessage('');
     try {
       const next = await api.settings.save(patch as Partial<ApplicationSettings>);
-      setSaved(next); setValue(next); setClearKey({ deepl: false, openai: false });
+      setSaved(next); setValue(next); setClearKey({ deepl: false, openai: false, ncbi: false });
       setMessage(group === 'server' ? t('appSettings.savedRestart') : t('appSettings.saved'));
     } catch (e) { setError(e instanceof Error ? e.message : t('common.saveFailed')); } finally { setBusy(false); }
   }
@@ -166,6 +175,12 @@ export function ApplicationSettingsPanel({ group, revision, onDirty }: { group: 
       })}
       <p className="hint">{t('appSettings.translationHint')}</p>
     </fieldset>}
+    {group === 'pubmed' && <fieldset disabled={busy}>
+      <label className="field"><span>{t('appSettings.ncbiKey')}</span><input type="password" autoComplete="off" spellCheck={false} value={value.ncbi.apiKey} placeholder={value.ncbi.apiKeyConfigured && !clearKey.ncbi ? t('appSettings.keySaved') : t('appSettings.notSet')} onChange={e => { setValue({ ...value, ncbi: { ...value.ncbi, apiKey: e.target.value.trim() } }); setClearKey({ ...clearKey, ncbi: false }); }} /></label>
+      {value.ncbi.apiKeyConfigured && <label className="inline"><input type="checkbox" checked={clearKey.ncbi} onChange={e => setClearKey({ ...clearKey, ncbi: e.target.checked })} />{t('appSettings.clearKey')}</label>}
+      <label className="field"><span>{t('appSettings.ncbiEmail')}</span><input type="email" autoComplete="off" maxLength={254} value={value.ncbi.email} placeholder="admin@example.com" onChange={e => setValue({ ...value, ncbi: { ...value.ncbi, email: e.target.value } })} /></label>
+      <p className="hint">{t('appSettings.ncbiHint')}</p>
+    </fieldset>}
     {group === 'server' && <fieldset disabled={busy}>
       {number(t('serverField.backgroundConcurrency'), value.server.backgroundConcurrency, 1, 4, n => server('backgroundConcurrency', n))}
       <label className="field"><span>{t('appSettings.allowlist')}</span><textarea value={value.server.allowedHosts.join('\n')} onChange={e => server('allowedHosts', e.target.value.split('\n'))} onBlur={() => server('allowedHosts', value.server.allowedHosts.map(v => v.trim()).filter(Boolean))} /></label>
@@ -180,8 +195,8 @@ export function ApplicationSettingsPanel({ group, revision, onDirty }: { group: 
     </fieldset>}
     {error && <p className="error-note" role="alert">{error}</p>}{message && <p role="status">{message}</p>}
     <div className={`settings-actions${dirty ? ' is-dirty' : ''}`}>
-      <button className="button primary" disabled={busy || !dirty}>{busy ? t('common.saving') : t('appSettings.saveGroup', { title })}</button>
-      {dirty && <button type="button" className="button" disabled={busy} onClick={() => { setValue(saved); setClearKey({ deepl: false, openai: false }); setMessage(''); setError(''); }}>{t('appSettings.discard')}</button>}
+      <button className="button primary" disabled={busy || !dirty}>{busy ? t('common.saving') : group === 'pubmed' ? t('appSettings.pubmed.save') : t('appSettings.saveGroup', { title })}</button>
+      {dirty && <button type="button" className="button" disabled={busy} onClick={() => { setValue(saved); setClearKey({ deepl: false, openai: false, ncbi: false }); setMessage(''); setError(''); }}>{t('appSettings.discard')}</button>}
     </div>
   </form>;
 }

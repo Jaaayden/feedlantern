@@ -205,3 +205,43 @@ test('每个账号最多 50 个令牌', async () => {
     assert.equal((await t.app.inject({ method: 'POST', url: '/api/tokens', headers: cookieHeaders(t.store, 'alice'), payload: { name: 'one more', scope: 'read' } })).statusCode, 409);
   } finally { await t.close(); }
 });
+
+test('错误响应带机器可读的 code，令牌可以查看自己的摘要和调用记录', async () => {
+  const t = await setup();
+  try {
+    const read = await t.mint('alice', 'read'), write = await t.mint('alice', 'write'), other = await t.mint('bob', 'write');
+    const denied = await t.app.inject({ method: 'POST', url: '/api/feeds', headers: bearer(read.secret), payload: input });
+    assert.equal(denied.statusCode, 403);
+    assert.equal(denied.json().code, 'token_read_only');
+    const sessionOnly = await t.app.inject({ url: '/api/tokens', headers: bearer(write.secret) });
+    assert.equal(sessionOnly.statusCode, 403);
+    assert.equal(sessionOnly.json().code, 'token_not_allowed');
+    const invalid = await t.app.inject({ url: '/api/feeds', headers: bearer(`fl_${'x'.repeat(43)}`) });
+    assert.equal(invalid.statusCode, 401);
+    assert.equal(invalid.json().code, 'unauthorized');
+    const missing = await t.app.inject({ url: '/api/feeds/nope', headers: bearer(read.secret) });
+    assert.deepEqual([missing.statusCode, missing.json().code], [404, 'not_found']);
+    const invalidBody = await t.app.inject({ method: 'POST', url: '/api/feeds', headers: bearer(write.secret), payload: { name: '' } });
+    assert.deepEqual([invalidBody.statusCode, invalidBody.json().code], [400, 'validation']);
+
+    const current = await t.app.inject({ url: '/api/tokens/current', headers: bearer(read.secret) });
+    assert.equal(current.statusCode, 200, current.body);
+    assert.equal(current.json().id, read.token.id);
+    assert.equal(current.json().scope, 'read');
+    assert.ok(!current.body.includes(read.secret));
+    assert.ok(current.json().usage24h.calls >= 2);
+    const logs = await t.app.inject({ url: '/api/tokens/current/logs?status=denied', headers: bearer(read.secret) });
+    assert.equal(logs.statusCode, 200, logs.body);
+    const calls = logs.json().calls as Array<{ tokenId: string; status: number; route: string }>;
+    assert.ok(calls.length >= 1);
+    assert.ok(calls.every(call => call.tokenId === read.token.id && [401, 403, 429].includes(call.status)));
+    assert.ok(calls.some(call => call.route === '/api/feeds' && call.status === 403));
+    // Only the presenting token's own calls, never another token's.
+    const bobLogs = await t.app.inject({ url: '/api/tokens/current/logs', headers: bearer(other.secret) });
+    assert.ok((bobLogs.json().calls as Array<{ tokenId: string }>).every(call => call.tokenId === other.token.id));
+    assert.equal((await t.app.inject({ url: '/api/tokens/current/logs?limit=0', headers: bearer(read.secret) })).statusCode, 400);
+    // A browser session has no current token.
+    const browserSession = await t.app.inject({ url: '/api/tokens/current', headers: cookieHeaders(t.store, 'alice') });
+    assert.deepEqual([browserSession.statusCode, browserSession.json().code], [400, 'validation']);
+  } finally { await t.close(); }
+});

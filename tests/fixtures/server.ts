@@ -1,5 +1,9 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { connect as netConnect, type Socket } from 'node:net';
+import { readFileSync } from 'node:fs';
+
+/** Recorded NCBI E-utilities answers and a PubMed-style bot check (tests/fixtures/pubmed). */
+const pubmedFixture = (name: string) => readFileSync(new URL(`./pubmed/${name}`, import.meta.url), 'utf8');
 
 const host = process.env.FIXTURE_HOST ?? '127.0.0.1';
 const port = Number(process.env.FIXTURE_PORT ?? 8766);
@@ -322,6 +326,23 @@ const server = createServer(async (request, response) => {
       item('reader-3', 'Unstable connection report', '<p>Measurements from a week of flaky home internet, with charts and a short list of fixes that actually helped.</p><ul><li>Move the router</li><li>Change the channel</li></ul>', 'Tue, 20 Oct 2026 12:00:00 GMT'),
       item('reader-4', 'Designing a lantern you can read by', `<p><img src="${origin}/assets/cover-2.svg" alt="Lantern"></p><p>Warm light, soft shadows and a glass that does not glare: the small decisions behind a lamp made for long evenings with a book.</p><pre>lumens = 180</pre>`, 'Mon, 12 Oct 2026 09:00:00 GMT'),
     ].join('')}</channel></rss>`);
+    return;
+  }
+  // Stand-in for eutils.ncbi.nlm.nih.gov; the e2e backend points PubMed journal subscriptions here.
+  if (requestUrl.pathname === '/entrez/eutils/esearch.fcgi') {
+    response.writeHead(200, { 'Content-Type': 'application/json' });
+    response.end(pubmedFixture('esearch-journal.json'));
+    return;
+  }
+  if (requestUrl.pathname === '/entrez/eutils/efetch.fcgi') {
+    response.writeHead(200, { 'Content-Type': 'text/xml' });
+    response.end(pubmedFixture('efetch-journal.xml'));
+    return;
+  }
+  // What PubMed's RSS addresses now answer programs with: HTTP 203 and a proof-of-work page.
+  if (requestUrl.pathname === '/challenge-feed.xml') {
+    response.writeHead(203, { 'Content-Type': 'text/html; charset=utf-8' });
+    response.end(pubmedFixture('journal-challenge.html'));
     return;
   }
   if (requestUrl.pathname === '/feed.xml') {

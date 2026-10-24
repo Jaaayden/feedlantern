@@ -9,6 +9,7 @@ import { backupTables } from '../src/server/backups.js';
 import { alertTitle, deliveryError } from '../src/server/notify.js';
 import { renderRssPreview } from '../src/server/rss-preview.js';
 import { withLocale } from '../src/server/i18n.js';
+import { NcbiError, NotAFeedError, nonFeedReason, sourceMessages } from '../src/server/fetch-errors.js';
 import { catalogs } from '../src/shared/locales/index.js';
 import { formatList, formatRelative, locales, negotiateLocale, translate, type Locale, type MessageValue } from '../src/shared/i18n.js';
 import type { Feed } from '../src/shared/types.js';
@@ -78,7 +79,7 @@ test('API errors carry a stable code and follow the account language, then Accep
   const host = '127.0.0.1:4321';
   try {
     const wrongHost = (headers: Record<string, string> = {}) => app.inject({ method: 'GET', url: '/api/auth/status', headers: { host: 'evil.example', ...headers } });
-    assert.deepEqual((await wrongHost()).json(), { code: 'hostForbidden', message: 'Request host not allowed.', error: 'Request host not allowed.' });
+    assert.deepEqual((await wrongHost()).json(), { code: 'forbidden', message: 'Request host not allowed.', error: 'Request host not allowed.', messageKey: 'error.hostForbidden' });
     assert.equal((await wrongHost({ 'accept-language': 'zh-CN,zh;q=0.9' })).json().message, '请求主机不被允许');
     assert.equal((await wrongHost({ 'accept-language': 'fr' })).json().message, 'Request host not allowed.');
 
@@ -92,15 +93,15 @@ test('API errors carry a stable code and follow the account language, then Accep
     const write = { host, cookie, 'x-feedlantern': '1', 'x-csrf-token': csrf };
     const bad = await app.inject({ method: 'POST', url: '/api/tokens', headers: { ...write, 'accept-language': 'zh-CN' }, payload: { name: '', scope: 'read' } });
     assert.equal(bad.statusCode, 400);
-    assert.deepEqual(bad.json(), { code: 'fieldRequired', message: '令牌名称不能为空且长度不能超过 100', error: '令牌名称不能为空且长度不能超过 100', params: { label: { key: 'label.tokenName' }, max: 100 } });
+    assert.deepEqual(bad.json(), { code: 'validation', message: '令牌名称不能为空且长度不能超过 100', error: '令牌名称不能为空且长度不能超过 100', messageKey: 'error.fieldRequired', params: { label: { key: 'label.tokenName' }, max: 100 } });
 
     // A chosen language beats Accept-Language and is shared by every device.
     const saved = await app.inject({ method: 'PUT', url: '/api/auth/locale', headers: write, payload: { locale: 'zh-CN' } });
     assert.equal(saved.statusCode, 200);
     assert.equal(saved.json().locale, 'zh-CN');
     const missing = await app.inject({ method: 'GET', url: '/api/feeds/nope', headers: { host, cookie, 'accept-language': 'en' } });
-    assert.deepEqual([missing.statusCode, missing.json().code, missing.json().message], [404, 'feedNotFound', '订阅不存在']);
-    assert.equal((await app.inject({ method: 'PUT', url: '/api/auth/locale', headers: write, payload: { locale: 'xx' } })).json().code, 'localeInvalid');
+    assert.deepEqual([missing.statusCode, missing.json().code, missing.json().messageKey, missing.json().message], [404, 'not_found', 'error.feedNotFound', '订阅不存在']);
+    assert.equal((await app.inject({ method: 'PUT', url: '/api/auth/locale', headers: write, payload: { locale: 'xx' } })).json().messageKey, 'error.localeInvalid');
     await app.inject({ method: 'PUT', url: '/api/auth/locale', headers: { ...write, 'accept-language': 'en' }, payload: { locale: null } });
     const followed = await app.inject({ method: 'GET', url: '/api/feeds/nope', headers: { host, cookie, 'accept-language': 'en' } });
     assert.equal(followed.json().message, 'Feed not found.');
@@ -121,6 +122,17 @@ test('API errors carry a stable code and follow the account language, then Accep
     await app.close();
     rmSync(dataDir, { recursive: true, force: true });
   }
+});
+
+test('non-feed and NCBI errors are translatable and keep English logs', () => {
+  const page = '<!DOCTYPE html><html><body><div class="g-recaptcha"></div></body></html>';
+  const reason = nonFeedReason(page, 403, 'text/html');
+  assert.deepEqual(reason, { key: 'source.challengeStatus', params: { status: '403', marker: 'reCAPTCHA' } });
+  const english = withLocale('en', () => new NotAFeedError(reason!));
+  assert.match(english.message, /^Couldn't fetch RSS \(HTTP 403\): the source returned a bot check/);
+  const chinese = withLocale('zh-CN', () => new NcbiError(sourceMessages.pubmed.journalNotFound('101238921'), 200));
+  assert.equal(chinese.message, 'PubMed 中没有找到 NLM ID 为 101238921 的期刊，请检查订阅地址。');
+  assert.equal(chinese.englishMessage, 'PubMed has no journal with NLM ID 101238921. Check the feed address.');
 });
 
 test('migration 21 keeps existing accounts in Chinese; new accounts and old backups are handled explicitly', () => {

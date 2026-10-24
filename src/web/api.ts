@@ -47,30 +47,34 @@ export interface OutputPreview { outputStatus: Record<string, ItemOutputStatus>;
 
 export class ApiError extends Error {
   status: number;
-  /** Stable error code from the server (see `error.*` in the locale catalogs). */
+  /** Stable error code from the server (`ApiErrorCode`, documented in doc/agent.md). */
   code?: string;
+  /** Catalog key of the server's message, used to show it in this interface's language. */
+  messageKey?: string;
   params?: Params;
 
-  constructor(message: string, status: number, code?: string, params?: Params) {
+  constructor(message: string, status: number, code?: string, params?: Params, messageKey?: string) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.code = code;
     this.params = params;
+    this.messageKey = messageKey;
   }
 }
 
 /**
  * The text of a server error in the current interface language: rendered from
- * its code when this build knows the code, otherwise the server's message.
+ * its message key when this build knows the key, otherwise the server's message.
  */
 function errorMessage(payload: unknown, status: number, statusText: string): ApiError {
-  const body = typeof payload === 'object' && payload !== null ? payload as { code?: unknown; message?: unknown; error?: unknown; params?: unknown } : {};
+  const body = typeof payload === 'object' && payload !== null ? payload as { code?: unknown; message?: unknown; error?: unknown; messageKey?: unknown; params?: unknown } : {};
   const params = body.params && typeof body.params === 'object' ? body.params as Params : undefined;
   const serverText = typeof body.message === 'string' ? body.message : typeof body.error === 'string' ? body.error : statusText || t('error.requestFailed');
   const code = typeof body.code === 'string' ? body.code : undefined;
-  const message = code ? tKey(`error.${code}`, params, tKey(code, params, serverText)) : serverText;
-  return new ApiError(message, status, code, params);
+  const messageKey = typeof body.messageKey === 'string' ? body.messageKey : undefined;
+  const message = messageKey ? tKey(messageKey, params, serverText) : serverText;
+  return new ApiError(message, status, code, params, messageKey);
 }
 
 let csrfToken: string | undefined;

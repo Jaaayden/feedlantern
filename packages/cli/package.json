@@ -1,0 +1,30 @@
+{
+  "name": "feedlantern-cli",
+  "version": "0.7.0",
+  "description": "Command line and MCP server for driving a FeedLantern instance from scripts and AI agents.",
+  "license": "MIT",
+  "type": "module",
+  "repository": { "type": "git", "url": "git+https://github.com/Jaaayden/feedlantern.git", "directory": "packages/cli" },
+  "homepage": "https://github.com/Jaaayden/feedlantern/blob/main/doc/agent.md",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "bin": {
+    "feedlantern": "dist/feedlantern.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "esbuild src/bin.ts --bundle --platform=node --target=node20 --format=esm --packages=external --outfile=dist/feedlantern.js --log-level=warning",
+    "prepack": "pnpm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
+}

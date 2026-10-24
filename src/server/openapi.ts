@@ -1,5 +1,5 @@
 import { API_TOKEN_MAX_DAYS, tokenAllowedRoute } from './api-tokens.js';
-import { BUNDLE_ITEM_LIMIT, BUNDLE_MAX_FEEDS } from '../shared/types.js';
+import { API_ERROR_CODES, BUNDLE_ITEM_LIMIT, BUNDLE_MAX_FEEDS } from '../shared/types.js';
 import { NETWORK_LIMITS } from '../shared/network-rules.js';
 import { locales } from '../shared/i18n.js';
 
@@ -46,9 +46,10 @@ const networkProfileId = nullable(str({ description: 'Network profile ID; null m
 
 const schemas: Record<string, Schema> = {
   Error: object({
-    code: str({ description: 'Stable error code, e.g. feedNotFound; clients can show their own text for it', examples: ['feedNotFound'] }),
-    message: str({ description: 'Error message for the user, in the reader\'s language' }),
+    code: str({ enum: [...API_ERROR_CODES], description: 'Stable, machine-readable error code; scripts should branch on it. token_read_only: a read token tried to write; token_not_allowed: a token called an endpoint reserved for browser sessions; source_not_feed: the source returned a web page (often a bot check) or an unusual status instead of RSS/Atom; the rest follow the HTTP status' }),
+    message: str({ description: 'Error message for people, in the reader\'s language; may change between versions' }),
     error: str({ description: 'Same as message (kept for older clients)' }),
+    messageKey: str({ description: 'Message catalog key of the text, e.g. error.feedNotFound; with params, lets a client show the message in its own language', examples: ['error.feedNotFound'] }),
     params: { type: 'object', description: 'Values filled into the message, when it has any' },
   }, ['code', 'message', 'error']),
   Ok: object({ ok: { const: true } }, ['ok']),
@@ -166,7 +167,12 @@ const schemas: Record<string, Schema> = {
       concurrency: int({ description: 'Concurrency of the Google channel' }), requestIntervalMs: int({ description: 'Minimum time between Google requests' }), defaultProvider: providerId,
       deepl: object({ apiKey: str({ description: 'Write-only: always an empty string in responses; omitted or empty on update keeps the saved key, null removes it' }), apiKeyConfigured: bool, plan: str({ enum: ['auto', 'free', 'pro'] }), concurrency: int(), requestIntervalMs: int() }),
       openai: object({ baseUrl: str({ description: 'Requests go to baseUrl/chat/completions' }), model: str(), apiKey: str({ description: 'Write-only, like deepl.apiKey' }), apiKeyConfigured: bool, systemPrompt: str({ maxLength: 4000 }), concurrency: int(), requestIntervalMs: int() }),
-    }), feedView: str({ enum: ['list', 'cards'] }), logRetentionDays: int(),
+    }),
+    ncbi: object({
+      apiKey: str({ description: 'NCBI API key (optional, used by PubMed journal feeds). Write-only, like deepl.apiKey' }), apiKeyConfigured: bool,
+      email: str({ description: 'Contact email sent with E-utilities requests; empty sends none' }),
+    }),
+    feedView: str({ enum: ['list', 'cards'] }), logRetentionDays: int(),
     bark: ref('BarkSettings'), server: { type: 'object', description: 'Server settings such as background concurrency, the target allowlist, proxies and sessions' },
   }),
   ImportJob: object({ id: str(), createdAt: dateTime, ownerId: str(), actorId: str(), entries: array({ type: 'object', description: 'Detection state, result and error of each URL' }) }, ['id', 'createdAt', 'entries']),
@@ -205,6 +211,12 @@ const operations: Operation[] = [
       { name: 'cursor', schema: str(), description: 'nextCursor of the previous page' },
       { name: 'limit', schema: int({ minimum: 1, maximum: 100, default: 20 }) },
     ], response: ref('ApiTokenCallPage') },
+  { method: 'GET', path: '/api/tokens/current', tag: 'tokens', summary: 'Current access token', description: 'Only callable with an access token (a browser session gets 400): returns the calling token\'s name, scope, expiry and number of calls in the last 24 hours.', response: ref('ApiToken') },
+  { method: 'GET', path: '/api/tokens/current/logs', tag: 'tokens', summary: 'Call log of the current access token', description: 'Only callable with an access token (a browser session gets 400); returns only this token\'s own records.', query: [
+    { name: 'status', schema: str({ enum: ['success', 'denied', 'error'] }), description: 'success: status < 400; denied: 401, 403, 429; error: any other ≥ 400' },
+    { name: 'cursor', schema: str(), description: 'nextCursor of the previous page' },
+    { name: 'limit', schema: int({ minimum: 1, maximum: 100, default: 20 }) },
+  ], response: ref('ApiTokenCallPage') },
   { method: 'POST', path: '/api/tokens', tag: 'tokens', summary: 'Create an access token', description: 'The full token appears only once, in this response; up to 50 per account. You can only create tokens for yourself.', body: ref('ApiTokenInput'), response: ref('ApiTokenCreated') },
   { method: 'DELETE', path: '/api/tokens/:id', tag: 'tokens', summary: 'Revoke an access token', description: 'You can only revoke your own tokens; their call log is deleted too.', response: ok },
   // Users
@@ -356,7 +368,7 @@ export function buildOpenApi(origin: string, version: string): Record<string, un
       title: 'FeedLantern API',
       version,
       description: [
-        'Management API of a self-hosted web-page-to-RSS service. Errors return `{"error": string, "message": string, "code": string}`: code is stable, message (and error) is in the reader\'s language — the account\'s language, else Accept-Language, else English. Responses are not cached.',
+        'Management API of a self-hosted web-page-to-RSS service. Errors return `{"code": string, "message": string, "error": string, "messageKey": string, "params"?: object}` (see the Error schema): `code` is stable and documented, scripts should branch on it; `message` (and `error`) is in the reader\'s language — the account\'s language, else Accept-Language, else the instance default. Responses are not cached.',
         '**Access tokens**: create one in Settings → Access tokens and call with `Authorization: Bearer fl_…`. A token has exactly its account\'s permissions and workspace; read tokens can only call GET; token requests need no cookie, `X-FeedLantern` or `X-CSRF-Token`.',
         '**Browser sessions**: cookie-session writes must send `X-FeedLantern: 1` and `X-CSRF-Token`; Host and Origin are checked.',
         '`x-feedlantern-access` gives each endpoint\'s sign-in requirement: public (no sign-in), session (browser session only), read / write (browser session or a token with that scope). `x-feedlantern-token` gives the token scope needed; forbidden means tokens cannot call it.',

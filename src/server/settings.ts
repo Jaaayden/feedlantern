@@ -25,6 +25,12 @@ export const translationSettingsSchema = z.object({
     systemPrompt: z.string().max(4000).default(''),
   }).strict().transform(withoutFlag).default(defaults.openai),
 }).strict();
+/** NCBI E-utilities: an optional API key (write-only, like the translation keys) and a contact email. */
+export const ncbiSettingsSchema = z.object({
+  apiKey: z.string().max(200).regex(/^[A-Za-z0-9]*$/, 'error.ncbiApiKeyInvalid').default(''),
+  apiKeyConfigured: z.boolean().optional(),
+  email: z.string().max(254).transform(value => value.trim()).refine(value => !value || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value), 'error.ncbiEmailInvalid').default(''),
+}).strict().transform(withoutFlag);
 /** Bark fields plus the alert policy (threshold, retries, cooldown) that every channel shares. */
 export const barkObjectSchema = z.object({
   enabled: z.boolean(),
@@ -45,6 +51,7 @@ const barkSchema = barkObjectSchema.refine(value => !value.enabled || !!value.ur
 
 export const applicationSettingsSchema = z.object({
   translation: translationSettingsSchema.default(defaults),
+  ncbi: ncbiSettingsSchema.default(defaultApplicationSettings.ncbi),
   feedView: z.enum(['list', 'cards']),
   logRetentionDays: z.number().int().min(1).max(365),
   bark: barkSchema,

@@ -66,11 +66,6 @@ export type SimpleErrorKey = ParamlessKey<ErrorKey>;
 /** Arbitrary text from another system (a parser, a remote service) shown as is. */
 export const rawText = (message: string): LocalizedText => msg('error.raw', { message });
 
-/** The stable `code` of an API error: the key without its `error.` namespace. */
-export function errorCode(text: LocalizedText): string {
-  return text.key.startsWith('error.') ? text.key.slice(6) : text.key;
-}
-
 export function textOf(value: LocalizedText | SimpleErrorKey): LocalizedText {
   return typeof value === 'string' ? { key: value } : value;
 }

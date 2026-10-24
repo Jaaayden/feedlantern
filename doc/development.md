@@ -66,6 +66,12 @@ Chromium 侧：有代理的配置会为该浏览器上下文单独创建一个�
 
 `fetch-errors.ts` 的 `withFetchTimeout` 给一次抓取加上自己的超时信号，只有它触发时才抛出 `FetchTimeoutError`（“连接 主机 超时（N 秒未响应）”加代理提示）；调用方的取消信号（用户取消、停用账号、服务停止）原样抛出，`refreshOnce` 记为“中断”。RSS 来源（`fetchSource`、网络配置的“测试连接”）超时 20 秒；网页由 Playwright 的导航超时（30 秒）转换，等待元素超时单独提示。错误只含主机名，`friendlyError` 直接透传；其他英文的 `AbortError`／`TimeoutError` 会被换成中文。
 
+### 非订阅源响应与 PubMed 期刊订阅
+
+`fetchSource` 和 `parseSource` 在解析 XML 之前调用 `fetch-errors.ts` 的 `nonFeedReason(body, status?, contentType?)`：正文以 `<!doctype html` / `<html` 开头（允许前置 BOM、XML 声明和注释）、`Content-Type` 为 HTML 且正文不像 XML，或状态码是 200 以外的 2xx 时抛出 `NotAFeedError`；页面含 `cookies-required`、`identity_pow`、captcha、challenge 等标记时在文案中注明。被标成 `text/html` 的合法 RSS 照常解析；带 DTD／实体声明的 XML 仍由原有检查拒绝。新增的用户可见文案都在 `fetch-errors.ts` 的 `sourceMessages` 中（界面文案在 `src/shared/pubmed.ts`），便于统一迁到语言文件。
+
+`rss-source.ts` 的 `fetchRaw` 是两者共用的一次 GET（网络策略、固定 IP、代理、DoH、重定向和超时），`fetchSource` 与 `pubmed.ts` 都基于它。`app.ts` 的 RSS 抓取入口是 `sourceFetcher(policy, ncbi)`：`src/shared/pubmed.ts` 的 `pubmedJournalSource(url)` 识别出期刊地址时调用 `fetchPubmedJournal`（esearch `term=<NLM ID>[jid]&sort=pub_date&retmax=<limit>`，再 efetch XML），其他地址照旧 `fetchSource`。`createApp` 内只有一个 `NcbiRateLimiter`，按调用顺序分配起始时间，不带 Key 间隔 350 毫秒、带 Key 110 毫秒（略宽于 NCBI 的每秒 3／10 个）；429 时 `pause` 整条队列再重试一次。条目 key 为 `digest('id:pubmed:<PMID>')`，与 `parseSource` 处理原 RSS guid `pubmed:<PMID>` 的结果相同；`publishedAt` 取 Entrez 日期当天纽约时间 6:00，与原 RSS 的 `pubDate` 相同。efetch 只接受它自己的 DOCTYPE 公共标识（解析前删除，从不加载外部 DTD），其他声明一律拒绝。设置存放在应用设置的 `ncbi`（`apiKey`、`email`）中，没有数据库迁移；测试和 e2e 后端用 `createApp({ ncbiEndpoint })` 指向本地 fixture（`tests/fixtures/pubmed`），CI 不访问 NCBI。
+
 ### 完整恢复与服务器设置
 
 `Store.restoreTables(tables, { restoreServer })` 默认把备份中应用设置的 `server` 整组替换为恢复前本机的值，只有 `POST /api/backups/restore` 传入 `restoreServerSettings: true` 时才使用备份的值。`POST /api/backups/preview` 返回 `serverChanges`（`key`、`label`、`current`、`backup`），预览中的 `settings` 不再包含 `server`。
@@ -155,6 +161,7 @@ curl -s "$FEEDLANTERN/api/openapi.json" -o feedlantern-openapi.json
 - 令牌请求按令牌所属账号鉴权，权限与工作台隔离和该账号的网页会话完全相同：普通用户只能访问自己的数据；管理员令牌默认作用于管理员自己的工作台，和网页一样，只有带 `X-FeedLantern-User: 用户ID` 才在其他账号的工作台中操作。
 - `read` 令牌只能调用 GET；任何写操作返回 403。`write` 令牌可调用所有开放给令牌的接口。
 - 带 `Authorization: Bearer` 的请求只看令牌，忽略 Cookie；不需要 `X-FeedLantern`、`X-CSRF-Token`，也不校验 Host/Origin（这些检查只用来保护浏览器自动携带的 Cookie，跨站页面无法替用户附上令牌）。其他认证方案（例如反向代理的 `Authorization: Basic`）不受影响，仍按 Cookie 会话处理。网页会话的防护保持不变。
+- 错误响应统一为 `{"code": "代码", "message": "说明", "error": "说明", "messageKey": "error.xxx", "params"?: {…}}`。`message`（与 `error` 相同，兼容旧客户端）面向人，按读者语言翻译；`messageKey` 和 `params` 让网页按自己的语言渲染同一条文案。脚本应判断 `code`：`token_read_only`（只读令牌执行写操作）、`token_not_allowed`（令牌调用了仅限网页会话的接口）、`unauthorized`、`forbidden`、`validation`、`not_found`、`conflict`、`too_large`、`rate_limited`、`server_error`、`upstream_error`、`unavailable`，以及 `source_not_feed`（`POST /api/rss/preview` 时来源返回网页而不是 RSS/Atom，即 `NotAFeedError`；NCBI 失败为 `upstream_error` 或 `rate_limited`）。代码表在 `src/shared/types.ts` 的 `ApiErrorCode`；`new AppError(status, 'error.xxx' | msg(...))` 默认按状态码归类，个别文案键在 `src/server/auth.ts` 的 `specificErrorCode` 中对应更具体的代码，也可以传第三个参数指定。
 - 令牌无效、过期或已吊销返回 401（带 `WWW-Authenticate: Bearer`）；同一来源地址 15 分钟内失败 20 次后，该地址的令牌请求一律返回 429，直到窗口结束。与登录限速一样，部署在反向代理后要设置 `TRUSTED_PROXIES`。
 - 账号停用、删除、修改密码（包括管理员重置）、改名或角色变化时，与登录会话一样立即吊销该账号的全部令牌；重新启用账号不会恢复旧令牌。完整恢复备份会吊销全部令牌。
 - 每个账号最多 50 个令牌；有效期 1–3650 天或永不过期。过期令牌保留在列表中 30 天后自动清除。
@@ -164,13 +171,17 @@ curl -s "$FEEDLANTERN/api/openapi.json" -o feedlantern-openapi.json
 - 登录相关：`POST /api/auth/setup`、`/api/auth/login`、`/api/auth/logout`、`/api/auth/password`
 - 备份：`POST /api/backups/export`、`/api/backups/preview`、`/api/backups/restore`，`GET/POST /api/backups/config`
 - 账号管理中的危险操作：`POST /api/users`、`PATCH /api/users/:id`、`POST /api/users/:id/password`、`DELETE /api/users/:id`
-- 令牌本身：`GET/POST /api/tokens`、`DELETE /api/tokens/:id`
+- 令牌本身：`GET/POST /api/tokens`、`DELETE /api/tokens/:id`、`GET /api/tokens/:id/logs`
+
+令牌可以用 `GET /api/tokens/current` 查看自己的名称、权限、有效期和最近 24 小时调用次数，用 `GET /api/tokens/current/logs`（参数同 `/api/tokens/:id/logs`）查看自己的调用记录；只返回发起请求的这个令牌，网页会话调用返回 400。
 
 清单定义在 `src/server/api-tokens.ts` 的 `SESSION_ONLY_ROUTES`，OpenAPI 文档中这些接口的 `x-feedlantern-token` 为 `forbidden`。
 
 `GET /api/openapi.json` 公开提供：文档只描述接口形状，与开源代码中的信息相同，不含任何用户数据；公开后脚本、Agent 和代码生成工具无需先拿到令牌就能读取。`servers` 使用当前请求的公开地址。每个操作带 `x-feedlantern-access`（public / session / read / write）和 `x-feedlantern-token`（read / write / forbidden）。
 
 新增或删除 `/api/*` 路由时同步修改 `src/server/openapi.ts`；`tests/openapi.test.ts` 会比对服务器路由表和文档，缺少或多出接口都会失败。
+
+Agent CLI 与 MCP server 位于 workspace 包 `packages/cli`（用法见 [Agent CLI 与 MCP](agent.md)）：`client.ts` 是类型化 API 客户端（类型来自 `src/shared/types.ts`），`operations.ts` 是 CLI 与 MCP 共用的操作，`messages.ts` 集中所有输出文案。`pnpm build` 会用 esbuild 把它打包到 `packages/cli/dist/feedlantern.js`；`tests/agent-cli.test.ts` 和 `tests/e2e/10-agent-cli.spec.ts` 覆盖主要命令和 MCP 工具。新增开放给令牌的接口时，考虑同步加到 CLI 命令和 MCP 工具。
 
 ## 发布
 
@@ -266,8 +277,8 @@ SQLite 版本 8 移除单管理员索引并增加加密 `user_notifications`。�
 
 - `en.ts` 是基准：它的键定义 `MessageKey`。其他语言文件的类型是 `LocaleMessages`，缺键或多键都是编译错误；`tests/i18n.test.ts` 还会检查每种语言的占位符和复数形式一致。
 - 占位符写作 `{name}`，参数可以是字符串、数字（按语言加千分位）或另一条消息 `msg(key, params)`，在同一语言中翻译。复数写作 `{ one, other }`，按 `count` 参数用 `Intl.PluralRules` 选择。日期、相对时间和列表使用 `Intl`（`formatDateTime`、`formatRelative`、`formatList`）。
-- 服务端：`AppError(status, 'error.xxx' | msg(...))` 返回 `{ code, message, error, params? }`，`code` 是去掉 `error.` 前缀的键，`message` 按请求语言翻译。抛出深层错误时用 `LocalizedError`（`BrowserServiceError`、`NetworkPolicyError` 等都继承它），它的 `message` 是当前语言、`englishMessage` 是英文。请求在读者语言（账号偏好 → `Accept-Language` → `DEFAULT_LOCALE`）中运行，后台任务（刷新、翻译、批量、通知）在订阅所有者的语言中运行，见 `src/server/i18n.ts` 的 `withLocale`/`currentLocale`/`tl`。写入数据库的文案按写入时的语言保存。服务端日志统一英文（`describeError` 使用 `englishMessage`）。
-- 前端：`src/web/i18n.ts` 的 `t()` 读取当前语言，`App` 通过 `useLocale()` 在切换语言时整体重新渲染；`api.ts` 发送 `Accept-Language`，并优先按错误 `code` 渲染文案。
+- 服务端：`AppError(status, 'error.xxx' | msg(...))` 返回 `{ code, message, error, messageKey, params? }`：`code` 是上面的稳定错误代码（`ApiErrorCode`），`messageKey` 是文案键，`message` 按请求语言翻译。抛出深层错误时用 `LocalizedError`（`BrowserServiceError`、`NetworkPolicyError` 等都继承它），它的 `message` 是当前语言、`englishMessage` 是英文。请求在读者语言（账号偏好 → `Accept-Language` → `DEFAULT_LOCALE`）中运行，后台任务（刷新、翻译、批量、通知）在订阅所有者的语言中运行，见 `src/server/i18n.ts` 的 `withLocale`/`currentLocale`/`tl`。写入数据库的文案按写入时的语言保存。服务端日志统一英文（`describeError` 使用 `englishMessage`）。
+- 前端：`src/web/i18n.ts` 的 `t()` 读取当前语言，`App` 通过 `useLocale()` 在切换语言时整体重新渲染；`api.ts` 发送 `Accept-Language`，并优先按错误的 `messageKey` 和 `params` 渲染文案，不认识的键才显示 `message`。
 - 迁移 21 给 `users` 加 `locale`（用户选择，现有账号设为 `zh-CN`）和 `detected_locale`（登录时浏览器语言，用于离线通知；不进入备份）。旧备份恢复时 `locale` 默认 `zh-CN`。
 
 新增一种语言：复制 `src/shared/locales/en.ts` 为新文件并翻译（类型改为 `LocaleMessages`），在 `src/shared/locales/index.ts` 登记一行（代码、自称名称）。`pnpm test` 会检查键和占位符；`negotiateLocale` 按语言主标签自动匹配地区变体。
