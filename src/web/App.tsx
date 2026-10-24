@@ -456,7 +456,10 @@ function FeedPanel({ id, tab, onTab, close, edit, changed, notify }: { id: strin
   const load = useCallback(async () => { setDetail(await api.feeds.detail(id)); }, [id]);
   useEffect(() => { void load().catch(error => setError(messageOf(error))); }, [load]);
   useEffect(() => {
-    if ((!detail || !translationEnabled(detail.feed)) || !detail.feed.enabled || (detail.feed.lastSuccessAt || detail.feed.lastError) && !detail.feed.translation?.pending) return;
+    if (!detail || !detail.feed.enabled) return;
+    // RSS and PubMed feeds fetch in the background after saving: follow the first fetch, then any pending translations.
+    const firstFetch = !detail.feed.lastSuccessAt && !detail.feed.lastError;
+    if (!(isFeedSource(detail.feed) && firstFetch) && (!translationEnabled(detail.feed) || !firstFetch && !detail.feed.translation?.pending)) return;
     const timer = window.setInterval(() => { void load().catch(e => setError(messageOf(e))); }, 3000);
     return () => window.clearInterval(timer);
   }, [detail?.feed.sourceType, detail?.feed.enabled, detail?.feed.lastFetchedAt, detail?.feed.lastSuccessAt, detail?.feed.lastError, detail?.feed.translation?.pending, load]);

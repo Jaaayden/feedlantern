@@ -1706,7 +1706,7 @@ const messages = {
   'pubmed.problem.unclosedTag': 'a field tag such as [Title] isn\'t closed.',
   'pubmed.problem.danglingOperator': 'AND, OR or NOT is missing a term on one side.',
   'pubmed.problem.emptyGroup': 'a pair of parentheses is empty.',
-  'pubmed.journalRssBlocked': '{reason} This is a PubMed journal RSS address: NCBI now answers programs that read journal RSS with a verification page. Convert this feed to a PubMed search feed in its panel (the feed address, items and translations are kept), or use a search RSS link instead.',
+  'pubmed.journalRssBlocked': 'NCBI answered this PubMed journal RSS address with a verification page ({detail}), which FeedLantern doesn\'t try to get past. Convert it to a PubMed search feed in its panel (address, items and translations are kept) or use a search RSS link.',
   'pubmed.journalRssNotice': 'This is a PubMed journal RSS address. NCBI now blocks programs that read journal RSS with a verification page, so fetching it usually fails. Convert it to a PubMed search feed to keep it updating.',
   'pubmed.searchRssNotice': 'This is a PubMed search RSS link. It still works; you can also convert it to a PubMed search feed and manage the conditions in FeedLantern.',
   'pubmed.rssEditorJournal': 'This is a PubMed journal RSS address, which NCBI blocks for programs. A PubMed search feed for this journal reads the same articles through NCBI\'s official API.',

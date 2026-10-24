@@ -1703,7 +1703,7 @@ const messages: LocaleMessages = {
   'pubmed.problem.unclosedTag': '有未闭合的字段标签（例如 [Title]）。',
   'pubmed.problem.danglingOperator': 'AND、OR 或 NOT 的一侧缺少检索词。',
   'pubmed.problem.emptyGroup': '有空的括号。',
-  'pubmed.journalRssBlocked': '{reason}这是 PubMed 期刊 RSS 地址：NCBI 目前会用验证页拦截程序读取期刊 RSS。可以在订阅面板中把它转换为 PubMed 检索订阅（保留订阅地址、已存条目和译文），或改用检索式 RSS 链接。',
+  'pubmed.journalRssBlocked': 'NCBI 用验证页拦截了这个 PubMed 期刊 RSS 地址（{detail}），FeedLantern 不会尝试绕过。可以在订阅面板中把它转换为 PubMed 检索订阅（保留订阅地址、已存条目和译文），或改用检索式 RSS 链接。',
   'pubmed.journalRssNotice': '这是 PubMed 期刊 RSS 地址。NCBI 目前会用验证页拦截程序读取期刊 RSS，抓取通常会失败。转换为 PubMed 检索订阅后即可继续更新。',
   'pubmed.searchRssNotice': '这是 PubMed 检索式 RSS 链接，目前仍可使用；也可以转换为 PubMed 检索订阅，直接在 FeedLantern 中管理检索条件。',
   'pubmed.rssEditorJournal': '这是 PubMed 期刊 RSS 地址，NCBI 会拦截程序访问。改用以该期刊为条件的 PubMed 检索订阅，可以通过 NCBI 官方接口读取同样的文章。',

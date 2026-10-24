@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 
 /** Recorded NCBI E-utilities answers and a PubMed-style bot check (tests/fixtures/pubmed). */
 const pubmedFixture = (name: string) => readFileSync(new URL(`./pubmed/${name}`, import.meta.url), 'utf8');
+const pubmedSearches: string[] = [];
 
 const host = process.env.FIXTURE_HOST ?? '127.0.0.1';
 const port = Number(process.env.FIXTURE_PORT ?? 8766);
@@ -328,10 +329,18 @@ const server = createServer(async (request, response) => {
     ].join('')}</channel></rss>`);
     return;
   }
-  // Stand-in for eutils.ncbi.nlm.nih.gov; the e2e backend points PubMed journal subscriptions here.
+  // Stand-in for eutils.ncbi.nlm.nih.gov; the e2e backend sends every PubMed search here.
+  // A term containing "zzqx" matches nothing; every other search lists the same three articles.
   if (requestUrl.pathname === '/entrez/eutils/esearch.fcgi') {
+    pubmedSearches.push(requestUrl.searchParams.get('term') ?? '');
     response.writeHead(200, { 'Content-Type': 'application/json' });
-    response.end(pubmedFixture('esearch-journal.json'));
+    response.end(pubmedFixture((requestUrl.searchParams.get('term') ?? '').includes('zzqx') ? 'esearch-empty.json' : 'esearch-journal.json'));
+    return;
+  }
+  // The terms esearch received, for tests that check what reached NCBI.
+  if (requestUrl.pathname === '/entrez/searches') {
+    response.writeHead(200, { 'Content-Type': 'application/json' });
+    response.end(JSON.stringify(pubmedSearches));
     return;
   }
   if (requestUrl.pathname === '/entrez/eutils/efetch.fcgi') {

@@ -77,9 +77,11 @@ export interface NcbiContext {
 export function withPubmedRssHint(fetcher: SourceFetcher): SourceFetcher {
   return async (url, options) => {
     try { return await fetcher(url, options); } catch (error) {
-      const rss = error instanceof NotAFeedError ? pubmedRssSource(url) : null;
-      if (rss?.kind === 'journal') throw new NotAFeedError(msg('pubmed.journalRssBlocked', { reason: error instanceof NotAFeedError ? error.text : '' }));
-      throw error;
+      if (!(error instanceof NotAFeedError) || pubmedRssSource(url)?.kind !== 'journal') throw error;
+      // Short enough for the stored error (300 characters): the status and the bot-check marker, then what to do.
+      const { status, marker } = error.text.params ?? {};
+      const detail = [status !== undefined ? `HTTP ${String(status)}` : '', marker !== undefined ? String(marker) : ''].filter(Boolean).join(', ') || 'HTML';
+      throw new NotAFeedError(msg('pubmed.journalRssBlocked', { detail }));
     }
   };
 }

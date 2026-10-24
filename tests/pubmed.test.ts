@@ -231,7 +231,9 @@ test('期刊 RSS 不再被后台改写：地址原样交给 RSS 抓取，被 NCB
   const error = await fetcher(JOURNAL).then(() => null, (reason: unknown) => reason);
   assert.deepEqual(asked, [JOURNAL]);
   assert.ok(error instanceof NotAFeedError, String(error));
-  assert.match(error.message, /^来源返回的是反爬验证页而不是 RSS\/Atom（HTTP 203，页面含 cookies-required 标记）。.*这是 PubMed 期刊 RSS 地址：NCBI 目前会用验证页拦截程序读取期刊 RSS。可以在订阅面板中把它转换为 PubMed 检索订阅/);
+  assert.equal(error.message, 'NCBI 用验证页拦截了这个 PubMed 期刊 RSS 地址（HTTP 203, cookies-required），FeedLantern 不会尝试绕过。可以在订阅面板中把它转换为 PubMed 检索订阅（保留订阅地址、已存条目和译文），或改用检索式 RSS 链接。');
+  // Short enough to be stored whole as a feed's last error, in both languages.
+  assert.ok(error.message.length < 300 && error.englishMessage.length < 300, error.englishMessage);
   // Other addresses, a search RSS link and other errors keep their own message.
   for (const url of ['https://example.com/feed.xml', 'https://pubmed.ncbi.nlm.nih.gov/rss/search/1PW-O5V9EIr5/?limit=15']) assert.equal(await fetcher(url).catch((reason: unknown) => reason), blocked);
   const timeout = new Error('socket hang up');
@@ -252,7 +254,7 @@ test('期刊 RSS 不再被后台改写：地址原样交给 RSS 抓取，被 NCB
     assert.match(preview.json().error, /转换为 PubMed 检索订阅/);
     const { feed } = store.createFeed({ name: 'PLoS Pathog', url: JOURNAL, sourceType: 'rss', translationMode: 'original', rules: { item: '', title: '', link: '' }, credentialId: null, intervalMinutes: 30, waitMs: 0 }, store.listUsers()[0].id);
     await app.inject({ method: 'POST', url: `/api/feeds/${feed.id}/refresh`, headers, payload: {} });
-    assert.match(store.getFeed(feed.id)!.lastError!, /这是 PubMed 期刊 RSS 地址/);
+    assert.match(store.getFeed(feed.id)!.lastError!, /PubMed 期刊 RSS 地址（HTTP 203, cookies-required）.*改用检索式 RSS 链接。$/);
     assert.deepEqual(fetched, [JOURNAL, JOURNAL]);
     assert.equal(store.getFeed(feed.id)!.sourceType, 'rss');
     assert.equal(eutils.seen.length, 0);
