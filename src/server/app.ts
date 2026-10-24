@@ -1,12 +1,13 @@
 import { defaultApplicationSettings, isTargetLanguage, isTranslationProvider, OUTPUT_LIMIT, translationEnabled, translationProviderLabels, type TranslationProviderId, type TranslationProvidersInfo } from '../shared/types.js';
 import { providerProblem } from './translation-providers.js';
-import { fetchSource, probeTarget, type SourceFetcher } from './rss-source.js';
+import { probeTarget, type SourceFetcher } from './rss-source.js';
+import { NcbiRateLimiter, sourceFetcher } from './pubmed.js';
 import { NetworkPolicy, NetworkPolicyError } from './network.js';
 import { networkOptions, parseNetworkProfileInput, type FetchNetworkOptions } from './fetch-options.js';
 import { TranslationError, TranslationWorker, type Translator } from './rss-translation.js';
 import type { BarkSender } from './bark.js';
 import { NotificationWorker, alertTitle, channelsSummary, defaultSenders, ntfySchema, notificationChannelsSchema, telegramSchema, webhookSchema, type ChannelConfigs, type ChannelSender, type NotificationEvent, type NotificationSenders } from './notify.js';
-import { applicationSettingsSchema, settingsFromConfig, applyRuntimeSettings } from './settings.js';
+import { applicationSettingsSchema, settingsFromConfig, applyRuntimeSettings, ncbiSettingsSchema } from './settings.js';
 import { safeDiagnostic } from './fetch-history.js';
 import { isAbortError } from './fetch-errors.js';
 import { TaskPool, siteKey } from './task-pool.js';
@@ -114,6 +115,8 @@ export interface CreateAppOptions extends ConfigInput {
   translationIntervalMs?: number;
   /** Test-only replacement for DeepL's fixed API endpoints. */
   deeplEndpoints?: { free: string; pro: string };
+  /** Test-only replacement for the NCBI E-utilities base address (PubMed journal subscriptions). */
+  ncbiEndpoint?: string;
 }
 
 function authHeaders(request: FastifyRequest): { marker: boolean; csrf?: string } {
@@ -233,7 +236,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       notifier.wake();
     } catch { console.error('翻译通知入队失败'); }
   }, translationNetwork);
-  const getRss: SourceFetcher = options.rssFetcher ?? ((url, input) => fetchSource(url, new NetworkPolicy({ allowedHosts: config.allowedHosts, dnsOverHttps: config.dnsOverHttps }), input));
+  // Every request to NCBI (all PubMed journal subscriptions, previews and batch imports) shares one queue.
+  const ncbi = { limiter: new NcbiRateLimiter(), settings: () => store.getSettings().ncbi, endpoint: options.ncbiEndpoint };
+  const getRss: SourceFetcher = options.rssFetcher ?? sourceFetcher(() => new NetworkPolicy({ allowedHosts: config.allowedHosts, dnsOverHttps: config.dnsOverHttps }), ncbi);
   const refreshInFlight = new Map<string, { promise: Promise<Feed | null>; force: boolean }>();
 
   // Unkeyed mutations form barriers; independent captures share bounded slots.
@@ -865,11 +870,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return parsed.data;
   };
   /** API keys are write-only: responses carry `apiKeyConfigured` instead. */
-  const maskKeys = (value: ApplicationSettings): ApplicationSettings => ({ ...value, translation: { ...value.translation,
+  const maskKeys = (value: ApplicationSettings): ApplicationSettings => ({ ...value, ncbi: { ...value.ncbi, apiKey: '', apiKeyConfigured: !!value.ncbi.apiKey }, translation: { ...value.translation,
     deepl: { ...value.translation.deepl, apiKey: '', apiKeyConfigured: !!value.translation.deepl.apiKey },
     openai: { ...value.translation.openai, apiKey: '', apiKeyConfigured: !!value.translation.openai.apiKey } } });
   /** An empty key in an update or imported file keeps the key already saved here. */
-  const keepKeys = (next: ApplicationSettings, previous: ApplicationSettings): ApplicationSettings => ({ ...next, translation: { ...next.translation,
+  const keepKeys = (next: ApplicationSettings, previous: ApplicationSettings): ApplicationSettings => ({ ...next, ncbi: { ...next.ncbi, apiKey: next.ncbi.apiKey || previous.ncbi.apiKey }, translation: { ...next.translation,
     deepl: { ...next.translation.deepl, apiKey: next.translation.deepl.apiKey || previous.translation.deepl.apiKey },
     openai: { ...next.translation.openai, apiKey: next.translation.openai.apiKey || previous.translation.openai.apiKey } } });
   /** Server and network fields in the order of the settings page, for the restore preview. */
@@ -983,6 +988,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     // The configuration file is not encrypted, so translation API keys stay out of it.
     const settings = maskKeys(store.getSettings());
     for (const service of ['deepl', 'openai'] as const) delete settings.translation[service].apiKeyConfigured;
+    delete settings.ncbi.apiKeyConfigured;
     const notifications = store.getNotifications(authenticated(request).userId);
     const feeds = store.listFeeds(authenticated(request).userId);
     return { format: 'feedlantern-config', version: 2, settings: { ...settings, bark: notifications.bark }, notificationChannels: notifications.channels, bundles: exportConfigBundles(store, authenticated(request).userId, feeds.map(f => f.id)), feeds: feeds.map(f => ({ sourceType: f.sourceType, translationMode: f.translationMode, targetLanguage: f.targetLanguage, translationProvider: f.translationProvider, name: f.name, channelTitle: f.channelTitle, url: f.url, rules: f.rules, ruleOrigins: f.ruleOrigins, ...(f.pagination ? { pagination: f.pagination } : {}), intervalMinutes: f.intervalMinutes, waitMs: f.waitMs, waitForSelector: f.waitForSelector, enabled: f.enabled, requiresCredential: !!f.credentialId, ...profileExport(f.networkProfileId), ...(f.itemFilter ? { itemFilter: f.itemFilter } : {}), outputLimit: f.outputLimit, ...(f.retentionLimit ? { retentionLimit: f.retentionLimit } : {}) })) };
@@ -1103,7 +1109,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const body = asRecord(request.body);
     if (!Object.keys(body).length || body.bark !== undefined && (typeof body.bark !== 'object' || body.bark === null || Array.isArray(body.bark))
       || body.translation !== undefined && (typeof body.translation !== 'object' || body.translation === null || Array.isArray(body.translation))
-      || body.server !== undefined && (typeof body.server !== 'object' || body.server === null || Array.isArray(body.server))) throw new AppError(400, '设置格式无效');
+      || body.server !== undefined && (typeof body.server !== 'object' || body.server === null || Array.isArray(body.server))
+      || body.ncbi !== undefined && (typeof body.ncbi !== 'object' || body.ncbi === null || Array.isArray(body.ncbi))) throw new AppError(400, '设置格式无效');
     return enqueueRefresh(async () => {
       adminGuard(request);
       const previous = store.getSettings();
@@ -1114,7 +1121,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         // Omitted or empty keeps the saved key; `null` removes it.
         return { ...previous.translation[name], ...patch, apiKey: patch.apiKey === null ? '' : patch.apiKey || previous.translation[name].apiKey };
       };
-      const next = parseSettings({ ...previous, ...body, translation: { ...previous.translation, ...translation, deepl: service('deepl'), openai: service('openai') }, bark: { ...previous.bark, ...asRecord(body.bark) }, server: { ...previous.server, ...asRecord(body.server) } });
+      const ncbiPatch = asRecord(body.ncbi);
+      // Like the translation keys: omitted or empty keeps the saved NCBI key, `null` removes it.
+      const ncbiSettings = { ...previous.ncbi, ...ncbiPatch, apiKey: ncbiPatch.apiKey === null ? '' : typeof ncbiPatch.apiKey === 'string' ? ncbiPatch.apiKey.trim() || previous.ncbi.apiKey : ncbiPatch.apiKey ?? previous.ncbi.apiKey };
+      const ncbiChecked = ncbiSettingsSchema.safeParse(ncbiSettings);
+      if (!ncbiChecked.success) throw new AppError(400, ncbiChecked.error.issues[0]?.message ?? 'NCBI 设置无效');
+      const next = parseSettings({ ...previous, ...body, ncbi: ncbiSettings, translation: { ...previous.translation, ...translation, deepl: service('deepl'), openai: service('openai') }, bark: { ...previous.bark, ...asRecord(body.bark) }, server: { ...previous.server, ...asRecord(body.server) } });
       next.bark = previous.bark;
       const problem = providerProblem(next.translation, next.translation.defaultProvider);
       if (problem) throw new AppError(400, `默认翻译服务不可用：${problem}`);

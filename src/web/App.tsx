@@ -7,6 +7,7 @@ import { TranslationLog } from './TranslationProgress';
 import { ItemPreview } from './ItemList';
 import { LanguageOptions, ProviderOptions, useTranslationProviders } from './TranslationFields';
 import { RssEditor } from './RssEditor';
+import { PUBMED_EUTILS_HINT, PUBMED_EUTILS_LABEL, pubmedJournalSource } from '../shared/pubmed';
 import { ApplicationSettingsPanel } from './ApplicationSettingsPanel';
 import { BackupPanel } from './BackupPanel';
 import { ApiTokensPanel } from './ApiTokensPanel';
@@ -21,7 +22,7 @@ import { levelsBetween, liftNode } from '../shared/element-map';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type React from 'react';
 import type { FormEvent, ReactNode } from 'react';
-import { Archive, ChevronRight, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bell, Check, ChevronDown, CircleHelp, Cookie, Copy, ExternalLink, Globe2, Info, KeyRound, KeySquare, Languages, Layers, ListPlus, LoaderCircle, LogOut, Monitor, Moon, Network, MousePointer2, Pencil, Plus, Radio, RefreshCw, Rss, Search, Server, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Sun, Trash2 } from 'lucide-react';
+import { Archive, BookOpen, ChevronRight, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bell, Check, ChevronDown, CircleHelp, Cookie, Copy, ExternalLink, Globe2, Info, KeyRound, KeySquare, Languages, Layers, ListPlus, LoaderCircle, LogOut, Monitor, Moon, Network, MousePointer2, Pencil, Plus, Radio, RefreshCw, Rss, Search, Server, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Sun, Trash2 } from 'lucide-react';
 import { Modal } from './Modal';
 import { NetworkProfileSelect, NetworkProfilesView, useNetworkProfiles } from './NetworkProfiles';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
@@ -464,7 +465,7 @@ function FeedPanel({ id, tab, onTab, close, edit, changed, notify }: { id: strin
   return <Modal title={feed?.name ?? '订阅详情'} close={() => guard(close)} wide><div className="modal-body feed-panel">
     <ErrorNote error={error} />{!detail || !feed ? !error && <Busy label="正在加载订阅" /> : <>
       <div className="feed-panel-head">
-        <div className="feed-panel-source"><div className="detail-source"><Globe2 size={16} /><a href={feed.url} target="_blank" rel="noreferrer">{feed.url}</a></div><button className="button small" disabled={!!busy} onClick={() => void refresh()}><RefreshCw size={14} className={busy === '刷新' ? 'spin' : undefined} />{busy === '刷新' ? '正在刷新' : '立即刷新'}</button></div>
+        <div className="feed-panel-source"><div className="detail-source"><Globe2 size={16} /><a href={feed.url} target="_blank" rel="noreferrer">{feed.url}</a>{feed.sourceType === 'rss' && pubmedJournalSource(feed.url) && <span className="badge source-via" title={PUBMED_EUTILS_HINT}>{PUBMED_EUTILS_LABEL}</span>}</div><button className="button small" disabled={!!busy} onClick={() => void refresh()}><RefreshCw size={14} className={busy === '刷新' ? 'spin' : undefined} />{busy === '刷新' ? '正在刷新' : '立即刷新'}</button></div>
         <FeedAddress feedUrl={detail.feedUrl} notify={notify} onError={setError} />
         <FeedStatus feed={feed} retry={retryTranslation} busy={busy === '重试翻译'} />
         <RuleHealthNotice key={feed.id} feed={feed} notify={notify} updated={() => { void load().catch(e => setError(messageOf(e))); setRevision(v => v + 1); changed(); }} />
@@ -621,7 +622,7 @@ type SettingsSection = { id: string; label: string; icon: typeof Bell };
 function settingsSections(admin: boolean, target?: UserSummary | null): SettingsSection[] {
   const instance = admin && !target;
   return [
-    ...(instance ? [{ id: 'display', label: '日志与显示', icon: SlidersHorizontal }, { id: 'translation', label: '翻译服务', icon: Languages }, { id: 'server', label: '服务器与网络', icon: Server }] : []),
+    ...(instance ? [{ id: 'display', label: '日志与显示', icon: SlidersHorizontal }, { id: 'translation', label: '翻译服务', icon: Languages }, { id: 'server', label: '服务器与网络', icon: Server }, { id: 'pubmed', label: 'PubMed（NCBI）', icon: BookOpen }] : []),
     { id: 'notifications', label: '通知', icon: Bell },
     { id: 'credentials', label: 'Cookie 凭据', icon: Cookie },
     { id: 'network', label: '网络配置', icon: Network },
@@ -669,7 +670,7 @@ function SettingsView({ auth, logout, notify, target, section, onSection, dirty 
       <nav className="settings-nav" aria-label="设置分组" ref={navRef}>{sections.map(item => <button key={item.id} className={active.id === item.id ? 'selected' : ''} aria-current={active.id === item.id ? 'page' : undefined} onClick={() => jump(item.id)}><item.icon size={16} />{item.label}</button>)}</nav>
       <div className="settings-sections">
         <div id={`settings-${active.id}`} className="settings-section" key={active.id}>
-          {(active.id === 'display' || active.id === 'translation' || active.id === 'server') && <ApplicationSettingsPanel group={active.id} revision={settingsRevision} onDirty={markDirty} />}
+          {(active.id === 'display' || active.id === 'translation' || active.id === 'server' || active.id === 'pubmed') && <ApplicationSettingsPanel group={active.id} revision={settingsRevision} onDirty={markDirty} />}
           {active.id === 'notifications' && <NotificationsPanel key={settingsRevision} username={target?.username ?? auth.username!} enabled={target?.enabled !== false} />}
           {active.id === 'credentials' && <CredentialsView notify={notify} />}
           {active.id === 'network' && <NetworkProfilesView notify={notify} />}

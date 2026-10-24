@@ -4,14 +4,17 @@ import { translationProviderLabels, type ApplicationSettings, type TranslationPr
 import { api } from './api';
 
 /** The instance-wide settings, split into pages that each save only their own fields. */
-export type AppSettingsGroup = 'display' | 'translation' | 'server';
+export type AppSettingsGroup = 'display' | 'translation' | 'server' | 'pubmed';
 type Translation = ApplicationSettings['translation'];
 type Service = 'deepl' | 'openai';
+/** Everything with a write-only API key. */
+type KeyOwner = Service | 'ncbi';
 
 const titles: Record<AppSettingsGroup, [string, string]> = {
   display: ['日志与显示', '订阅列表的默认视图，以及抓取日志、规则健康和访问令牌调用记录的保留天数。'],
   translation: ['翻译服务', '订阅可以单独选择服务，未选择的跟随默认。修改默认服务只影响之后的翻译任务，已完成的译文不会重新翻译。'],
   server: ['服务器与网络', '后台并发、网络白名单、反向代理和会话等实例级设置。'],
+  pubmed: ['PubMed（NCBI）', 'PubMed 期刊订阅通过 NCBI 官方的 E-utilities 接口获取。这里的设置对所有用户的 PubMed 订阅生效。'],
 };
 const providers: TranslationProviderId[] = ['google', 'deepl', 'openai'];
 const serviceKeys = { deepl: ['plan', 'concurrency', 'requestIntervalMs'], openai: ['baseUrl', 'model', 'systemPrompt', 'concurrency', 'requestIntervalMs'] } as const;
@@ -29,7 +32,14 @@ const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
  * Only what changed in this group goes to the server. API keys are write-only:
  * an empty field keeps the saved key, `null` removes it.
  */
-function patchFor(group: AppSettingsGroup, saved: ApplicationSettings, draft: ApplicationSettings, clearKey: Record<Service, boolean>): Record<string, unknown> {
+function patchFor(group: AppSettingsGroup, saved: ApplicationSettings, draft: ApplicationSettings, clearKey: Record<KeyOwner, boolean>): Record<string, unknown> {
+  if (group === 'pubmed') {
+    const ncbi: Record<string, unknown> = {};
+    if (draft.ncbi.email !== saved.ncbi.email) ncbi.email = draft.ncbi.email;
+    if (clearKey.ncbi) ncbi.apiKey = null;
+    else if (draft.ncbi.apiKey) ncbi.apiKey = draft.ncbi.apiKey;
+    return Object.keys(ncbi).length ? { ncbi } : {};
+  }
   if (group === 'display') return Object.fromEntries((['feedView', 'logRetentionDays'] as const).filter(key => draft[key] !== saved[key]).map(key => [key, draft[key]]));
   if (group === 'server') {
     const server = Object.fromEntries(Object.entries(draft.server).filter(([key, value]) => !same(value, saved.server[key as keyof ApplicationSettings['server']])));
@@ -56,7 +66,7 @@ export function ApplicationSettingsPanel({ group, revision, onDirty }: { group: 
   const [error, setError] = useState(''), [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
   /** Saved API keys are never sent back; these mark keys the administrator chose to remove. */
-  const [clearKey, setClearKey] = useState<Record<Service, boolean>>({ deepl: false, openai: false });
+  const [clearKey, setClearKey] = useState<Record<KeyOwner, boolean>>({ deepl: false, openai: false, ncbi: false });
   const [open, setOpen] = useState<Set<TranslationProviderId>>(new Set());
   const [testing, setTesting] = useState<TranslationProviderId | ''>(''), [testResult, setTestResult] = useState<{ provider: TranslationProviderId; ok: boolean; text: string }>();
   const onDirtyRef = useRef(onDirty);
@@ -65,7 +75,7 @@ export function ApplicationSettingsPanel({ group, revision, onDirty }: { group: 
     let live = true;
     void api.settings.get().then(v => {
       if (!live) return;
-      setSaved(v); setValue(v); setClearKey({ deepl: false, openai: false });
+      setSaved(v); setValue(v); setClearKey({ deepl: false, openai: false, ncbi: false });
       // The default service starts expanded; the others are a click away.
       setOpen(new Set([v.translation.defaultProvider]));
     }).catch(e => { if (live) setError(e.message); });
@@ -81,7 +91,7 @@ export function ApplicationSettingsPanel({ group, revision, onDirty }: { group: 
     setBusy(true); setError(''); setMessage('');
     try {
       const next = await api.settings.save(patch as Partial<ApplicationSettings>);
-      setSaved(next); setValue(next); setClearKey({ deepl: false, openai: false });
+      setSaved(next); setValue(next); setClearKey({ deepl: false, openai: false, ncbi: false });
       setMessage(group === 'server' ? '设置已保存。监听地址和端口将在服务重启后生效。' : '设置已保存。');
     } catch (e) { setError(e instanceof Error ? e.message : '保存失败'); } finally { setBusy(false); }
   }
@@ -168,6 +178,12 @@ export function ApplicationSettingsPanel({ group, revision, onDirty }: { group: 
       })}
       <p className="hint">每个服务的并发、间隔和限流退避分别计算；订阅链接仅包含翻译完成的文章。API Key 加密保存，不会在页面或轻量配置文件中显示；完整加密备份会包含它们。</p>
     </fieldset>}
+    {group === 'pubmed' && <fieldset disabled={busy}>
+      <label className="field"><span>NCBI API Key（可选）</span><input type="password" autoComplete="off" spellCheck={false} value={value.ncbi.apiKey} placeholder={value.ncbi.apiKeyConfigured && !clearKey.ncbi ? '已保存，留空保持不变' : '未设置'} onChange={e => { setValue({ ...value, ncbi: { ...value.ncbi, apiKey: e.target.value.trim() } }); setClearKey({ ...clearKey, ncbi: false }); }} /></label>
+      {value.ncbi.apiKeyConfigured && <label className="inline"><input type="checkbox" checked={clearKey.ncbi} onChange={e => setClearKey({ ...clearKey, ncbi: e.target.checked })} />保存时删除已保存的 Key</label>}
+      <label className="field"><span>联系邮箱（可选）</span><input type="email" autoComplete="off" maxLength={254} value={value.ncbi.email} placeholder="admin@example.com" onChange={e => setValue({ ...value, ncbi: { ...value.ncbi, email: e.target.value } })} /></label>
+      <p className="hint">NCBI 要求程序在请求中注明工具名（FeedLantern 固定发送 tool=feedlantern），并建议附上联系邮箱，以便在请求异常时联系你；留空则不发送邮箱。不填 API Key 时，所有 PubMed 订阅共用每秒最多 3 个请求的额度，填写后提高到每秒 10 个；API Key 可在 NCBI 账号设置中免费申请，加密保存，不会在页面或轻量配置文件中显示。</p>
+    </fieldset>}
     {group === 'server' && <fieldset disabled={busy}>
       {number('后台并发数', value.server.backgroundConcurrency, 1, 4, n => server('backgroundConcurrency', n))}
       <label className="field"><span>网络访问白名单（每行一个 hostname:port）</span><textarea value={value.server.allowedHosts.join('\n')} onChange={e => server('allowedHosts', e.target.value.split('\n'))} onBlur={() => server('allowedHosts', value.server.allowedHosts.map(v => v.trim()).filter(Boolean))} /></label>
@@ -182,8 +198,8 @@ export function ApplicationSettingsPanel({ group, revision, onDirty }: { group: 
     </fieldset>}
     {error && <p className="error-note" role="alert">{error}</p>}{message && <p role="status">{message}</p>}
     <div className={`settings-actions${dirty ? ' is-dirty' : ''}`}>
-      <button className="button primary" disabled={busy || !dirty}>{busy ? '正在保存…' : `保存${title}`}</button>
-      {dirty && <button type="button" className="button" disabled={busy} onClick={() => { setValue(saved); setClearKey({ deepl: false, openai: false }); setMessage(''); setError(''); }}>放弃修改</button>}
+      <button className="button primary" disabled={busy || !dirty}>{busy ? '正在保存…' : group === 'pubmed' ? '保存 PubMed 设置' : `保存${title}`}</button>
+      {dirty && <button type="button" className="button" disabled={busy} onClick={() => { setValue(saved); setClearKey({ deepl: false, openai: false, ncbi: false }); setMessage(''); setError(''); }}>放弃修改</button>}
     </div>
   </form>;
 }

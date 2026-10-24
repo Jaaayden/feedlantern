@@ -6,6 +6,7 @@ import { ArrowLeft } from 'lucide-react';
 import { sameAddress } from './format';
 import { NetworkProfileSelect, useNetworkProfiles } from './NetworkProfiles';
 import { ArticleFrame } from './ItemList';
+import { PUBMED_EUTILS_HINT, pubmedJournalSource } from '../shared/pubmed';
 
 export function RssEditor({ initial, existing = [], saved, cancel }: { initial?: Feed; existing?: Feed[]; saved: (id: string) => void; cancel: () => void }) {
   const [url, setUrl] = useState(initial?.url ?? '');
@@ -37,6 +38,7 @@ export function RssEditor({ initial, existing = [], saved, cancel }: { initial?:
     <div className="notice">默认使用管理员设置的翻译服务（Google 免费翻译为实验性通道，无需密钥；也可选 DeepL 或 OpenAI 兼容接口）。源内有全文就翻译全文，只有摘要就翻译摘要；订阅链接仅输出翻译完成的文章。</div>
     <form className="panel settings-form rss-editor-form" onSubmit={submit}>
       <label className="field"><span>RSS / Atom 地址</span><input type="url" required value={url} disabled={busy} onChange={e => { setUrl(e.target.value); setPreview(undefined); }} onKeyDown={e => { if (e.key === 'Enter' && url && preview?.url !== `${networkProfileId}\n${url}`) { e.preventDefault(); void inspect(); } }} placeholder="https://example.com/feed.xml" /></label>
+      {pubmedJournalSource(url) && <p className="hint" data-testid="pubmed-eutils-hint">{PUBMED_EUTILS_HINT}</p>}
       <NetworkProfileSelect value={networkProfileId} disabled={busy} onChange={id => { setNetworkProfileId(id); setPreview(undefined); }} profiles={profiles} />
       <button type="button" className="button" disabled={busy || !url} onClick={() => void inspect()}>{busy ? '处理中…' : '预览订阅源'}</button>
       <label className="field"><span>订阅名称</span><input required maxLength={200} value={name} disabled={busy} onChange={e => setName(e.target.value)} /></label>
