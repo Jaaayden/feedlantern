@@ -26,6 +26,12 @@ npm install --global ./packages/cli/feedlantern-cli-0.7.0.tgz
 node packages/cli/dist/feedlantern.js whoami
 ```
 
+服务镜像中也带有打包好的 CLI 和它的运行依赖（不含开发依赖），可以在容器里直接运行，例如在服务主机上检查实例：
+
+```bash
+docker compose exec -e FEEDLANTERN_URL=http://127.0.0.1:4321 -e FEEDLANTERN_TOKEN=fl_xxxxxxxx feedlantern node packages/cli/dist/feedlantern.js health
+```
+
 将来发布到 npm 后，也可以用 `npm i -g feedlantern-cli` 或 `npx -y feedlantern-cli <命令>`。
 
 ### 版本对应
