@@ -1,23 +1,25 @@
 /**
- * PubMed journal subscriptions through NCBI E-utilities.
+ * PubMed search subscriptions through NCBI E-utilities.
  *
- * PubMed's journal RSS addresses now answer programs with a proof-of-work
- * bot check. FeedLantern never tries to solve or bypass it; it reads the
- * same journal through NCBI's official E-utilities instead (esearch for the
- * newest PMIDs, efetch for the records), following NCBI's usage rules: one
- * shared queue, at most 3 requests per second without an API key and 10
- * with one, and `tool` / `email` on every request.
+ * A PubMed search feed stores a PubMed query; each fetch asks esearch for the
+ * newest matching PMIDs (PubMed's "Most recent" order, newest added first, the
+ * order PubMed's RSS used) and efetch for the records. Every request follows
+ * NCBI's usage rules: one shared queue, at most 3 requests per second without
+ * an API key and 10 with one, and `tool` / `email` on every request.
+ * FeedLantern never tries to solve or get past NCBI's bot checks.
  *
- * Item keys are the ones PubMed's RSS produced (the guid `pubmed:<PMID>`),
- * so stored articles and their translations carry over unchanged.
+ * Item keys are the ones PubMed's RSS produced (the guid `pubmed:<PMID>`), so
+ * a PubMed RSS subscription converted to a search keeps its stored articles
+ * and their translations.
  */
 import { XMLParser, XMLValidator } from 'fast-xml-parser';
 import sanitizeHtml from 'sanitize-html';
 import type { NetworkPolicy } from './network.js';
-import { digest, fetchRaw, fetchSource, safeHtml, type RawResponse, type SourceFetcher, type SourceItem, type SourceOptions, type SourceResult } from './rss-source.js';
-import { looksLikeHtml, NcbiError, sourceMessages } from './fetch-errors.js';
+import { digest, fetchRaw, safeHtml, type RawResponse, type SourceFetcher, type SourceItem, type SourceOptions, type SourceResult } from './rss-source.js';
+import { looksLikeHtml, NcbiError, NotAFeedError, sourceMessages } from './fetch-errors.js';
 import { LocalizedError, msg } from './i18n.js';
-import { pubmedJournalSource, type PubmedJournalSource } from '../shared/pubmed.js';
+import { pubmedRssSource, pubmedSearchUrl, type PubmedSearch } from '../shared/pubmed.js';
+import type { PubmedArticle, PubmedPreview, PubmedWarning } from '../shared/types.js';
 
 export const EUTILS_ENDPOINT = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils';
 export const NCBI_TOOL = 'feedlantern';
@@ -54,6 +56,8 @@ export class NcbiRateLimiter {
     this.nextAt = at + intervalMs;
     if (at > now) await this.sleep(at - now, signal);
   }
+  /** How long a request queued now would wait for its slot. */
+  backlog(): number { return Math.max(0, this.nextAt - this.now()); }
   /** Moves every later slot back by at least `ms`, after NCBI answered 429. */
   pause(ms: number): void { this.nextAt = Math.max(this.nextAt, this.now() + ms); }
 }
@@ -65,11 +69,20 @@ export interface NcbiContext {
   endpoint?: string;
 }
 
-/** Routes PubMed journal RSS addresses to E-utilities and every other address to the RSS fetcher. */
-export function sourceFetcher(policy: () => NetworkPolicy, ncbi: NcbiContext): SourceFetcher {
-  return (url, options) => {
-    const journal = pubmedJournalSource(url);
-    return journal ? fetchPubmedJournal(journal, url, policy(), ncbi, options) : fetchSource(url, policy(), options);
+/**
+ * The RSS fetcher with a PubMed hint: when a PubMed journal RSS address
+ * answers with NCBI's bot check, the error says why and what to use instead.
+ * The address itself is fetched like any other feed; nothing is rewritten.
+ */
+export function withPubmedRssHint(fetcher: SourceFetcher): SourceFetcher {
+  return async (url, options) => {
+    try { return await fetcher(url, options); } catch (error) {
+      if (!(error instanceof NotAFeedError) || pubmedRssSource(url)?.kind !== 'journal') throw error;
+      // Short enough for the stored error (300 characters): the status and the bot-check marker, then what to do.
+      const { status, marker } = error.text.params ?? {};
+      const detail = [status !== undefined ? `HTTP ${String(status)}` : '', marker !== undefined ? String(marker) : ''].filter(Boolean).join(', ') || 'HTML';
+      throw new NotAFeedError(msg('pubmed.journalRssBlocked', { detail }));
+    }
   };
 }
 
@@ -117,8 +130,12 @@ async function eutils(ctx: NcbiContext, policy: NetworkPolicy, options: SourceOp
   }
 }
 
-/** The PMIDs esearch returned, newest publication date first. */
-export function parseEsearch(body: string, nlmId: string): string[] {
+export interface EsearchResult { count: number; ids: string[]; queryTranslation?: string; warnings: PubmedWarning[] }
+
+const strings = (value: unknown): string[] => Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string').map(entry => detail(entry)).filter(Boolean) : [];
+
+/** The PMIDs esearch returned (newest first), the match count and what NCBI warned about. */
+export function parseEsearch(body: string): EsearchResult {
   let data: any;
   try { data = JSON.parse(body); } catch { throw new NcbiError(sourceMessages.pubmed.unreadable); }
   if (typeof data?.error === 'string') throw serviceError(data.error);
@@ -126,10 +143,19 @@ export function parseEsearch(body: string, nlmId: string): string[] {
   if (!result || typeof result !== 'object') throw new NcbiError(sourceMessages.pubmed.unreadable);
   if (typeof result.ERROR === 'string') throw serviceError(result.ERROR);
   if (!Array.isArray(result.idlist)) throw new NcbiError(sourceMessages.pubmed.unreadable);
+  const count = Number(result.count);
+  if (!Number.isSafeInteger(count) || count < 0) throw new NcbiError(sourceMessages.pubmed.unreadable);
   const ids = result.idlist.map(String).filter((id: string) => /^\d{1,10}$/.test(id));
-  // An unknown journal ID is reported as a phrase that was not found.
-  if (!ids.length && Array.isArray(result.errorlist?.phrasesnotfound) && result.errorlist.phrasesnotfound.length) throw new NcbiError(sourceMessages.pubmed.journalNotFound(nlmId));
-  return ids;
+  const warnings: PubmedWarning[] = [
+    ...strings(result.errorlist?.phrasesnotfound).map(text => ({ kind: 'phraseNotFound' as const, text })),
+    ...strings(result.errorlist?.fieldsnotfound).map(text => ({ kind: 'fieldNotFound' as const, text })),
+    ...strings(result.warninglist?.quotedphrasesnotfound).map(text => ({ kind: 'quotedPhraseNotFound' as const, text })),
+    ...strings(result.warninglist?.phrasesignored).map(text => ({ kind: 'phraseIgnored' as const, text })),
+    // "No items found." is what the count already says.
+    ...strings(result.warninglist?.outputmessages).filter(text => !/^no items found\.?$/i.test(text)).map(text => ({ kind: 'message' as const, text })),
+  ].slice(0, 20);
+  const translation = typeof result.querytranslation === 'string' ? result.querytranslation.slice(0, 4000) : undefined;
+  return { count, ids, ...(translation ? { queryTranslation: translation } : {}), warnings };
 }
 
 const list = (value: any): any[] => value === undefined || value === null ? [] : Array.isArray(value) ? value : [value];
@@ -179,7 +205,7 @@ function idOf(rows: any[], type: string, attribute: string): string {
  * The record as PubMed's RSS laid it out: the citation line, the authors,
  * the abstract (labelled sections in one paragraph) and the identifier line.
  */
-function articleHtml(pmid: string, record: any): { html: string; journal: string } {
+function articleHtml(pmid: string, record: any): { html: string; journal: string; pubDate: string; authors: string[] } {
   const citation = record.MedlineCitation, article = citation.Article, journal = article.Journal ?? {};
   const issue = journal.JournalIssue ?? {};
   const abbreviation = text(journal.ISOAbbreviation) || text(citation.MedlineJournalInfo?.MedlineTA) || text(journal.Title);
@@ -212,14 +238,14 @@ function articleHtml(pmid: string, record: any): { html: string; journal: string
     ...(pmc ? [`PMC:<a href="https://www.ncbi.nlm.nih.gov/pmc/${escapeHtml(pmc)}/">${escapeHtml(pmc)}</a>`] : []),
     ...(doi ? [`DOI:<a href="https://doi.org/${escapeHtml(doi)}">${escapeHtml(doi)}</a>`] : [])].join(' | ');
   const html = `<div><p>${escapeHtml(line)}</p>${authorLine ? `<p>${escapeHtml(authorLine)}</p>` : ''}${abstract ? `<p><b>ABSTRACT</b></p>${abstract}` : '<p><b>NO ABSTRACT</b></p>'}<p>${idLine}</p></div>`;
-  return { html, journal: abbreviation };
+  return { html, journal: abbreviation, pubDate: citationDate(eCollection ? electronic : issue.PubDate), authors };
 }
 
 /** efetch's own DTD references are the only declarations accepted; it is removed before parsing and never loaded. */
 const PUBMED_DOCTYPE = /<!DOCTYPE\s+(?:PubmedArticleSet|eEfetchResult)\s+PUBLIC\s+"[^"<>[\]]*"\s+"[^"<>[\]]*"\s*>/;
 
-/** Articles from an efetch PubMed XML answer, keyed by PMID. */
-export function parseEfetch(xml: string): { items: Map<string, SourceItem>; journal?: string } {
+/** Articles from an efetch PubMed XML answer, keyed by PMID: the feed item and a short summary for previews. */
+export function parseEfetch(xml: string): { items: Map<string, SourceItem>; articles: Map<string, PubmedArticle> } {
   const body = xml.replace(PUBMED_DOCTYPE, '');
   if (/<!\s*(DOCTYPE|ENTITY)/i.test(body) || XMLValidator.validate(body) !== true) throw new NcbiError(sourceMessages.pubmed.unreadable);
   const doc = new XMLParser({
@@ -232,8 +258,8 @@ export function parseEfetch(xml: string): { items: Map<string, SourceItem>; jour
   const set = doc.PubmedArticleSet;
   if (set === undefined) throw new NcbiError(sourceMessages.pubmed.unreadable);
   const items = new Map<string, SourceItem>();
-  let journal: string | undefined;
-  // Book records (PubmedBookArticle) never appear in a journal search and are skipped.
+  const articles = new Map<string, PubmedArticle>();
+  // Book records (PubmedBookArticle) have no journal citation and are skipped.
   for (const record of list(typeof set === 'object' ? set.PubmedArticle : undefined)) {
     const pmid = text(record?.MedlineCitation?.PMID);
     const article = record?.MedlineCitation?.Article;
@@ -244,25 +270,41 @@ export function parseEfetch(xml: string): { items: Map<string, SourceItem>; jour
     if (!title) continue;
     const link = `https://pubmed.ncbi.nlm.nih.gov/${pmid}/`;
     const built = articleHtml(pmid, record);
-    journal ??= built.journal || undefined;
     if (built.html.length > 200_000 || title.length > 20_000) throw new LocalizedError(msg('rss.itemTooLong'));
     const history = record.PubmedData?.History;
     const publishedAt = historyDate(history, 'entrez') ?? historyDate(history, 'pubmed');
     items.set(pmid, { key: pubmedItemKey(pmid), title, link, html: safeHtml(built.html, link), ...(publishedAt ? { publishedAt } : {}) });
+    articles.set(pmid, { pmid, title, link, journal: built.journal, pubDate: built.pubDate, authors: built.authors.slice(0, 50), ...(publishedAt ? { addedAt: publishedAt } : {}) });
   }
-  return { items, journal };
+  return { items, articles };
 }
 
 /** The key parseSource gave a PubMed RSS item: its guid is `pubmed:<PMID>`. */
 export const pubmedItemKey = (pmid: string) => digest(`id:pubmed:${pmid}`);
 
-/** The newest articles of one journal, as the journal's PubMed RSS address would have listed them. */
-export async function fetchPubmedJournal(source: PubmedJournalSource, raw: string, policy: NetworkPolicy, ctx: NcbiContext, options: SourceOptions = {}): Promise<SourceResult> {
-  const search = await eutils(ctx, policy, options, raw, 'esearch', { term: `${source.nlmId}[jid]`, sort: 'pub_date', retmax: String(source.limit), retmode: 'json' }, 'application/json');
-  const ids = parseEsearch(search, source.nlmId);
-  const fallbackTitle = source.name ?? `PubMed ${source.nlmId}`;
-  if (!ids.length) return { title: fallbackTitle, items: [] };
-  const records = await eutils(ctx, policy, options, raw, 'efetch', { id: ids.join(','), retmode: 'xml' }, 'application/xml, text/xml', EFETCH_MAX_BYTES);
-  const { items, journal } = parseEfetch(records);
-  return { title: source.name ?? journal ?? fallbackTitle, items: ids.map(id => items.get(id)).filter((item): item is SourceItem => !!item) };
+/** esearch and efetch for the newest `limit` matches of a query, in esearch order. */
+async function search(query: string, limit: number, policy: NetworkPolicy, ctx: NcbiContext, options: SourceOptions) {
+  const scope = pubmedSearchUrl({ query, limit });
+  // No `sort`: esearch's default for PubMed is "Most recent" (newest added first). `pub_date` would keep
+  // articles with a future issue date on top and hide what was just added.
+  const found = parseEsearch(await eutils(ctx, policy, options, scope, 'esearch', { term: query, retmax: String(limit), retmode: 'json' }, 'application/json'));
+  if (!found.ids.length) return { found, items: new Map<string, SourceItem>(), articles: new Map<string, PubmedArticle>() };
+  const records = parseEfetch(await eutils(ctx, policy, options, scope, 'efetch', { id: found.ids.join(','), retmode: 'xml' }, 'application/xml, text/xml', EFETCH_MAX_BYTES));
+  return { found, ...records };
+}
+
+/** The newest articles of a PubMed search subscription. A search without matches is a successful fetch with no items. */
+export async function fetchPubmedSearch(source: PubmedSearch, policy: NetworkPolicy, ctx: NcbiContext, options: SourceOptions = {}): Promise<SourceResult> {
+  const { found, items } = await search(source.query, source.limit, policy, ctx, options);
+  return { title: source.query, items: found.ids.map(id => items.get(id)).filter((item): item is SourceItem => !!item) };
+}
+
+/** How many articles match, and the newest few, for the search builder. */
+export async function previewPubmed(query: string, policy: NetworkPolicy, ctx: NcbiContext, options: SourceOptions = {}, size = 5): Promise<PubmedPreview> {
+  const { found, articles } = await search(query, size, policy, ctx, options);
+  return {
+    count: found.count, ...(found.queryTranslation ? { queryTranslation: found.queryTranslation } : {}), warnings: found.warnings,
+    items: found.ids.map(id => articles.get(id)).filter((item): item is PubmedArticle => !!item),
+    pubmedUrl: pubmedSearchUrl({ query, limit: 20 }),
+  };
 }

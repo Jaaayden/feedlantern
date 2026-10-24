@@ -42,7 +42,7 @@ CLI 的版本号与服务端保持一致，随服务端一起发布：CLI 0.7.x 
 
 ## 连接与令牌
 
-在网页“设置 → 访问令牌”创建令牌。只查询用 read 令牌；要创建、修改订阅，或运行 `detect`、`preview`、`rss preview`（它们要在服务器上打开网页），需要 write 令牌。
+在网页“设置 → 访问令牌”创建令牌。只查询用 read 令牌；要创建、修改订阅，或运行 `detect`、`preview`、`rss preview`、`pubmed preview`（它们要由服务器访问外部网站），需要 write 令牌。
 
 地址和令牌按以下顺序取值，前面的优先：
 
@@ -93,12 +93,12 @@ CLI 用令牌调用时不检查 Host，所以用内网地址（例如 Docker 网
 | 1 | CLI 内部错误 | `internal` |
 | 2 | 用法或配置错误：参数不对、缺少 `--yes`、没有配置地址或令牌 | `usage`、`not_configured` |
 | 3 | 鉴权失败：令牌无效或过期、只读令牌执行写操作、令牌无权调用的接口、账号权限不足 | `unauthorized`、`token_read_only`、`token_not_allowed`、`forbidden` |
-| 4 | 服务端拒绝了请求：参数校验失败、不存在、冲突、内容过大、限流，或 RSS 来源返回的是网页（常见于反爬验证页）而不是订阅源 | `validation`、`not_found`、`conflict`、`too_large`、`rate_limited`、`source_not_feed` |
+| 4 | 服务端拒绝了请求：参数校验失败、不存在、冲突、内容过大、限流，RSS 来源返回的是网页（常见于反爬验证页）而不是订阅源，或 PubMed 查询式无法发送 | `validation`、`not_found`、`conflict`、`too_large`、`rate_limited`、`source_not_feed`、`pubmed_query_invalid` |
 | 5 | 服务端错误，或响应不是 FeedLantern 的 JSON | `server_error`、`upstream_error`、`unavailable`、`bad_response` |
 | 6 | 网络错误或超时 | `network`、`timeout` |
 | 7 | 批量操作部分失败（结果仍打印在标准输出） | |
 
-`feeds refresh` 在抓取失败时仍返回 0，结果中的 `ok: false` 和 `error` 说明原因（请求本身成功了）；抓取失败的原因只以文字保存在 `feed.lastError` 和抓取日志中，没有错误代码。创建 RSS 翻译订阅前先运行 `rss preview <url>`：来源返回网页而不是 RSS/Atom 时得到 `code: "source_not_feed"`（退出码 4），PubMed 期刊经 NCBI 获取失败时为 `upstream_error`（NCBI 限流时为 `rate_limited`）。默认超时 180 秒，可用 `--timeout <秒>` 或 `FEEDLANTERN_TIMEOUT` 调整。
+`feeds refresh` 在抓取失败时仍返回 0，结果中的 `ok: false` 和 `error` 说明原因（请求本身成功了）；抓取失败的原因只以文字保存在 `feed.lastError` 和抓取日志中，没有错误代码。创建 RSS 翻译订阅前先运行 `rss preview <url>`：来源返回网页而不是 RSS/Atom 时得到 `code: "source_not_feed"`（退出码 4；PubMed 期刊 RSS 被 NCBI 的验证页拦截时也是它，改用下文的 PubMed 检索订阅）。`pubmed preview` 的查询式无法发送（引号或括号不配对、AND/OR/NOT 缺少一侧）时为 `pubmed_query_invalid`，NCBI 请求失败时为 `upstream_error`，NCBI 限流或实例的 NCBI 队列过长时为 `rate_limited`。默认超时 180 秒，可用 `--timeout <秒>` 或 `FEEDLANTERN_TIMEOUT` 调整。
 
 ## 写操作的保护
 
@@ -127,6 +127,8 @@ CLI 用令牌调用时不检查 Host，所以用内网地址（例如 Docker 网
 | `preview --url <网页> --rules <JSON>` | 用规则预览抽取结果，不保存 |
 | `preview --feed <id> --title h3` | 在已保存订阅的网页上预览修改后的规则 |
 | `rss preview <url>` | 预览 RSS 源前 3 条 |
+| `pubmed preview [--query <查询式> \| 检索条件选项]` | 预览 PubMed 检索：实际发送的 `query`、匹配总数 `count`、NCBI 提示 `warnings` 和最新 5 篇 |
+| `pubmed create [--query … \| 检索条件选项] [--name …] [--limit 10\|20\|50\|100]` | 创建 PubMed 检索订阅（首次抓取在后台进行） |
 | `bundles list\|get\|create\|update\|delete` | 聚合订阅；`update` 用 `--feeds` 整体替换成员，`--add-feeds` 追加 |
 | `bulk <action> <id>...` | 批量 `copy`、`pause`、`resume`、`refresh`、`delete`、`settings --settings <JSON>` |
 | `imports list\|create <url>...\|cancel <id>\|retry <id>` | 批量添加任务（后台自动识别并创建） |
@@ -163,6 +165,18 @@ feedlantern feeds logs FEED_ID --limit 5
 feedlantern feeds items FEED_ID --limit 5
 ```
 
+### PubMed 检索
+
+`pubmed preview` 和 `pubmed create` 接受完整的查询式 `--query`，或者用选项组合检索条件（与网页构建器生成的查询式相同，条件之间为 AND，二者只能选一种）：`--all-fields`、`--title-abstract`、`--title`、`--author`、`--first-author`、`--last-author`、`--journal`、`--affiliation`、`--mesh`、`--publication-type`、`--language`、`--nlm-id`（都可重复），以及筛选 `--days N`、`--from` / `--to`（`YYYY[/MM[/DD]]`）、`--has-abstract`、`--type Review`（可重复）。需要 OR、NOT 或括号时把整个查询式写进 `--query`。检索词会自动加引号。
+
+```bash
+feedlantern pubmed preview --title-abstract cryo-EM --affiliation ShanghaiTech --has-abstract
+feedlantern pubmed create --journal "PLoS Pathog" --days 30 --limit 50 --translation bilingual
+feedlantern pubmed preview --query '("Zhang Y"[Author]) AND ("ShanghaiTech"[Affiliation])' --table
+```
+
+`pubmed create` 默认输出原文、每次抓取最新 20 篇、刷新间隔 60 分钟，名称省略时根据条件生成。修改已有检索订阅用 `feeds update <id> --data '{"pubmed":{"query":"…"}}'`（不写 `limit` 时保留原篇数，已存条目保留）。所有 NCBI 请求共用实例的限流队列（不带 NCBI API Key 每秒 3 个，带 Key 10 个），请不要在循环里高频预览。
+
 判断规则是否可靠：`coverage.title` 和 `coverage.link` 应等于 `count`，`duplicateLinks` 应为 0；日期、图片和摘要缺失不影响订阅可用。页面需要等待脚本渲染时加 `--wait-for <选择器>` 或 `--wait-ms`。之后如果订阅出现规则失效预警（`feeds list --status warning`），用 `preview --feed <id>` 在订阅的网页上试新规则，再用 `feeds update <id>` 保存。
 
 ## MCP server
@@ -173,7 +187,8 @@ feedlantern feeds items FEED_ID --limit 5
 | --- | --- | --- |
 | `whoami`、`health` | 当前令牌、实例状态 | read |
 | `feeds_list`、`feed_get`、`feed_items`、`feed_logs` | 查询订阅、条目和日志 | read |
-| `detect_feed`、`preview_rules`、`rss_preview` | 识别网页、按规则预览、预览 RSS（不保存） | write |
+| `detect_feed`、`preview_rules`、`rss_preview`、`pubmed_preview` | 识别网页、按规则预览、预览 RSS、预览 PubMed 检索（不保存） | write |
+| `pubmed_create` | 创建 PubMed 检索订阅：`query`，或 `conditions`（`[{field, term, op?}]`）加 `filters`（`days`、`from`、`to`、`hasAbstract`、`types`） | write |
 | `feed_create`、`feed_update`、`feed_pause`、`feed_resume`、`feed_refresh` | 创建和修改订阅 | write |
 | `feed_delete` | 删除订阅，需要 `confirm: true` | write |
 | `feeds_bulk` | 批量操作，`action: "delete"` 时需要 `confirm: true` | write |

@@ -1,4 +1,4 @@
-import { translationEnabled } from '../shared/types.js';
+import { isFeedSource, translationEnabled } from '../shared/types.js';
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { parseDocument } from 'htmlparser2';
@@ -102,7 +102,7 @@ export class RssTranslations {
     };
   }
   syncWebsite(feed: Feed): void {
-    if (feed.sourceType === 'rss' || !translationEnabled(feed)) return;
+    if (isFeedSource(feed) || !translationEnabled(feed)) return;
     for (const row of this.db.prepare('SELECT id,title,description,image,link FROM feed_items WHERE feed_id=?').all(feed.id)) {
       const html = sanitizeDescription(row.description ? String(row.description) : undefined, String(row.link), row.image ? String(row.image) : undefined);
       const previous = this.db.prepare('SELECT body_json FROM translations WHERE item_id=?').get(row.id);

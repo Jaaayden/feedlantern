@@ -10,6 +10,7 @@ import {
   type BundlePayload,
   type DetectionResult,
   type ExtractedItem,
+  type PubmedPreview,
   type Feed,
   type FeedInput,
   type FeedItem,
@@ -33,6 +34,7 @@ export interface FeedPayload { feed: Feed; feedUrl: string }
 export interface FeedDetail extends FeedPayload { items: FeedItem[]; outputStatus: Record<string, ItemOutputStatus>; filterTimedOut?: boolean }
 export type BulkAction = 'copy' | 'pause' | 'resume' | 'refresh' | 'delete' | 'settings';
 export interface BulkResult { id: string; ok: boolean; error?: string; feedUrl?: string }
+export type { PubmedPreview };
 export interface RssPreview { title: string; items: Array<{ title: string; link: string; contentHtml?: string }> }
 export interface BrowserOpenInput { url: string; credentialId?: string | null; networkProfileId?: string | null; waitMs?: number; waitForSelector?: string }
 export interface ImportJobInput {
@@ -164,6 +166,7 @@ export class FeedLanternClient {
   previewOnFeed(id: string, rules: SelectionRules): Promise<RulePreview> { return this.request('POST', `/api/feeds/${encodeURIComponent(id)}/health/preview`, { body: { rules } }); }
   bulk(action: BulkAction, ids: string[], settings?: BulkFeedSettingsInput): Promise<{ results: BulkResult[] }> { return this.request('POST', '/api/feeds/bulk', { body: { ids, action, ...(settings ? { settings } : {}) } }); }
   rssPreview(url: string, networkProfileId?: string | null): Promise<RssPreview> { return this.request('POST', '/api/rss/preview', { body: { url, ...(networkProfileId ? { networkProfileId } : {}) } }); }
+  pubmedPreview(query: string, networkProfileId?: string | null): Promise<PubmedPreview> { return this.request('POST', '/api/pubmed/preview', { body: { query, ...(networkProfileId ? { networkProfileId } : {}) } }); }
 
   // Remote editor (browser) sessions, used for detection and rule previews.
   openBrowser(input: BrowserOpenInput): Promise<ScreenFrame> { return this.request('POST', '/api/browser', { body: input }); }

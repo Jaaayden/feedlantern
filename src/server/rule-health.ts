@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { msg, tl } from './i18n.js';
 import type { DatabaseSync } from 'node:sqlite';
-import { defaultApplicationSettings, type ApplicationSettings, type ExtractedItem, type Feed, type RuleHealthField, type RuleHealthReason, type RuleHealthWarning } from '../shared/types.js';
+import { defaultApplicationSettings, isFeedSource, type ApplicationSettings, type ExtractedItem, type Feed, type RuleHealthField, type RuleHealthReason, type RuleHealthWarning } from '../shared/types.js';
 import { safeDiagnostic, type FetchHistory } from './fetch-history.js';
 
 /**
@@ -116,7 +116,7 @@ export class RuleHealth {
 
   /** Record a successful website fetch and return the active warning, if any. */
   record(feed: Feed, logId: number, items: ExtractedItem[], now = Date.now()): RuleHealthWarning | null {
-    if (feed.sourceType === 'rss') return null;
+    if (isFeedSource(feed)) return null;
     const signature = ruleSignature(feed);
     const sample = measureItems(items);
     const state = this.db.prepare('SELECT * FROM feed_health WHERE feed_id=?').get(feed.id);

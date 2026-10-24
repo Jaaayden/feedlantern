@@ -40,6 +40,7 @@ import type {
   TranslationMode,
   TranslationProviderId,
   TranslationProvidersInfo,
+  PubmedPreview,
 } from '../shared/types';
 
 /** Why each stored item is or is not published, keyed by item id. */
@@ -217,6 +218,10 @@ export const api = {
     redetect: (id: string) => request<RuleRedetectResult>(`/api/feeds/${encodeURIComponent(id)}/health/redetect`, { method: 'POST', body: {} }),
     preview: (id: string, rules: SelectionRules) => request<RulePreview>(`/api/feeds/${encodeURIComponent(id)}/health/preview`, { method: 'POST', body: { rules } }),
     ignore: (id: string) => request<{ feed: Feed; feedUrl: string }>(`/api/feeds/${encodeURIComponent(id)}/health/ignore`, { method: 'POST', body: {} }),
+  },
+  pubmed: {
+    /** Matches and the newest few articles of a PubMed query (NCBI E-utilities, shared rate limit). */
+    preview: (query: string, networkProfileId?: string | null, signal?: AbortSignal) => request<PubmedPreview>('/api/pubmed/preview', { method: 'POST', body: { query, ...(networkProfileId ? { networkProfileId } : {}) }, signal }),
   },
   feeds: {
     previewRss: (url: string, networkProfileId?: string | null) => request<{ title: string; items: ExtractedItem[] }>('/api/rss/preview', { method: 'POST', body: { url, ...(networkProfileId ? { networkProfileId } : {}) } }),

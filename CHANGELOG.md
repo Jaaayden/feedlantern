@@ -2,15 +2,16 @@
 
 ## 未发布
 
-### PubMed 期刊订阅改用 NCBI E-utilities
+### PubMed 检索订阅
 
-- PubMed 的期刊 RSS 地址（`https://pubmed.ncbi.nlm.nih.gov/rss/journals/<NLM ID>/…`）现在对程序访问一律返回工作量证明验证页，原先这类订阅全部失败。FeedLantern 不会尝试绕过这类验证，而是改用 NCBI 官方的 E-utilities 读取同一期刊：esearch 按 NLM ID 检索、按出版日期取最新文章（条数与地址中的 `limit` 一致，默认 15，最多 100），efetch 取标题、作者、期刊、发表日期和摘要，摘要放进正文供翻译。原地址本身不再请求。
-- 已有的期刊订阅无需操作：条目身份沿用原 RSS 的 `pubmed:<PMID>`，已存文章和译文继续使用，不会重复推送；发表时间与原 RSS 相同。
-- 遵守 NCBI 使用规则：所有 PubMed 请求共用一个队列，不带 API Key 时每秒最多 3 个、带 Key 时 10 个，批量刷新依次排队；每个请求带 `tool=feedlantern`，填写后带联系邮箱；429 时整条队列暂停后重试一次。
-- 新增“设置 → PubMed（NCBI）”：可选的 NCBI API Key（加密保存，不回显，轻量配置导出不含）和联系邮箱。
-- 订阅面板的来源地址旁标出“通过 NCBI E-utilities 获取”；新建 RSS 翻译订阅时粘贴期刊地址会提示，预览照常可用。E-utilities 请求同样经过网络安全策略、DNS over HTTPS 和订阅的网络配置代理。
-- 检索式订阅（`/rss/search/…`）仍直接抓取。
-- 接口：应用设置新增 `ncbi`（`apiKey` 只写、`apiKeyConfigured`、`email`）。
+- 新增订阅来源“PubMed 检索”（“新建订阅”菜单）：像 PubMed 高级检索（Advanced Search Builder）一样添加多行条件（逻辑运算 + 字段 + 检索词），字段包括全部字段、标题/摘要、标题、作者、第一作者、末位作者、期刊、机构、MeSH 主题词、文献类型、语言和期刊 NLM ID；可筛选发表日期（最近 N 天或日期区间）、只看有摘要、文章类型（综述、系统综述、Meta 分析、临床试验、随机对照试验、病例报告）。不用再去 PubMed 网站生成 RSS 链接。
+- 实时显示生成的 PubMed 查询式，检索词自动转义并加引号；也可以直接编辑查询式，能还原成条件时构建器同步更新，否则提示“已切换为手动编辑”。引号、括号不配对等问题会直接指出，不会发给 NCBI。
+- 预览显示匹配总数和最新 5 篇（标题、期刊、日期、作者）以及 NCBI 的提示；输入停顿后才请求，相同查询一分钟内复用，受全局 NCBI 限流约束。提供“在 PubMed 中打开”对照，订阅名默认根据条件生成。
+- 抓取通过 NCBI E-utilities：esearch 按 PubMed 的 “Most recent” 顺序取最新 N 篇（10/20/50/100，默认 20），efetch 取标题、链接、作者、期刊、发表日期和摘要。可选原文、仅译文或双语输出，条目过滤、输出与保留条数、刷新间隔、网络配置（代理和 DoH）、聚合订阅、通知照常可用；编辑时回到同一个构建器，修改条件后已存文章保留。
+- 遵守 NCBI 使用规则：所有 PubMed 请求共用一个队列，不带 API Key 时每秒最多 3 个、带 Key 时 10 个；每个请求带 `tool=feedlantern`，填写后带联系邮箱；429 时整条队列暂停后重试一次。“设置 → PubMed（NCBI）”可填写可选的 NCBI API Key（加密保存，不回显，轻量配置导出不含）和联系邮箱。
+- PubMed 的 RSS 链接仍按普通 RSS 抓取，不会在后台改写。期刊 RSS（`/rss/journals/…`）现在被 NCBI 的工作量证明验证页拦截，报错会说明原因并建议改用检索订阅或检索式 RSS（例如在 PubMed 搜 `"PLoS Pathog"[jour]` 后点 Create RSS）。订阅面板对 PubMed 的期刊 RSS 和检索式 RSS 给出提示，并可在确认后“转换为 PubMed 检索订阅”：期刊 RSS 按地址中的期刊缩写预填期刊条件，检索式 RSS 需要重新填写条件；订阅 ID、RSS 地址、已存条目和译文都保留，已有文章不会被当成新文章。
+- CLI 新增 `pubmed preview` 和 `pubmed create`（`--query`，或 `--title-abstract`、`--author`、`--journal`、`--affiliation` 等条件选项），MCP 新增 `pubmed_preview`、`pubmed_create` 工具。
+- 接口：订阅新增来源类型 `pubmed` 和 `pubmed: { query, limit }`（订阅的 `url` 是对应的 PubMed 检索页）；新增 `POST /api/pubmed/preview`；查询式无法发送时返回错误代码 `pubmed_query_invalid`。应用设置新增 `ncbi`（`apiKey` 只写、`apiKeyConfigured`、`email`）。
 
 ### 非订阅源响应的准确报错
 

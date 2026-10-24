@@ -1,7 +1,7 @@
-import { defaultApplicationSettings, errorCodeForStatus, isTargetLanguage, isTranslationProvider, OUTPUT_LIMIT, translationEnabled, type ApiErrorCode, type TranslationProviderId, type TranslationProvidersInfo } from '../shared/types.js';
+import { defaultApplicationSettings, errorCodeForStatus, isFeedSource, isTargetLanguage, isTranslationProvider, OUTPUT_LIMIT, translationEnabled, type ApiErrorCode, type TranslationProviderId, type TranslationProvidersInfo } from '../shared/types.js';
 import { providerProblem } from './translation-providers.js';
-import { probeTarget, type SourceFetcher } from './rss-source.js';
-import { NcbiRateLimiter, sourceFetcher } from './pubmed.js';
+import { fetchSource, probeTarget, type SourceFetcher, type SourceOptions, type SourceResult } from './rss-source.js';
+import { fetchPubmedSearch, NcbiRateLimiter, previewPubmed, withPubmedRssHint } from './pubmed.js';
 import { NetworkPolicy, NetworkPolicyError } from './network.js';
 import { networkOptions, parseNetworkProfileInput, type FetchNetworkOptions } from './fetch-options.js';
 import { TranslationError, TranslationWorker, type Translator } from './rss-translation.js';
@@ -33,6 +33,7 @@ import type {
   DetectionResult,
   ExtractedItem,
   Feed,
+  PubmedPreview,
   FetchSource,
   FetchStatus,
   FeedInput,
@@ -68,7 +69,7 @@ import { getConfig, ensureDataDir, hasDist, isAllowedOrigin, type ConfigInput, t
 import { renderAtom, renderJsonFeed, renderRss, rssEtag } from './rss.js';
 import { classifyItems, ItemFilterError, parseItemFilter, retentionProblem } from './feed-output.js';
 import { etagMatches, renderRssPreview, wantsHtmlPreview } from './rss-preview.js';
-import { parseTargetLanguage, parseTranslationMode, parseTranslationProvider, asInteger, describeError, asNonEmptyString, asOptionalString, asRecord, cookieMetadata, frameError, friendlyError, logHiddenError, parseCredentialInput, parseFeedInput, parseHttpUrl, parsePagination, parsePartialRules, parseRules } from './validation.js';
+import { parseTargetLanguage, parseTranslationMode, parseTranslationProvider, asInteger, describeError, asNonEmptyString, asOptionalString, asRecord, cookieMetadata, frameError, friendlyError, logHiddenError, parseCredentialInput, parseFeedInput, parseHttpUrl, parsePagination, parsePartialRules, parsePubmedQueryText, parseRules } from './validation.js';
 import { reportSummary } from './pagination.js';
 import { Store, type CredentialValue } from './store.js';
 import { registerRuleHealthRoutes } from './rule-health-routes.js';
@@ -118,9 +119,14 @@ export interface CreateAppOptions extends ConfigInput {
   translationIntervalMs?: number;
   /** Test-only replacement for DeepL's fixed API endpoints. */
   deeplEndpoints?: { free: string; pro: string };
-  /** Test-only replacement for the NCBI E-utilities base address (PubMed journal subscriptions). */
+  /** Test-only replacement for the NCBI E-utilities base address (PubMed search subscriptions). */
   ncbiEndpoint?: string;
 }
+
+/** How long an identical PubMed preview is answered from memory. */
+const PUBMED_PREVIEW_CACHE_MS = 60_000;
+/** A preview that would wait longer than this for its NCBI slot is refused (429) instead of queued. */
+const PUBMED_PREVIEW_MAX_WAIT_MS = 10_000;
 
 function authHeaders(request: FastifyRequest): { marker: boolean; csrf?: string } {
   const marker = request.headers['x-feedlantern'];
@@ -266,9 +272,15 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       notifier.wake();
     } catch { console.error('Failed to queue a translation alert'); }
   }, translationNetwork);
-  // Every request to NCBI (all PubMed journal subscriptions, previews and batch imports) shares one queue.
+  const fetchPolicy = () => new NetworkPolicy({ allowedHosts: config.allowedHosts, dnsOverHttps: config.dnsOverHttps });
+  // RSS addresses are fetched as given; a PubMed journal RSS address blocked by NCBI gets an explanation.
+  const getRss: SourceFetcher = withPubmedRssHint(options.rssFetcher ?? ((url, fetchOptions) => fetchSource(url, fetchPolicy(), fetchOptions)));
+  // Every request to NCBI (all PubMed search subscriptions and previews) shares one queue.
   const ncbi = { limiter: new NcbiRateLimiter(), settings: () => store.getSettings().ncbi, endpoint: options.ncbiEndpoint };
-  const getRss: SourceFetcher = options.rssFetcher ?? sourceFetcher(() => new NetworkPolicy({ allowedHosts: config.allowedHosts, dnsOverHttps: config.dnsOverHttps }), ncbi);
+  const getPubmed = (feed: Feed, fetchOptions: SourceOptions): Promise<SourceResult> => {
+    if (!feed.pubmed) throw new LocalizedError(msg('error.pubmedFeedInvalid'));
+    return fetchPubmedSearch(feed.pubmed, fetchPolicy(), ncbi, fetchOptions);
+  };
   const refreshInFlight = new Map<string, { promise: Promise<Feed | null>; force: boolean }>();
 
   // Unkeyed mutations form barriers; independent captures share bounded slots.
@@ -333,7 +345,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     try {
       // The same profile applies to every page of a multi-page collection (one browser context).
       const network = networkFor(feed.networkProfileId, feed.ownerId);
-      const rss = feed.sourceType === 'rss' ? await getRss(feed.url, { ...store.translations.sourceState(feed.id), signal: AbortSignal.any([store.userSignal(feed.ownerId), ...(actorSignal ? [actorSignal] : [])]), ...(network ? { network } : {}) }) : undefined;
+      const fetchSignal = AbortSignal.any([store.userSignal(feed.ownerId), ...(actorSignal ? [actorSignal] : [])]);
+      const rss = feed.sourceType === 'rss' ? await getRss(feed.url, { ...store.translations.sourceState(feed.id), signal: fetchSignal, ...(network ? { network } : {}) })
+        : feed.sourceType === 'pubmed' ? await getPubmed(feed, { signal: fetchSignal, ...(network ? { network } : {}) }) : undefined;
       let pages: PaginationReport | undefined;
       // Rule health compares page 1 only: how many pages a run reads changes with
       // the incremental stop and the page limit, which must not look like a broken rule.
@@ -1328,12 +1342,41 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       feedsGuard(request);
       try { const signal = operationSignal(request); const network = networkFor(profileId, workspace(request).userId); const result = await getRss(url, { signal, ...(network ? { network } : {}) }); feedsGuard(request); if (signal.aborted) throw new AppError(409, 'error.canceled'); return { title: result.title, items: result.items.slice(0, 3).map(item => ({ title: item.title, link: item.link, contentHtml: item.html })) }; }
       catch (error) {
-        // Scripts tell a page served instead of a feed (and NCBI trouble) apart from a bad address.
-        const code = error instanceof NotAFeedError ? 'source_not_feed' : error instanceof NcbiError ? (error.status === 429 ? 'rate_limited' : 'upstream_error') : undefined;
+        // Scripts tell a page served instead of a feed apart from a bad address.
+        const code = error instanceof NotAFeedError ? 'source_not_feed' : undefined;
         const shown = friendlyError(error, msg('error.rssFetchFailed'));
         throw new AppError(400, shown.key === 'error.raw' ? rawText(safeDiagnostic(lt(shown))) : shown, code);
       }
     }, [siteKey(url)]);
+  });
+  // Identical previews within a minute (typing back and forth, a second tab) reuse the answer instead of asking NCBI again.
+  const pubmedPreviews = new Map<string, { at: number; value: PubmedPreview }>();
+  app.post('/api/pubmed/preview', async request => {
+    feedsGuard(request);
+    const body = asRecord(request.body);
+    const query = parsePubmedQueryText(body.query);
+    const profileId = asOptionalString(body.networkProfileId, 'networkProfileId', 200);
+    const network = networkFor(profileId, workspace(request).userId);
+    const key = JSON.stringify([profileId ?? '', query]);
+    const cached = pubmedPreviews.get(key);
+    if (cached && Date.now() - cached.at < PUBMED_PREVIEW_CACHE_MS) return cached.value;
+    // Previews never push scheduled PubMed refreshes far back in the shared NCBI queue.
+    if (ncbi.limiter.backlog() > PUBMED_PREVIEW_MAX_WAIT_MS) throw new AppError(429, 'error.pubmedBusy');
+    try {
+      const signal = operationSignal(request);
+      const value = await previewPubmed(query, fetchPolicy(), ncbi, { signal, ...(network ? { network } : {}) });
+      feedsGuard(request);
+      if (signal.aborted) throw new AppError(409, 'error.canceled');
+      pubmedPreviews.delete(key);
+      pubmedPreviews.set(key, { at: Date.now(), value });
+      for (const old of pubmedPreviews.keys()) { if (pubmedPreviews.size <= 100) break; pubmedPreviews.delete(old); }
+      return value;
+    } catch (error) {
+      if (error instanceof AppError) throw error;
+      const shown = friendlyError(error, msg('error.pubmedPreviewFailed'));
+      const limited = error instanceof NcbiError && error.status === 429;
+      throw new AppError(limited ? 429 : 502, shown.key === 'error.raw' ? rawText(safeDiagnostic(lt(shown))) : shown, limited ? 'rate_limited' : 'upstream_error');
+    }
   });
   app.get('/api/feeds/:id/translation/progress', async request => {
     feedsGuard(request);
@@ -1381,7 +1424,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const input = parseFeedInput(request.body);
     if (input.credentialId && !store.getCredentialSummary(input.credentialId)) throw new AppError(400, 'error.credentialNotFound');
     const created = store.createFeed(input, workspace(request).userId);
-    if (input.sourceType === 'rss') {
+    if (isFeedSource(input)) {
       void doRefresh(created.feed.id, false, 'create', () => operationSignal(request)).catch(() => {});
       return feedPayload(created.feed);
     }

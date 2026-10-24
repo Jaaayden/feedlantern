@@ -48,6 +48,8 @@ Administrators open Settings → Logs & display to set the feed view and the log
 
 Translation services selects the default service (free Google Translate, DeepL, an OpenAI-compatible API) and configures the DeepL API key and plan, the OpenAI-compatible endpoint, model, API key and optional system prompt, and each service's concurrency (1–16) and request interval (0–5000 ms). The default service must be configured before saving. API keys are stored encrypted and never shown; local or LAN models need their exact `host:port` in the network allowlist. See the [user guide](user-guide.md#translation-services).
 
+PubMed (NCBI) configures NCBI E-utilities, used by PubMed search feeds and the search preview: an optional NCBI API key (stored encrypted and never shown; raises the limit from 3 to 10 requests per second) and an optional contact email (sent to NCBI with every request; nothing is sent when empty). See the [user guide](user-guide.md#pubmed-feeds).
+
 Server & network offers background concurrency (1–4), the exact network allowlist, DNS over HTTPS, trusted proxy IPs/CIDRs, the public URL, secure cookies, the session lifetime, and the listen address and port. After saving, notification and fetch settings apply at once; network or concurrency changes close old page editing sessions. The listen address and port apply after a restart; the container's port mapping must still match the deployment.
 
 Existing environment variables are only imported when the web settings are first created; afterwards the values saved on the web win. Removing an old `BARK_URL` doesn't lose the migrated Bark settings. The data volume, browser install path and container port mapping belong to the deployment; application settings can't move the database or install the browser.
