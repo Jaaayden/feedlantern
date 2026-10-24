@@ -10,6 +10,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createApp, Store, type BrowserServiceLike } from '../src/server/app.js';
 import type { ExtractedItem, SelectionRules } from '../src/shared/types.js';
+import { NotAFeedError, sourceMessages } from '../src/server/fetch-errors.js';
 import { run, type Io } from '../packages/cli/src/cli.js';
 import type { Connection } from '../packages/cli/src/config.js';
 import { createMcpServer, toolNames } from '../packages/cli/src/mcp.js';
@@ -43,7 +44,9 @@ async function setup() {
   const dir = mkdtempSync(join(tmpdir(), 'fl-agent-')), store = new Store(dir);
   store.createAdmin('admin', 'admin-password');
   const alice = store.createUser('alice', 'alice-password');
-  const app = await createApp({ store, dataDir: dir, browserService: browser, startScheduler: false });
+  // A source that serves a bot-check page instead of a feed.
+  const rssFetcher = async () => { throw new NotAFeedError(sourceMessages.challengePage(200, 'captcha')); };
+  const app = await createApp({ store, dataDir: dir, browserService: browser, rssFetcher, startScheduler: false });
   await app.listen({ port: 0, host: '127.0.0.1' });
   const address = app.server.address();
   const url = `http://127.0.0.1:${typeof address === 'object' && address ? address.port : 0}`;
@@ -182,6 +185,12 @@ test('只读令牌写操作返回 token_read_only 和退出码 3，其他错误�
     assert.equal((await t.cli(['feeds', 'get'])).code, 2);
     assert.equal((await t.cli(['feeds', 'list', '--bogus'])).code, 2);
     assert.match((await t.cli(['help', 'preview'])).stdout, /--feed/);
+
+    // A web page served instead of a feed has its own code (exit code 4).
+    const notFeed = await t.cli(['rss', 'preview', 'https://example.test/rss.xml']);
+    assert.deepEqual([notFeed.code, notFeed.error().code, notFeed.error().status], [4, 'source_not_feed', 400]);
+    assert.match(notFeed.error().message, /反爬验证页/);
+    assert.match(notFeed.error().hint, /不会绕过/);
 
     // The token's own call log shows the denied call.
     const calls = await t.cli(['tokens', 'logs', '--status', 'denied'], reader);
@@ -327,6 +336,8 @@ test('MCP 工具：写工具在只读令牌下返回清晰错误，危险操作�
     assert.equal((await writer.call('feed_delete', { id, confirm: true })).isError, false);
     assert.equal(t.store.getFeed(id), null);
     assert.equal((await writer.call('token_logs', { limit: 5 })).body.calls.length, 5);
+    const notFeed = await writer.call('rss_preview', { url: 'https://example.test/rss.xml' });
+    assert.deepEqual([notFeed.isError, notFeed.body.error.code], [true, 'source_not_feed']);
   } finally { await writer.close(); await reader.close(); await readOnly.close(); await t.close(); }
 });
 

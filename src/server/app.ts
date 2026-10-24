@@ -9,7 +9,7 @@ import type { BarkSender } from './bark.js';
 import { NotificationWorker, alertTitle, channelsSummary, defaultSenders, ntfySchema, notificationChannelsSchema, telegramSchema, webhookSchema, type ChannelConfigs, type ChannelSender, type NotificationEvent, type NotificationSenders } from './notify.js';
 import { applicationSettingsSchema, settingsFromConfig, applyRuntimeSettings, ncbiSettingsSchema } from './settings.js';
 import { safeDiagnostic } from './fetch-history.js';
-import { isAbortError } from './fetch-errors.js';
+import { isAbortError, NcbiError, NotAFeedError } from './fetch-errors.js';
 import { TaskPool, siteKey } from './task-pool.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import ipaddr from 'ipaddr.js';
@@ -1273,7 +1273,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return enqueueRefresh(async () => {
       feedsGuard(request);
       try { const signal = operationSignal(request); const network = networkFor(profileId, workspace(request).userId); const result = await getRss(url, { signal, ...(network ? { network } : {}) }); feedsGuard(request); if (signal.aborted) throw new AppError(409, '操作已取消'); return { title: result.title, items: result.items.slice(0, 3).map(item => ({ title: item.title, link: item.link, contentHtml: item.html })) }; }
-      catch (error) { throw new AppError(400, safeDiagnostic(friendlyError(error, 'RSS 获取失败'))); }
+      catch (error) {
+        // Scripts tell a page served instead of a feed (and NCBI trouble) apart from a bad address.
+        const code = error instanceof NotAFeedError ? 'source_not_feed' : error instanceof NcbiError ? (error.status === 429 ? 'rate_limited' : 'upstream_error') : undefined;
+        throw new AppError(400, safeDiagnostic(friendlyError(error, 'RSS 获取失败')), code);
+      }
     }, [siteKey(url)]);
   });
   app.get('/api/feeds/:id/translation/progress', async request => {

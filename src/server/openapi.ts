@@ -46,7 +46,7 @@ const networkProfileId = nullable(str({ description: '网络配置 ID；null 表
 const schemas: Record<string, Schema> = {
   Error: object({
     error: str({ description: '面向用户的错误说明（可能随界面语言变化，脚本请判断 code）' }),
-    code: str({ enum: [...API_ERROR_CODES], description: '机器可读的错误代码：token_read_only 为只读令牌执行写操作，token_not_allowed 为令牌调用了仅限网页会话的接口；其余按 HTTP 状态归类' }),
+    code: str({ enum: [...API_ERROR_CODES], description: '机器可读的错误代码：token_read_only 为只读令牌执行写操作，token_not_allowed 为令牌调用了仅限网页会话的接口，source_not_feed 为来源返回网页（常见于反爬验证页）而不是 RSS/Atom；其余按 HTTP 状态归类' }),
   }, ['error', 'code']),
   Ok: object({ ok: { const: true } }, ['ok']),
   AuthState: object({

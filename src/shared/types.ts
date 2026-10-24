@@ -322,8 +322,10 @@ export interface ApiTokenCall {
  */
 export type ApiErrorCode =
   | 'validation' | 'unauthorized' | 'forbidden' | 'token_read_only' | 'token_not_allowed' | 'not_found' | 'conflict'
-  | 'too_large' | 'rate_limited' | 'server_error' | 'upstream_error' | 'unavailable';
-export const API_ERROR_CODES: readonly ApiErrorCode[] = ['validation', 'unauthorized', 'forbidden', 'token_read_only', 'token_not_allowed', 'not_found', 'conflict', 'too_large', 'rate_limited', 'server_error', 'upstream_error', 'unavailable'];
+  | 'too_large' | 'rate_limited' | 'server_error' | 'upstream_error' | 'unavailable'
+  /** The source answered with a web page (often a bot check) or an unusual status instead of RSS/Atom. */
+  | 'source_not_feed';
+export const API_ERROR_CODES: readonly ApiErrorCode[] = ['validation', 'unauthorized', 'forbidden', 'token_read_only', 'token_not_allowed', 'not_found', 'conflict', 'too_large', 'rate_limited', 'server_error', 'upstream_error', 'unavailable', 'source_not_feed'];
 /** The code an error with this HTTP status gets unless the server names a more specific one. */
 export function errorCodeForStatus(status: number): ApiErrorCode {
   if (status === 401) return 'unauthorized';

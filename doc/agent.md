@@ -85,7 +85,7 @@ CLI 用令牌调用时不检查 Host，所以用内网地址（例如 Docker 网
 {"error":{"code":"token_read_only","status":403,"message":"只读令牌不能执行写操作","hint":"当前是只读（read）令牌，只能执行查询；写操作需要在“设置 → 访问令牌”中创建 write 令牌","method":"POST","path":"/api/feeds"}}
 ```
 
-`code` 是稳定的机器可读代码，`message` 和 `hint` 面向人，可能随语言变化。`code` 包括服务端返回的 `token_read_only`、`token_not_allowed`、`unauthorized`、`forbidden`、`validation`、`not_found`、`conflict`、`too_large`、`rate_limited`、`server_error`、`upstream_error`、`unavailable`，以及 CLI 自己的 `usage`、`not_configured`、`network`、`timeout`、`bad_response`、`internal`。
+`code` 是稳定的机器可读代码，`message` 和 `hint` 面向人，可能随语言变化。`code` 包括服务端返回的 `token_read_only`、`token_not_allowed`、`unauthorized`、`forbidden`、`validation`、`not_found`、`conflict`、`too_large`、`rate_limited`、`source_not_feed`、`server_error`、`upstream_error`、`unavailable`，以及 CLI 自己的 `usage`、`not_configured`、`network`、`timeout`、`bad_response`、`internal`。
 
 | 退出码 | 含义 | 对应 code |
 | --- | --- | --- |
@@ -93,12 +93,12 @@ CLI 用令牌调用时不检查 Host，所以用内网地址（例如 Docker 网
 | 1 | CLI 内部错误 | `internal` |
 | 2 | 用法或配置错误：参数不对、缺少 `--yes`、没有配置地址或令牌 | `usage`、`not_configured` |
 | 3 | 鉴权失败：令牌无效或过期、只读令牌执行写操作、令牌无权调用的接口、账号权限不足 | `unauthorized`、`token_read_only`、`token_not_allowed`、`forbidden` |
-| 4 | 服务端拒绝了请求：参数校验失败、不存在、冲突、内容过大、限流 | `validation`、`not_found`、`conflict`、`too_large`、`rate_limited` |
+| 4 | 服务端拒绝了请求：参数校验失败、不存在、冲突、内容过大、限流，或 RSS 来源返回的是网页（常见于反爬验证页）而不是订阅源 | `validation`、`not_found`、`conflict`、`too_large`、`rate_limited`、`source_not_feed` |
 | 5 | 服务端错误，或响应不是 FeedLantern 的 JSON | `server_error`、`upstream_error`、`unavailable`、`bad_response` |
 | 6 | 网络错误或超时 | `network`、`timeout` |
 | 7 | 批量操作部分失败（结果仍打印在标准输出） | |
 
-`feeds refresh` 在抓取失败时仍返回 0，结果中的 `ok: false` 和 `error` 说明原因（请求本身成功了）。默认超时 180 秒，可用 `--timeout <秒>` 或 `FEEDLANTERN_TIMEOUT` 调整。
+`feeds refresh` 在抓取失败时仍返回 0，结果中的 `ok: false` 和 `error` 说明原因（请求本身成功了）；抓取失败的原因只以文字保存在 `feed.lastError` 和抓取日志中，没有错误代码。创建 RSS 翻译订阅前先运行 `rss preview <url>`：来源返回网页而不是 RSS/Atom 时得到 `code: "source_not_feed"`（退出码 4），PubMed 期刊经 NCBI 获取失败时为 `upstream_error`（NCBI 限流时为 `rate_limited`）。默认超时 180 秒，可用 `--timeout <秒>` 或 `FEEDLANTERN_TIMEOUT` 调整。
 
 ## 写操作的保护
 
