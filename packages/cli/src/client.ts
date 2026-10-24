@@ -11,6 +11,7 @@ import {
   type DetectionResult,
   type ExtractedItem,
   type PubmedPreview,
+  type PubmedRssCheck,
   type Feed,
   type FeedInput,
   type FeedItem,
@@ -104,15 +105,16 @@ export class FeedLanternClient {
 
   /**
    * Sends one request. In dry-run mode a write is recorded in `planned` and
-   * resolves to `undefined` without contacting the server.
+   * resolves to `undefined` without contacting the server; `safe` marks a POST
+   * that changes nothing (a check), which is still sent.
    */
-  async request<T>(method: HttpMethod, path: string, options: { body?: unknown; query?: Record<string, string | number | undefined>; auth?: boolean } = {}): Promise<T> {
+  async request<T>(method: HttpMethod, path: string, options: { body?: unknown; query?: Record<string, string | number | undefined>; auth?: boolean; safe?: boolean } = {}): Promise<T> {
     const query = Object.entries(options.query ?? {}).filter((entry): entry is [string, string | number] => entry[1] !== undefined && entry[1] !== '');
     const target = `${this.url}${path}${query.length ? `?${new URLSearchParams(query.map(([key, value]) => [key, String(value)]))}` : ''}`;
     const hasBody = method !== 'GET' && method !== 'DELETE' || options.body !== undefined;
     const headers = this.headers(hasBody);
     if (options.auth === false) delete headers.Authorization;
-    if (this.dryRun && method !== 'GET') {
+    if (this.dryRun && method !== 'GET' && !options.safe) {
       const { Authorization: _secret, ...shown } = headers;
       this.planned.push({ method, url: target, headers: { ...shown, ...(_secret ? { Authorization: 'Bearer fl_…' } : {}) }, ...(hasBody ? { body: options.body ?? {} } : {}) });
       return undefined as T;
@@ -166,6 +168,8 @@ export class FeedLanternClient {
   previewOnFeed(id: string, rules: SelectionRules): Promise<RulePreview> { return this.request('POST', `/api/feeds/${encodeURIComponent(id)}/health/preview`, { body: { rules } }); }
   bulk(action: BulkAction, ids: string[], settings?: BulkFeedSettingsInput): Promise<{ results: BulkResult[] }> { return this.request('POST', '/api/feeds/bulk', { body: { ids, action, ...(settings ? { settings } : {}) } }); }
   rssPreview(url: string, networkProfileId?: string | null): Promise<RssPreview> { return this.request('POST', '/api/rss/preview', { body: { url, ...(networkProfileId ? { networkProfileId } : {}) } }); }
+  pubmedCheck(id: string): Promise<PubmedRssCheck> { return this.request('POST', `/api/feeds/${encodeURIComponent(id)}/pubmed-check`, { body: {}, safe: true }); }
+  pubmedConvert(id: string, query: string, limit?: number): Promise<FeedPayload> { return this.request('POST', `/api/feeds/${encodeURIComponent(id)}/pubmed-convert`, { body: { query, ...(limit ? { limit } : {}) } }); }
   pubmedPreview(query: string, networkProfileId?: string | null): Promise<PubmedPreview> { return this.request('POST', '/api/pubmed/preview', { body: { query, ...(networkProfileId ? { networkProfileId } : {}) } }); }
 
   // Remote editor (browser) sessions, used for detection and rule previews.

@@ -126,6 +126,22 @@ const tools: ToolDef[] = [
     run: (client, args) => { const { networkProfileId, ...search } = args; return ops.pubmedPreview(client, search as ops.PubmedSearchInput, networkProfileId as string | undefined); },
   },
   {
+    name: 'pubmed_convert_check', scope: 'write', annotations: fetches, input: { feedIds: z.array(z.string().min(1)).max(500).optional().describe(d('pubmedCheckIds')) },
+    async run(client, args) {
+      const ids = args.feedIds as string[] | undefined;
+      if (!ids?.length) return ops.pubmedConvert(client, { allVerified: true });
+      const feeds = [];
+      for (const feedId of ids) feeds.push(...(await ops.pubmedConvert(client, { feedId })).feeds);
+      return { checked: feeds.length, verified: feeds.filter(feed => feed.status === 'verified').length, review: feeds.filter(feed => feed.status === 'review').length, feeds };
+    },
+  },
+  {
+    name: 'pubmed_convert', scope: 'write', annotations: idempotent,
+    input: { id, query: z.string().min(1).max(4000).describe(d('pubmedConvertQuery')), limit: z.union([z.literal(10), z.literal(20), z.literal(50), z.literal(100)]).optional().describe(d('pubmedLimit')), confirm, dryRun },
+    confirm: () => true,
+    run: async (client, args) => { const payload = await client.pubmedConvert(s(args.id), s(args.query), args.limit as number | undefined); return client.dryRun ? ops.dryRunResult(client) : { converted: true, ...payload }; },
+  },
+  {
     name: 'pubmed_create', scope: 'write', annotations: write,
     input: {
       ...pubmedConditions, name: z.string().min(1).max(200).optional().describe(d('pubmedName')), limit: z.union([z.literal(10), z.literal(20), z.literal(50), z.literal(100)]).optional().describe(d('pubmedLimit')),

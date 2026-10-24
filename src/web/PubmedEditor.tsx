@@ -137,6 +137,7 @@ export function PubmedEditor({ initial, convert = false, check, prefill, existin
     <button className="back-link" onClick={cancel}><ArrowLeft size={16} />{t('common.backToFeeds')}</button>
     <div className="page-heading"><div><span className="section-kicker">SEARCH PUBMED</span><h1>{title}</h1><p>{t('pubmedEditor.lead')}</p></div></div>
     {rss && check && <div className={`notice pubmed-convert-note ${check.status === 'review' ? 'is-warning' : ''}`} data-testid="pubmed-convert-note"><span>
+      {rss.kind === 'journal' && <>{t('pubmedEditor.checkJournal', { journal: rss.name ? `${rss.name} (NLM ID ${rss.nlmId})` : `NLM ID ${rss.nlmId}` })}{' '}</>}
       {check.status === 'review' ? t('pubmedEditor.checkReview', { reason: reasonText(check) }) : t('pubmedEditor.checkVerified')}{' '}
       {check.coverage?.total ? t('pubmedEditor.checkCoverage', { coverage: coverageText(check) }) : ''}{check.repaired ? ` ${t('pubmedConvert.repaired')}` : ''}{check.error ? ` ${check.error}` : ''}{' '}
       {check.sourceTitle && <>{t('pubmedEditor.checkTitle')} <code>{check.sourceTitle}</code>{' '}</>}

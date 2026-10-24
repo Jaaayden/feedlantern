@@ -1027,6 +1027,26 @@ summary { cursor: pointer; }
 .notice.is-warning::before { color: var(--warning); }
 .pubmed-rss-notice { align-items: center; flex-wrap: wrap; }
 .pubmed-rss-notice > span { flex: 1 1 260px; }
+.pubmed-rss-notice-body { flex: 1 1 260px; display: grid; gap: 10px; min-width: 0; }
+.pubmed-check-result { display: grid; gap: 8px; padding: 10px 12px; border-radius: var(--r-sm); background: var(--surface); border: 1px solid var(--line); color: var(--ink-2); }
+.pubmed-check-result code, .pubmed-convert-note code, .pubmed-batch-table code { font-family: var(--font-mono); font-size: 12px; overflow-wrap: anywhere; color: var(--ink); }
+.pubmed-batch-strip { align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+.pubmed-batch-strip > span { flex: 1 1 260px; }
+.pubmed-batch { display: grid; gap: 14px; }
+.pubmed-batch-progress { display: inline-flex; align-items: center; gap: 8px; font-size: 13.5px; color: var(--ink-2); }
+.pubmed-batch-table { display: grid; border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden; max-height: 55vh; overflow-y: auto; }
+.pubmed-batch-table > [role="row"] { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(0, 2.2fr) 120px minmax(150px, 1fr); gap: 12px; align-items: start; padding: 10px 14px; border-top: 1px solid var(--line); font-size: 13px; }
+.pubmed-batch-table > [role="row"]:first-child { border-top: 0; }
+.pubmed-batch-head { background: var(--surface-2); font-size: 12px !important; font-weight: 650; color: var(--muted); position: sticky; top: 0; }
+.pubmed-batch-name { font-weight: 600; color: var(--ink); overflow-wrap: anywhere; }
+.pubmed-batch-status { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.pubmed-batch-table [data-state="verified"] .pubmed-batch-status, .pubmed-batch-table [data-state="converted"] .pubmed-batch-status { color: var(--success); }
+.pubmed-batch-table [data-state="review"] .pubmed-batch-status { color: var(--warning); }
+.pubmed-batch-table [data-state="failed"] .pubmed-batch-status { color: var(--danger); }
+@media (max-width: 760px) {
+  .pubmed-batch-table > [role="row"] { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .pubmed-batch-head { display: none !important; }
+}
 .pubmed-convert-note { margin-bottom: 18px; }
 .pubmed-convert-note .text-link { font-size: 13px; margin-left: 4px; }
 .pubmed-editor {

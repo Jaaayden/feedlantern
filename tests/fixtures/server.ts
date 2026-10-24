@@ -337,6 +337,20 @@ const server = createServer(async (request, response) => {
     response.end(pubmedFixture((requestUrl.searchParams.get('term') ?? '').includes('zzqx') ? 'esearch-empty.json' : 'esearch-journal.json'));
     return;
   }
+  // PubMed search RSS feeds for the conversion check: the channel title is the query.
+  const pubmedRss = /^\/pubmed-rss\/rss\/search\/(\w+)\/?$/.exec(requestUrl.pathname);
+  if (pubmedRss) {
+    const feeds: Record<string, [string, string[]]> = {
+      e2eok: ['("PLoS Pathog"[Journal]) AND (Wolbachia[tiab])', ['42883926', '41714066']],
+      e2elow: ['(lantern[ti]) AND (fungi[ti]', ['40000001', '40000002']],
+    };
+    const entry = feeds[pubmedRss[1]];
+    if (!entry) { response.writeHead(404); response.end(); return; }
+    const escape = (text: string) => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+    response.writeHead(200, { 'Content-Type': 'application/rss+xml' });
+    response.end(`<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>${escape(entry[0])}</title><description>${escape(entry[0])}: Latest results from PubMed</description>${entry[1].map(pmid => `<item><title>Article ${pmid}</title><link>https://pubmed.ncbi.nlm.nih.gov/${pmid}/?utm_source=Other</link><guid isPermaLink="false">pubmed:${pmid}</guid><pubDate>Thu, 22 Oct 2026 10:00:00 GMT</pubDate></item>`).join('')}</channel></rss>`);
+    return;
+  }
   // The terms esearch received, for tests that check what reached NCBI.
   if (requestUrl.pathname === '/entrez/searches') {
     response.writeHead(200, { 'Content-Type': 'application/json' });

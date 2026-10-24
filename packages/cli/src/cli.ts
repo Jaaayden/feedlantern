@@ -302,6 +302,12 @@ const commands: Command[] = [
     }),
   },
   {
+    name: 'pubmed convert', args: ['[feedId]'], write: true,
+    options: { 'all-verified': { type: 'boolean' }, query: { type: 'string' }, limit: { type: 'string' } },
+    table: { rows: 'feeds', columns: ['feedId', 'name', 'status', 'reason', 'coverage', 'query'] },
+    run: async ctx => ops.pubmedConvert(await ctx.client(), compact({ feedId: ctx.args.feedId as string | undefined, allVerified: ctx.opts['all-verified'] ? true : undefined, yes: ctx.opts.yes ? true : undefined, query: str(ctx.opts, 'query'), limit: pubmedLimit(ctx) })),
+  },
+  {
     name: 'rss preview', args: ['url'], options: { 'network-profile': { type: 'string' } }, write: true,
     table: { rows: 'items', columns: ['title', 'link'] },
     run: async ctx => ops.rssPreview(await ctx.client(), String(ctx.args.url), str(ctx.opts, 'network-profile')),

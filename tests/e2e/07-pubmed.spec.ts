@@ -93,6 +93,8 @@ test('期刊 RSS 订阅一键转换为 PubMed 检索订阅：确认后保留订�
 
     await expect(page.getByRole('heading', { name: '转换为 PubMed 检索订阅' })).toBeVisible();
     await expect(page.getByTestId('pubmed-convert-note')).toContainText('PLoS Pathog (NLM ID 101238921)');
+    // NCBI blocks the journal RSS and nothing is stored yet, so the prefill is marked for review.
+    await expect(page.getByTestId('pubmed-convert-note')).toContainText('未能确认与原 RSS 一致，请核对：没有可对比的条目');
     await expect(page.getByLabel('条件 1 的字段')).toHaveValue('journal');
     await expect(page.getByLabel('PubMed 查询式')).toHaveValue('("PLoS Pathog"[Journal])');
     await expect(page.getByLabel('订阅名称')).toHaveValue('PLoS Pathog RSS');
@@ -160,4 +162,64 @@ test('管理员在“设置 → PubMed（NCBI）”填写 API Key 和联系邮�
     await form.getByRole('button', { name: '保存 PubMed 设置' }).click();
     await expect(form.getByLabel('保存时删除已保存的 Key')).toHaveCount(0);
   } finally { await page.request.put('/api/settings', { headers, data: { ncbi: { apiKey: null, email: '' } } }); }
+});
+
+// Search RSS feeds whose RSS the backend reads from the fixture server (title = query).
+const SEARCH_RSS = (id: string) => `https://pubmed.ncbi.nlm.nih.gov/rss/search/${id}/?limit=15&utm_campaign=pubmed-2`;
+async function importRss(request: import('@playwright/test').APIRequestContext, headers: Record<string, string>, feeds: Array<{ name: string; url: string }>) {
+  const response = await request.post('/api/backups/config', { headers, data: { confirm: true, archive: { format: 'feedlantern-config', version: 1, feeds: feeds.map(feed => ({ sourceType: 'rss', ...feed, rules: { item: '', title: '', link: '' }, intervalMinutes: 60, waitMs: 0, translationMode: 'original', enabled: false })) } } });
+  expect(response.status(), await response.text()).toBe(200);
+  const all = (await (await request.get('/api/feeds')).json()) as Array<{ id: string; name: string }>;
+  return feeds.map(feed => all.find(entry => entry.name === feed.name)!.id);
+}
+
+test('检索式 RSS 订阅：验证还原的查询式后确认转换', async ({ page }) => {
+  const auth = await loginAsAdmin(page.request), headers = protocolHeaders(auth.csrfToken);
+  const [id] = await importRss(page.request, headers, [{ name: 'Wolbachia in PLoS Pathog', url: SEARCH_RSS('e2eok') }]);
+  try {
+    const before = await (await page.request.get(`/api/feeds/${id}`)).json();
+    await page.goto(`/#/feed/${id}`);
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.getByTestId('pubmed-rss-notice')).toContainText('不会被网页验证拦截');
+    await dialog.getByRole('button', { name: '转换为 PubMed 检索订阅' }).click();
+    const result = dialog.getByTestId('pubmed-check-result');
+    await expect(result).toContainText('可直接转换');
+    await expect(result).toContainText('2/2（100%）');
+    await expect(result.locator('code')).toHaveText('("PLoS Pathog"[Journal]) AND (Wolbachia[tiab])');
+    await result.getByRole('button', { name: '确认转换' }).click();
+    await expect(page.getByRole('status').filter({ hasText: '已转换为 PubMed 检索订阅' })).toBeVisible();
+    await expect(dialog.locator('.pubmed-source')).toContainText('(Wolbachia[tiab])');
+    const after = await (await page.request.get(`/api/feeds/${id}`)).json();
+    expect([after.feed.id, after.feedUrl, after.feed.sourceType]).toEqual([id, before.feedUrl, 'pubmed']);
+  } finally { await page.request.delete(`/api/feeds/${id}`, { headers }); }
+});
+
+test('批量转换 PubMed RSS 订阅：逐个验证并汇总，确认后只转换可直接转换的，需要核对的逐个打开构建器', async ({ page }) => {
+  const auth = await loginAsAdmin(page.request), headers = protocolHeaders(auth.csrfToken);
+  const ids = await importRss(page.request, headers, [{ name: 'Batch OK', url: SEARCH_RSS('e2eok') }, { name: 'Batch Low', url: SEARCH_RSS('e2elow') }]);
+  try {
+    await page.goto('/');
+    const strip = page.getByTestId('pubmed-batch-strip');
+    await expect(strip).toContainText('有 2 个 PubMed RSS 订阅可以转换');
+    await strip.getByRole('button', { name: '验证并转换' }).click();
+    const modal = page.getByRole('dialog', { name: '转换 PubMed RSS 订阅' });
+    await expect(modal.getByRole('status')).toContainText('共 2 个：1 个可直接转换，1 个需要核对。');
+    await expect(modal).toContainText('未配置 NCBI API Key');
+    const ok = modal.getByRole('row').filter({ hasText: 'Batch OK' });
+    const low = modal.getByRole('row').filter({ hasText: 'Batch Low' });
+    await expect(ok).toContainText('可直接转换');
+    await expect(low).toContainText('需要核对：订阅的最新条目与查询结果吻合太少');
+    await expect(low.locator('code')).toHaveText('(lantern[ti]) AND (fungi[ti])');
+    page.once('dialog', prompt => { expect(prompt.message()).toContain('1 个订阅'); void prompt.accept(); });
+    await modal.getByRole('button', { name: '转换 1 个可直接转换的订阅' }).click();
+    await expect(ok).toContainText('已转换');
+    expect((await (await page.request.get(`/api/feeds/${ids[0]}`)).json()).feed.sourceType).toBe('pubmed');
+    expect((await (await page.request.get(`/api/feeds/${ids[1]}`)).json()).feed.sourceType).toBe('rss');
+
+    await low.getByRole('button', { name: '核对' }).click();
+    await expect(page.getByRole('heading', { name: '转换为 PubMed 检索订阅' })).toBeVisible();
+    await expect(page.getByTestId('pubmed-convert-note')).toContainText('未能确认与原 RSS 一致，请核对');
+    await expect(page.getByTestId('pubmed-convert-note')).toContainText('(lantern[ti]) AND (fungi[ti]');
+    await expect(page.getByLabel('PubMed 查询式')).toHaveValue('(lantern[ti]) AND (fungi[ti])');
+  } finally { for (const id of ids) await page.request.delete(`/api/feeds/${id}`, { headers }); }
 });

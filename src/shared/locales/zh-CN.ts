@@ -1835,6 +1835,7 @@ const messages: LocaleMessages = {
   'pubmedBatch.confirm': '确定把 {count} 个订阅转换为 PubMed 检索订阅吗？订阅 ID、RSS 地址、条目、译文和各项设置都会保留。',
   'pubmedBatch.converted': '已转换 {count} 个订阅。',
   'pubmedEditor.checkReview': '未能确认与原 RSS 一致，请核对：{reason}。',
+  'pubmedEditor.checkJournal': '已根据期刊 RSS 地址预填期刊条件：{journal}。',
   'pubmedEditor.checkVerified': '已从原 RSS 还原并核对一致。',
   'pubmedEditor.checkCoverage': '最新条目覆盖：{coverage}。',
   'pubmedEditor.checkTitle': 'RSS 标题：',

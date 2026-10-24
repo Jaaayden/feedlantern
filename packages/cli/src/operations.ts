@@ -1,5 +1,5 @@
-import { buildPubmedQuery, parsePubmedQuery, pubmedDefaultTerms, pubmedSearchUrl, PUBMED_DEFAULT_LIMIT, type PubmedField, type PubmedFilters, type PubmedOperator } from '../../../src/shared/pubmed.js';
-import { feedFormatUrl, type ApiTokenCallFilter, type BulkFeedSettingsInput, type ExtractedItem, type Feed, type FeedInput, type FeedSettingsInput, type FetchStatus, type ItemOutputStatus, type PaginationRules, type SelectionRules } from '../../../src/shared/types.js';
+import { buildPubmedQuery, parsePubmedQuery, pubmedRssSource, pubmedDefaultTerms, pubmedSearchUrl, PUBMED_DEFAULT_LIMIT, type PubmedField, type PubmedFilters, type PubmedOperator } from '../../../src/shared/pubmed.js';
+import { feedFormatUrl, type PubmedRssCheck, type ApiTokenCallFilter, type BulkFeedSettingsInput, type ExtractedItem, type Feed, type FeedInput, type FeedSettingsInput, type FetchStatus, type ItemOutputStatus, type PaginationRules, type SelectionRules } from '../../../src/shared/types.js';
 import type { BrowserOpenInput, BulkAction, FeedLanternClient, FeedPayload, HttpMethod, ImportJobInput } from './client.js';
 import { FeedLanternError, usageError } from './errors.js';
 import { t } from './messages.js';
@@ -206,6 +206,32 @@ export async function pubmedPreview(client: FeedLanternClient, input: PubmedSear
 
 export interface PubmedFeedInput extends PubmedSearchInput, Pick<FeedInput, 'translationMode' | 'targetLanguage' | 'translationProvider' | 'networkProfileId'> {
   name?: string; limit?: number; intervalMinutes?: number;
+}
+
+/**
+ * Checks PubMed RSS feeds for conversion into PubMed searches and, with `yes`,
+ * converts them. Without `yes` it only reports. A feed that needs review is
+ * converted only when the caller gives the reviewed `query` (one feed at a time).
+ */
+export async function pubmedConvert(client: FeedLanternClient, input: { feedId?: string; allVerified?: boolean; yes?: boolean; query?: string; limit?: number }) {
+  if (!input.feedId === !input.allVerified) throw usageError(t('usage.pubmedConvertTarget'));
+  if (input.allVerified && input.query) throw usageError(t('usage.pubmedConvertQueryOne'));
+  const ids = input.feedId ? [input.feedId] : (await client.listFeeds()).filter(feed => feed.sourceType === 'rss' && pubmedRssSource(feed.url)).map(feed => feed.id);
+  const checks: PubmedRssCheck[] = [];
+  for (const id of ids) checks.push(await client.pubmedCheck(id));
+  const report = checks.map(check => ({ feedId: check.feedId, name: check.name, kind: check.kind, status: check.status, reason: check.reason ?? null, query: check.query, coverage: check.coverage ? `${check.coverage.matched}/${check.coverage.total}${check.coverage.source === 'stored' ? ' (stored)' : ''}` : null, count: check.count ?? null, limit: check.limit, repaired: check.repaired, error: check.error ?? null }));
+  const summary = { checked: checks.length, verified: checks.filter(check => check.status === 'verified').length, review: checks.filter(check => check.status === 'review').length, ncbiKeyConfigured: checks.every(check => check.ncbiKeyConfigured) };
+  if (!input.yes) return { ...summary, converted: 0, feeds: report, hint: t('pubmed.convertHint') };
+  const results: Array<{ feedId: string; converted: boolean; query?: string; error?: string }> = [];
+  for (const check of checks) {
+    const query = input.query ?? (check.status === 'verified' ? check.query : undefined);
+    if (!query) { results.push({ feedId: check.feedId, converted: false, error: t('pubmed.convertNeedsReview') }); continue; }
+    try { await client.pubmedConvert(check.feedId, query, input.limit ?? check.limit); results.push({ feedId: check.feedId, converted: true, query }); }
+    catch (error) { results.push({ feedId: check.feedId, converted: false, error: error instanceof Error ? error.message : String(error) }); }
+  }
+  if (client.dryRun) return { ...dryRunResult(client), feeds: report };
+  const failed = results.filter(result => !result.converted && checks.find(check => check.feedId === result.feedId)?.status === 'verified').length;
+  return { ...summary, converted: results.filter(result => result.converted).length, failed, feeds: report.map(row => ({ ...row, ...results.find(result => result.feedId === row.feedId) })) };
 }
 
 /** Creates a PubMed search feed; the first fetch runs in the background (see feeds logs). */

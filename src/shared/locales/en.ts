@@ -1838,6 +1838,7 @@ const messages = {
   'pubmedBatch.confirm': { one: 'Convert {count} feed to a PubMed search? Its feed ID, RSS address, items, translations and settings are kept.', other: 'Convert {count} feeds to PubMed searches? Their feed IDs, RSS addresses, items, translations and settings are kept.' },
   'pubmedBatch.converted': { one: 'Converted {count} feed.', other: 'Converted {count} feeds.' },
   'pubmedEditor.checkReview': 'Couldn\'t confirm this matches the original RSS, please check it: {reason}.',
+  'pubmedEditor.checkJournal': 'Prefilled from the journal RSS address: {journal}.',
   'pubmedEditor.checkVerified': 'Recovered from the original RSS and confirmed.',
   'pubmedEditor.checkCoverage': 'Newest items found: {coverage}.',
   'pubmedEditor.checkTitle': 'RSS title:',
