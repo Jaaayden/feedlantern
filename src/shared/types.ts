@@ -421,6 +421,31 @@ export function translationEnabled(feed: Pick<FeedInput, 'sourceType' | 'transla
 export interface PubmedArticle { pmid: string; title: string; link: string; journal: string; pubDate: string; authors: string[]; addedAt?: string }
 /** Something NCBI noted about a query; `text` is NCBI's own wording (a phrase, a field or a message). */
 export interface PubmedWarning { kind: 'phraseNotFound' | 'fieldNotFound' | 'quotedPhraseNotFound' | 'phraseIgnored' | 'message'; text: string }
+/**
+ * POST /api/feeds/:id/pubmed-check: whether a PubMed RSS feed can become a
+ * PubMed search. `verified` when the newest items the feed holds are found
+ * among the query's newest matches (`coverage.ratio` ≥ 0.8); otherwise
+ * `review`, and the query only prefills the search builder. Nothing is changed.
+ */
+export type PubmedCheckReason = 'truncated' | 'invalidQuery' | 'ncbiFailed' | 'fetchFailed' | 'noItems' | 'lowCoverage';
+export interface PubmedRssCheck {
+  feedId: string; name: string; kind: 'journal' | 'search';
+  status: 'verified' | 'review'; reason?: PubmedCheckReason;
+  /** The query recovered from the RSS title (or the journal), possibly repaired; may be empty. */
+  query: string; repaired: boolean; truncated: boolean;
+  /** The RSS channel title the query was read from. */
+  sourceTitle?: string;
+  /** `rss`: the items the RSS address lists now; `stored`: items already saved (when the address could not be read). */
+  coverage?: { matched: number; total: number; ratio: number; source: 'rss' | 'stored' };
+  /** How many articles the query matches. */
+  count?: number;
+  /** Suggested newest articles per fetch, from the address's `limit`. */
+  limit: number;
+  /** Why the RSS address or NCBI failed. */
+  error?: string;
+  /** Without an NCBI API key, checks and fetches share 3 requests per second instead of 10. */
+  ncbiKeyConfigured: boolean;
+}
 /** POST /api/pubmed/preview: how many articles match and the newest few. */
 export interface PubmedPreview { count: number; queryTranslation?: string; warnings: PubmedWarning[]; items: PubmedArticle[]; pubmedUrl: string }
 

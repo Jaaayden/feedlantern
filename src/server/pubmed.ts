@@ -18,8 +18,8 @@ import type { NetworkPolicy } from './network.js';
 import { digest, fetchRaw, safeHtml, type RawResponse, type SourceFetcher, type SourceItem, type SourceOptions, type SourceResult } from './rss-source.js';
 import { looksLikeHtml, NcbiError, NotAFeedError, sourceMessages } from './fetch-errors.js';
 import { LocalizedError, msg } from './i18n.js';
-import { pubmedRssSource, pubmedSearchUrl, type PubmedSearch } from '../shared/pubmed.js';
-import type { PubmedArticle, PubmedPreview, PubmedWarning } from '../shared/types.js';
+import { buildPubmedQuery, nearestPubmedLimit, pubmedConversion, pubmedCoverage, pubmedPmidOf, pubmedQueryFromRssTitle, pubmedQueryProblem, pubmedRssSource, pubmedSearchUrl, PUBMED_COVERAGE, type PubmedSearch } from '../shared/pubmed.js';
+import type { PubmedArticle, PubmedCheckReason, PubmedPreview, PubmedRssCheck, PubmedWarning } from '../shared/types.js';
 
 export const EUTILS_ENDPOINT = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils';
 export const NCBI_TOOL = 'feedlantern';
@@ -307,4 +307,61 @@ export async function previewPubmed(query: string, policy: NetworkPolicy, ctx: N
     items: found.ids.map(id => articles.get(id)).filter((item): item is PubmedArticle => !!item),
     pubmedUrl: pubmedSearchUrl({ query, limit: 20 }),
   };
+}
+
+export interface PubmedRssCheckDeps {
+  /** Reads the feed's RSS address (the normal RSS fetcher with the feed's network profile). */
+  fetchRss: (url: string) => Promise<SourceResult>;
+  /** PMIDs of the items the feed already holds, newest first. */
+  storedPmids: string[];
+  policy: NetworkPolicy;
+  ctx: NcbiContext;
+  options?: SourceOptions;
+  /** A readable reason for a failed RSS read, in the reader's language. */
+  describe: (error: unknown) => string;
+}
+
+/**
+ * Whether a PubMed RSS feed can become a PubMed search without changing what
+ * it delivers. The RSS address is read once (through the shared NCBI queue,
+ * like every request to NCBI here); the query comes from its channel title
+ * (a search) or from the journal. One esearch then lists the query's newest
+ * matches, and the feed's newest items must be among them. Nothing is saved.
+ */
+export async function checkPubmedRss(feed: { url: string; name: string }, deps: PubmedRssCheckDeps): Promise<Omit<PubmedRssCheck, 'feedId' | 'name' | 'ncbiKeyConfigured'>> {
+  const rss = pubmedRssSource(feed.url);
+  if (!rss) throw new Error('not a PubMed RSS address');
+  const limit = nearestPubmedLimit(rss.limit);
+  const { ctx, options = {} } = deps;
+  let fetched: SourceResult | undefined, error: string | undefined;
+  try {
+    await ctx.limiter.acquire(ctx.settings().apiKey ? NCBI_INTERVAL_MS.withKey : NCBI_INTERVAL_MS.anonymous, options.signal);
+    fetched = await deps.fetchRss(feed.url);
+  } catch (reason) {
+    if (options.signal?.aborted) throw reason;
+    error = deps.describe(reason);
+  }
+  // A search's title is the query; a journal is searched by its name (or NLM ID) as in the single conversion.
+  const sourceTitle = rss.kind === 'search' ? (fetched?.title.trim() || feed.name) : undefined;
+  const recovered = rss.kind === 'search' ? pubmedQueryFromRssTitle(sourceTitle!) : { query: buildPubmedQuery(pubmedConversion(rss).builder), repaired: false, truncated: false };
+  const rssIds = (fetched?.items ?? []).map(item => pubmedPmidOf(item.link)).filter((id): id is string => !!id);
+  const evidence = rssIds.length ? { source: 'rss' as const, ids: rssIds } : deps.storedPmids.length ? { source: 'stored' as const, ids: deps.storedPmids } : undefined;
+  const base = { kind: rss.kind, query: recovered.query, repaired: recovered.repaired, truncated: recovered.truncated, limit, ...(sourceTitle ? { sourceTitle } : {}), ...(error ? { error } : {}) };
+  const review = (reason: PubmedCheckReason, extra: Partial<PubmedRssCheck> = {}) => ({ ...base, ...extra, status: 'review' as const, reason });
+  if (recovered.truncated) return review('truncated');
+  if (!recovered.query || pubmedQueryProblem(recovered.query)) return review('invalidQuery');
+  let found: EsearchResult;
+  try {
+    found = parseEsearch(await eutils(ctx, deps.policy, options, pubmedSearchUrl({ query: recovered.query, limit }), 'esearch', { term: recovered.query, retmax: String(PUBMED_COVERAGE.window), retmode: 'json' }, 'application/json'));
+  } catch (reason) {
+    if (options.signal?.aborted) throw reason;
+    return review('ncbiFailed', { error: deps.describe(reason) });
+  }
+  const coverage = evidence ? { ...pubmedCoverage(evidence.ids, found.ids), source: evidence.source } : undefined;
+  const result = { ...base, count: found.count, ...(coverage ? { coverage } : {}) };
+  // A search title is only trusted against what the address lists now; a journal (whose RSS NCBI blocks) also against stored items.
+  if (rss.kind === 'search' && error) return { ...result, status: 'review' as const, reason: 'fetchFailed' as const };
+  if (!coverage || !coverage.total) return { ...result, status: 'review' as const, reason: 'noItems' as const };
+  if (coverage.ratio < PUBMED_COVERAGE.threshold) return { ...result, status: 'review' as const, reason: 'lowCoverage' as const };
+  return { ...result, status: 'verified' as const };
 }

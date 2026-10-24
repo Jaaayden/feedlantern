@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { ArrowLeft, ExternalLink, LoaderCircle, Plus, Trash2 } from 'lucide-react';
-import type { Feed, PubmedPreview, TargetLanguage, TranslationMode, TranslationProviderId } from '../shared/types';
+import type { Feed, PubmedPreview, PubmedRssCheck, TargetLanguage, TranslationMode, TranslationProviderId } from '../shared/types';
 import {
   buildPubmedQuery, isPubmedDate, parsePubmedQuery, pubmedConversion, pubmedDefaultTerms, pubmedQueryProblem, pubmedRssSource, pubmedSearchUrl,
   PUBMED_ARTICLE_TYPES, PUBMED_DAYS_MAX, PUBMED_DEFAULT_LIMIT, PUBMED_FIELD_IDS, PUBMED_LIMITS, PUBMED_OPERATORS,
@@ -10,6 +10,7 @@ import { LanguageOptions, ProviderOptions, useTranslationProviders } from './Tra
 import { NetworkProfileSelect, useNetworkProfiles } from './NetworkProfiles';
 import { api } from './api';
 import { fmt, t } from './i18n';
+import { coverageText, reasonText } from './PubmedConvert';
 
 /** Builder lines carry a key so React keeps each input while lines are added or removed. */
 type Line = PubmedRow & { key: number };
@@ -23,10 +24,11 @@ const authorLine = (authors: string[]) => authors.length > 3 ? t('pubmedEditor.e
 const PREVIEW_DELAY_MS = 800;
 
 /** What the editor starts from: a saved PubMed search, a PubMed RSS feed being converted, or a fresh search (optionally prefilled). */
-function initialState(initial: Feed | undefined, convert: boolean, prefill?: { builder: PubmedBuilder; limit: number }) {
-  if (initial?.sourceType === 'pubmed' && initial.pubmed) {
-    const parsed = parsePubmedQuery(initial.pubmed.query);
-    return { builder: parsed ?? { rows: [], filters: {} }, query: initial.pubmed.query, manual: !parsed, limit: initial.pubmed.limit };
+function initialState(initial: Feed | undefined, convert: boolean, prefill?: { builder: PubmedBuilder; limit: number }, check?: PubmedRssCheck) {
+  const saved = initial?.sourceType === 'pubmed' && initial.pubmed ? initial.pubmed : convert && check?.query ? { query: check.query, limit: check.limit } : undefined;
+  if (saved) {
+    const parsed = parsePubmedQuery(saved.query);
+    return { builder: parsed ?? { rows: [], filters: {} }, query: saved.query, manual: !parsed, limit: saved.limit };
   }
   const rss = convert && initial ? pubmedRssSource(initial.url) : null;
   const start = rss ? pubmedConversion(rss) : prefill;
@@ -34,11 +36,11 @@ function initialState(initial: Feed | undefined, convert: boolean, prefill?: { b
   return { builder: { rows: [], filters: {} }, query: '', manual: false, limit: PUBMED_DEFAULT_LIMIT };
 }
 
-export function PubmedEditor({ initial, convert = false, prefill, existing = [], saved, cancel }: {
-  initial?: Feed; convert?: boolean; prefill?: { builder: PubmedBuilder; limit: number };
+export function PubmedEditor({ initial, convert = false, check, prefill, existing = [], saved, cancel }: {
+  initial?: Feed; convert?: boolean; check?: PubmedRssCheck; prefill?: { builder: PubmedBuilder; limit: number };
   existing?: Feed[]; saved: (id: string) => void; cancel: () => void;
 }) {
-  const start = useMemo(() => initialState(initial, convert, prefill), []); // eslint-disable-line react-hooks/exhaustive-deps
+  const start = useMemo(() => initialState(initial, convert, prefill, check), []); // eslint-disable-line react-hooks/exhaustive-deps
   const rss = convert && initial ? pubmedRssSource(initial.url) : null;
   const [lines, setLines] = useState<Line[]>(() => linesOf(start.builder));
   const [filters, setFilters] = useState<PubmedFilters>(start.builder.filters);
@@ -134,7 +136,12 @@ export function PubmedEditor({ initial, convert = false, prefill, existing = [],
   return <>
     <button className="back-link" onClick={cancel}><ArrowLeft size={16} />{t('common.backToFeeds')}</button>
     <div className="page-heading"><div><span className="section-kicker">SEARCH PUBMED</span><h1>{title}</h1><p>{t('pubmedEditor.lead')}</p></div></div>
-    {rss && <div className="notice pubmed-convert-note" data-testid="pubmed-convert-note"><span>{rss.kind === 'journal' ? t('pubmedEditor.convertJournal', { journal: rss.name ? `${rss.name} (NLM ID ${rss.nlmId})` : `NLM ID ${rss.nlmId}` }) : t('pubmedEditor.convertSearch')} <a className="text-link" href={initial!.url} target="_blank" rel="noreferrer">{t('pubmedEditor.openOriginal')}<ExternalLink size={13} /></a></span></div>}
+    {rss && check && <div className={`notice pubmed-convert-note ${check.status === 'review' ? 'is-warning' : ''}`} data-testid="pubmed-convert-note"><span>
+      {check.status === 'review' ? t('pubmedEditor.checkReview', { reason: reasonText(check) }) : t('pubmedEditor.checkVerified')}{' '}
+      {check.coverage?.total ? t('pubmedEditor.checkCoverage', { coverage: coverageText(check) }) : ''}{check.repaired ? ` ${t('pubmedConvert.repaired')}` : ''}{check.error ? ` ${check.error}` : ''}{' '}
+      {check.sourceTitle && <>{t('pubmedEditor.checkTitle')} <code>{check.sourceTitle}</code>{' '}</>}
+      {t('pubmedEditor.checkKeeps')} <a className="text-link" href={initial!.url} target="_blank" rel="noreferrer">{t('pubmedEditor.openOriginal')}<ExternalLink size={13} /></a></span></div>}
+    {rss && !check && <div className="notice pubmed-convert-note" data-testid="pubmed-convert-note"><span>{rss.kind === 'journal' ? t('pubmedEditor.convertJournal', { journal: rss.name ? `${rss.name} (NLM ID ${rss.nlmId})` : `NLM ID ${rss.nlmId}` }) : t('pubmedEditor.convertSearch')} <a className="text-link" href={initial!.url} target="_blank" rel="noreferrer">{t('pubmedEditor.openOriginal')}<ExternalLink size={13} /></a></span></div>}
     <form className="pubmed-editor" onSubmit={submit} aria-label={title}>
       <section className="panel pubmed-builder" aria-label={t('pubmedEditor.builder')}>
         <div className="panel-heading"><h2>{t('pubmedEditor.conditions')}</h2></div>

@@ -334,3 +334,52 @@ export function pubmedDefaultTerms(builder: PubmedBuilder | null, query: string)
   const text = terms.length ? terms.join(' · ') : query.trim();
   return text.length > 80 ? `${text.slice(0, 79)}…` : text;
 }
+
+// Converting a PubMed search RSS feed
+
+/**
+ * A search RSS feed's channel title is the search itself, for example
+ * `((Shandong University[Affiliation]) OR …) AND (Sun Jin-peng[Author])`.
+ * The query read from it: suffixes PubMed adds are removed; a title that ends
+ * in an ellipsis, an operator or an open quote is marked `truncated`;
+ * unbalanced parentheses are closed (`repaired`). Neither is trusted on its
+ * own: the conversion check compares the query's results with the feed's items.
+ */
+export interface RssTitleQuery { query: string; repaired: boolean; truncated: boolean }
+export function pubmedQueryFromRssTitle(title: string): RssTitleQuery {
+  let text = title.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim()
+    .replace(/\s*[:：]\s*Latest results from PubMed\.?$/i, '').replace(/^pubmed\s*[:：]\s*/i, '').trim();
+  let truncated = false;
+  if (/(?:\.\.\.|…)$/.test(text)) { truncated = true; text = text.replace(/\s*(?:\.\.\.|…)$/, '').trim(); }
+  if (/(?:^|\s)(?:AND|OR|NOT)$/.test(text)) truncated = true;
+  let open = 0, close = 0, quoted = false;
+  for (const char of text) {
+    if (char === '"') quoted = !quoted;
+    else if (!quoted && char === '(') open++;
+    else if (!quoted && char === ')') close++;
+  }
+  if (quoted) truncated = true;
+  let repaired = false;
+  if (!truncated && open !== close) {
+    text = open > close ? text + ')'.repeat(open - close) : '('.repeat(close - open) + text;
+    repaired = true;
+  }
+  return { query: text, repaired, truncated };
+}
+
+/** How the conversion check compares a feed with its query: the newest `sample` items against the newest `window` matches. */
+export const PUBMED_COVERAGE = { sample: 20, window: 200, threshold: 0.8 } as const;
+
+/** The PMID of a PubMed article link (`https://pubmed.ncbi.nlm.nih.gov/<PMID>/…`), or null. */
+export function pubmedPmidOf(link: string): string | null {
+  const url = pubmedUrl(link);
+  return url ? /^\/(\d{1,10})\/?$/.exec(url.pathname)?.[1] ?? null : null;
+}
+
+/** How many of the expected PMIDs (newest first, at most `sample`) are among the found ones. */
+export function pubmedCoverage(expected: readonly string[], found: readonly string[]): { matched: number; total: number; ratio: number } {
+  const sample = [...new Set(expected)].slice(0, PUBMED_COVERAGE.sample);
+  const pool = new Set(found);
+  const matched = sample.filter(id => pool.has(id)).length;
+  return { matched, total: sample.length, ratio: sample.length ? matched / sample.length : 0 };
+}

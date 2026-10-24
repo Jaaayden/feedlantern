@@ -41,6 +41,7 @@ import type {
   TranslationProviderId,
   TranslationProvidersInfo,
   PubmedPreview,
+  PubmedRssCheck,
 } from '../shared/types';
 
 /** Why each stored item is or is not published, keyed by item id. */
@@ -224,6 +225,10 @@ export const api = {
     preview: (query: string, networkProfileId?: string | null, signal?: AbortSignal) => request<PubmedPreview>('/api/pubmed/preview', { method: 'POST', body: { query, ...(networkProfileId ? { networkProfileId } : {}) }, signal }),
   },
   feeds: {
+    /** Reads a PubMed RSS feed once and compares it with the query recovered from it; changes nothing. */
+    pubmedCheck: (id: string) => request<PubmedRssCheck>(`/api/feeds/${encodeURIComponent(id)}/pubmed-check`, { method: 'POST', body: {} }),
+    /** Turns a PubMed RSS feed into a PubMed search with this query; the feed keeps everything else. */
+    pubmedConvert: (id: string, query: string, limit?: number) => request<{ feed: Feed; feedUrl: string }>(`/api/feeds/${encodeURIComponent(id)}/pubmed-convert`, { method: 'POST', body: { query, ...(limit ? { limit } : {}) } }),
     previewRss: (url: string, networkProfileId?: string | null) => request<{ title: string; items: ExtractedItem[] }>('/api/rss/preview', { method: 'POST', body: { url, ...(networkProfileId ? { networkProfileId } : {}) } }),
     translationProgress: (id: string) => request<TranslationProgressData>(`/api/feeds/${encodeURIComponent(id)}/translation/progress`),
     retryTranslation: (id: string) => request<unknown>(`/api/feeds/${encodeURIComponent(id)}/translation/retry`, { method: 'POST', body: {} }),

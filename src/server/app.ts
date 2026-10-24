@@ -1,7 +1,8 @@
 import { defaultApplicationSettings, errorCodeForStatus, isFeedSource, isTargetLanguage, isTranslationProvider, OUTPUT_LIMIT, translationEnabled, type ApiErrorCode, type TranslationProviderId, type TranslationProvidersInfo } from '../shared/types.js';
 import { providerProblem } from './translation-providers.js';
 import { fetchSource, probeTarget, type SourceFetcher, type SourceOptions, type SourceResult } from './rss-source.js';
-import { fetchPubmedSearch, NcbiRateLimiter, previewPubmed, withPubmedRssHint } from './pubmed.js';
+import { checkPubmedRss, fetchPubmedSearch, NcbiRateLimiter, previewPubmed, withPubmedRssHint } from './pubmed.js';
+import { nearestPubmedLimit, pubmedPmidOf, pubmedRssSource, pubmedSearchUrl } from '../shared/pubmed.js';
 import { NetworkPolicy, NetworkPolicyError } from './network.js';
 import { networkOptions, parseNetworkProfileInput, type FetchNetworkOptions } from './fetch-options.js';
 import { TranslationError, TranslationWorker, type Translator } from './rss-translation.js';
@@ -34,6 +35,7 @@ import type {
   ExtractedItem,
   Feed,
   PubmedPreview,
+  PubmedRssCheck,
   FetchSource,
   FetchStatus,
   FeedInput,
@@ -69,7 +71,7 @@ import { getConfig, ensureDataDir, hasDist, isAllowedOrigin, type ConfigInput, t
 import { renderAtom, renderJsonFeed, renderRss, rssEtag } from './rss.js';
 import { classifyItems, ItemFilterError, parseItemFilter, retentionProblem } from './feed-output.js';
 import { etagMatches, renderRssPreview, wantsHtmlPreview } from './rss-preview.js';
-import { parseTargetLanguage, parseTranslationMode, parseTranslationProvider, asInteger, describeError, asNonEmptyString, asOptionalString, asRecord, cookieMetadata, frameError, friendlyError, logHiddenError, parseCredentialInput, parseFeedInput, parseHttpUrl, parsePagination, parsePartialRules, parsePubmedQueryText, parseRules } from './validation.js';
+import { parseTargetLanguage, parseTranslationMode, parseTranslationProvider, asInteger, describeError, asNonEmptyString, asOptionalString, asRecord, cookieMetadata, frameError, friendlyError, logHiddenError, parseCredentialInput, parseFeedInput, parseHttpUrl, parsePagination, parsePartialRules, parsePubmedQueryText, parsePubmedSearch, parseRules } from './validation.js';
 import { reportSummary } from './pagination.js';
 import { Store, type CredentialValue } from './store.js';
 import { registerRuleHealthRoutes } from './rule-health-routes.js';
@@ -121,6 +123,8 @@ export interface CreateAppOptions extends ConfigInput {
   deeplEndpoints?: { free: string; pro: string };
   /** Test-only replacement for the NCBI E-utilities base address (PubMed search subscriptions). */
   ncbiEndpoint?: string;
+  /** Test-only: where the PubMed conversion check reads `https://pubmed.ncbi.nlm.nih.gov/rss/…` addresses from. */
+  pubmedRssBase?: string;
 }
 
 /** How long an identical PubMed preview is answered from memory. */
@@ -1377,6 +1381,49 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       const limited = error instanceof NcbiError && error.status === 429;
       throw new AppError(limited ? 429 : 502, shown.key === 'error.raw' ? rawText(safeDiagnostic(lt(shown))) : shown, limited ? 'rate_limited' : 'upstream_error');
     }
+  });
+  /** A PubMed RSS feed of the caller's workspace, or 404/400. */
+  const pubmedRssFeed = (request: FastifyRequest): Feed => {
+    const feed = store.getFeed(String((request.params as { id: string }).id));
+    if (!feed) throw new AppError(404, 'error.feedNotFound');
+    if (feed.sourceType !== 'rss' || !pubmedRssSource(feed.url)) throw new AppError(400, 'error.notPubmedRss');
+    return feed;
+  };
+  // Reads the RSS address once and compares its newest items with the recovered query's newest matches; saves nothing.
+  app.post('/api/feeds/:id/pubmed-check', async (request): Promise<PubmedRssCheck> => {
+    feedsGuard(request);
+    const feed = pubmedRssFeed(request);
+    const network = networkFor(feed.networkProfileId, feed.ownerId);
+    const signal = operationSignal(request);
+    const target = (url: string) => options.pubmedRssBase ? `${options.pubmedRssBase}${new URL(url).pathname}${new URL(url).search}` : url;
+    const check = await checkPubmedRss(feed, {
+      fetchRss: url => getRss(target(url), { signal, ...(network ? { network } : {}) }),
+      storedPmids: store.getItems(feed.id, 100).map(item => pubmedPmidOf(item.link)).filter((id): id is string => !!id),
+      policy: fetchPolicy(), ctx: ncbi, options: { signal, ...(network ? { network } : {}) },
+      describe: error => safeDiagnostic(lt(friendlyError(error, msg('error.rssFetchFailed')))),
+    });
+    feedsGuard(request);
+    return { ...check, feedId: feed.id, name: feed.name, ncbiKeyConfigured: !!store.getSettings().ncbi.apiKey };
+  });
+  // Converts a PubMed RSS feed into a PubMed search with the given query. Everything else about the feed stays as it is.
+  app.post('/api/feeds/:id/pubmed-convert', async request => {
+    feedsGuard(request);
+    const feed = pubmedRssFeed(request);
+    const body = asRecord(request.body);
+    const pubmed = parsePubmedSearch({ query: body.query, limit: body.limit ?? nearestPubmedLimit(pubmedRssSource(feed.url)!.limit) }, undefined);
+    const updated = await enqueueRefresh(() => {
+      feedsGuard(request);
+      const current = pubmedRssFeed(request);
+      return store.updateFeed(current.id, {
+        sourceType: 'pubmed', pubmed, url: pubmedSearchUrl(pubmed), name: current.name,
+        translationMode: current.translationMode, targetLanguage: current.targetLanguage, translationProvider: current.translationProvider ?? null,
+        rules: { item: '', title: '', link: '' }, credentialId: null, intervalMinutes: current.intervalMinutes, waitMs: 0,
+      });
+    }, refreshKeys(feed.id));
+    if (!updated) throw new AppError(404, 'error.feedNotFound');
+    // The first E-utilities fetch runs in the background, so a batch of conversions returns at once.
+    if (store.isFeedActive(updated.id)) void doRefresh(updated.id, false, 'edit').catch(() => {});
+    return feedPayload(updated);
   });
   app.get('/api/feeds/:id/translation/progress', async request => {
     feedsGuard(request);
