@@ -3,6 +3,8 @@ import vm from 'node:vm';
 import { DomUtils, parseDocument } from 'htmlparser2';
 import { ITEM_FILTER_LIMITS, OUTPUT_LIMIT, RETENTION_LIMIT, translationEnabled } from '../shared/types.js';
 import type { Feed, FeedItem, ItemFilter, ItemOutputStatus } from '../shared/types.js';
+import { LocalizedError, msg, type LocalizedText } from './i18n.js';
+import type { Param } from '../shared/i18n.js';
 
 /**
  * Which stored items a feed publishes. RSS, Atom, JSON Feed, the browser
@@ -10,7 +12,7 @@ import type { Feed, FeedItem, ItemFilter, ItemOutputStatus } from '../shared/typ
  * output and what the UI marks as filtered can never disagree.
  */
 
-export class ItemFilterError extends Error {}
+export class ItemFilterError extends LocalizedError {}
 
 /** Characters of the title and of the summary a filter looks at; bounds regex work per item. */
 const TITLE_LIMIT = 500;
@@ -30,13 +32,13 @@ export function clampRetentionLimit(value: number | null | undefined): number | 
 }
 
 /** Why a retention value cannot be saved next to `outputLimit`, or null when it can. */
-export function retentionProblem(retention: unknown, outputLimit: number | undefined): string | null {
+export function retentionProblem(retention: unknown, outputLimit: number | undefined): LocalizedText | null {
   if (retention === null) return null;
   if (typeof retention !== 'number' || !Number.isInteger(retention) || retention < RETENTION_LIMIT.min || retention > RETENTION_LIMIT.max) {
-    return `保留条数必须是 ${RETENTION_LIMIT.min} 到 ${RETENTION_LIMIT.max} 之间的整数，留空为自动`;
+    return msg('error.retentionRange', { min: RETENTION_LIMIT.min, max: RETENTION_LIMIT.max });
   }
   const output = clampOutputLimit(outputLimit);
-  return retention < output ? `保留条数不能少于输出条数（${output}）` : null;
+  return retention < output ? msg('error.retentionBelowOutput', { output }) : null;
 }
 
 /**
@@ -58,7 +60,7 @@ export function storedItemLimit(feed: Pick<Feed, 'sourceType' | 'outputLimit' | 
  * backreferences. Runs on a pattern that already compiles with the `u` flag,
  * so the syntax is known to be valid.
  */
-export function unsafeRegexReason(source: string): string | null {
+export function unsafeRegexReason(source: string): LocalizedText | null {
   interface Frame { repeats: boolean; alternates: boolean }
   const stack: Frame[] = [{ repeats: false, alternates: false }];
   let closed: Frame | null = null;
@@ -67,7 +69,7 @@ export function unsafeRegexReason(source: string): string | null {
     const top = stack[stack.length - 1];
     if (char === '\\') {
       const next = source[i + 1] ?? '';
-      if (/[1-9k]/.test(next)) return '不支持反向引用';
+      if (/[1-9k]/.test(next)) return msg('filter.backreference');
       if (/[upP]/.test(next) && source[i + 2] === '{') i = source.indexOf('}', i);
       else i++;
       closed = null;
@@ -102,7 +104,7 @@ export function unsafeRegexReason(source: string): string | null {
       if (brace) i += brace[0].length - 1;
       if (source[i + 1] === '?') i++;
       if (max > 1) {
-        if (closed && (closed.repeats || closed.alternates)) return '包含嵌套重复（如 (a+)+）或重复的分支组（如 (a|b)+），可能拖慢输出，请改用字符集或拆成多条规则';
+        if (closed && (closed.repeats || closed.alternates)) return msg('filter.nestedRepeat');
         top.repeats = true;
       }
       closed = null;
@@ -113,18 +115,18 @@ export function unsafeRegexReason(source: string): string | null {
   return null;
 }
 
-function parsePatterns(value: unknown, label: string, regex: boolean): string[] {
+function parsePatterns(value: unknown, label: Param, regex: boolean): string[] {
   if (value === undefined || value === null) return [];
-  if (!Array.isArray(value) || value.some(entry => typeof entry !== 'string')) throw new ItemFilterError(`${label}格式无效`);
+  if (!Array.isArray(value) || value.some(entry => typeof entry !== 'string')) throw new ItemFilterError(msg('filter.listInvalid', { label }));
   const patterns = [...new Set((value as string[]).map(entry => entry.trim()).filter(Boolean))];
-  if (patterns.length > ITEM_FILTER_LIMITS.patterns) throw new ItemFilterError(`${label}最多 ${ITEM_FILTER_LIMITS.patterns} 条`);
+  if (patterns.length > ITEM_FILTER_LIMITS.patterns) throw new ItemFilterError(msg('filter.tooMany', { label, max: ITEM_FILTER_LIMITS.patterns }));
   for (const pattern of patterns) {
-    if (pattern.length > ITEM_FILTER_LIMITS.patternLength) throw new ItemFilterError(`${label}每条不能超过 ${ITEM_FILTER_LIMITS.patternLength} 个字符`);
-    if (/[\r\n]/.test(pattern)) throw new ItemFilterError(`${label}每行只能写一条`);
+    if (pattern.length > ITEM_FILTER_LIMITS.patternLength) throw new ItemFilterError(msg('filter.tooLong', { label, max: ITEM_FILTER_LIMITS.patternLength }));
+    if (/[\r\n]/.test(pattern)) throw new ItemFilterError(msg('filter.oneLine', { label }));
     if (!regex) continue;
-    try { new RegExp(pattern, 'iu'); } catch { throw new ItemFilterError(`${label}中的正则表达式无效：${pattern}`); }
+    try { new RegExp(pattern, 'iu'); } catch { throw new ItemFilterError(msg('filter.regexInvalid', { label, pattern })); }
     const reason = unsafeRegexReason(pattern);
-    if (reason) throw new ItemFilterError(`${label}中的正则表达式“${pattern}”${reason}`);
+    if (reason) throw new ItemFilterError(msg('filter.regexUnsafe', { label, pattern, reason }));
   }
   return patterns;
 }
@@ -132,12 +134,12 @@ function parsePatterns(value: unknown, label: string, regex: boolean): string[] 
 /** Validate a filter from the API, a config import or a backup. Empty filters become null. */
 export function parseItemFilter(value: unknown): ItemFilter | null {
   if (value === undefined || value === null) return null;
-  if (typeof value !== 'object' || Array.isArray(value)) throw new ItemFilterError('条目过滤规则格式无效');
+  if (typeof value !== 'object' || Array.isArray(value)) throw new ItemFilterError(msg('filter.invalid'));
   const record = value as Record<string, unknown>;
-  if (record.regex !== undefined && typeof record.regex !== 'boolean') throw new ItemFilterError('条目过滤规则格式无效');
+  if (record.regex !== undefined && typeof record.regex !== 'boolean') throw new ItemFilterError(msg('filter.invalid'));
   const regex = record.regex === true;
-  const include = parsePatterns(record.include, '包含关键词', regex);
-  const exclude = parsePatterns(record.exclude, '排除关键词', regex);
+  const include = parsePatterns(record.include, msg('filter.include'), regex);
+  const exclude = parsePatterns(record.exclude, msg('filter.exclude'), regex);
   return include.length || exclude.length ? { include, exclude, regex } : null;
 }
 
@@ -213,7 +215,7 @@ export function classifyItems(feed: Feed, items: FeedItem[], override: { itemFil
       : judge(texts.map(([title, summary]) => [title.toLowerCase(), summary.toLowerCase()]), (pattern, text) => text.includes(pattern.toLowerCase()), filter);
     if (verdicts === 'timeout') {
       timedOut = true;
-      if (!warned.has(feed.id)) { warned.add(feed.id); console.warn(`订阅 ${feed.id} 的正则过滤超过 ${REGEX_BUDGET_MS} ms，本次输出未应用过滤`); }
+      if (!warned.has(feed.id)) { warned.add(feed.id); console.warn(`Regex filter of feed ${feed.id} exceeded ${REGEX_BUDGET_MS} ms; output was not filtered this time`); }
     } else {
       verdicts.forEach((verdict, position) => { if (verdict) statuses[candidates[position]] = verdict; });
     }

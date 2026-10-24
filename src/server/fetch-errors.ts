@@ -3,21 +3,20 @@
  * time, never the full address, so query parameters stay hidden in fetch
  * logs, the feed list and alerts.
  */
+import { LocalizedError, msg } from './i18n.js';
+import type { Param } from '../shared/i18n.js';
 
-/** Shown with a timeout on a direct connection; the most common cause is a local proxy app. */
-const DIRECT_HINT = '如果本机开启了代理软件的增强模式或 Fake-IP，FeedLantern 不读取系统代理：请开启 TUN/增强模式并打开 DNS-over-HTTPS，或为该订阅配置网络代理。';
-const PROXY_HINT = '请检查该订阅网络配置中的代理是否可用。';
-
-export class FetchTimeoutError extends Error {
+export class FetchTimeoutError extends LocalizedError {
   override name = 'FetchTimeoutError';
-  constructor(readonly host: string, readonly seconds: number, viaProxy = false) {
-    super(`连接 ${host} 超时（${seconds} 秒未响应）。${viaProxy ? PROXY_HINT : DIRECT_HINT}`);
+  constructor(readonly host: Param, readonly seconds: number, viaProxy = false) {
+    // On a direct connection the most common cause is a local proxy app.
+    super(msg('error.fetchTimeout', { host, seconds, hint: msg(viaProxy ? 'error.fetchTimeoutProxyHint' : 'error.fetchTimeoutDirectHint') }));
   }
 }
 
 /** The host of an address for a message, without port, path or query. */
-export function hostOf(raw: string): string {
-  try { return new URL(raw).hostname.replace(/^\[|\]$/g, '') || '目标网站'; } catch { return '目标网站'; }
+export function hostOf(raw: string): Param {
+  try { return new URL(raw).hostname.replace(/^\[|\]$/g, '') || msg('label.targetSite'); } catch { return msg('label.targetSite'); }
 }
 
 /**
@@ -34,7 +33,7 @@ export function isAbortError(error: unknown): boolean {
  * the service stopping) is rethrown unchanged so it is never reported as a
  * timeout.
  */
-export async function withFetchTimeout<T>(seconds: number, signal: AbortSignal | undefined, host: () => string, viaProxy: boolean, operation: (combined: AbortSignal) => Promise<T>): Promise<T> {
+export async function withFetchTimeout<T>(seconds: number, signal: AbortSignal | undefined, host: () => Param, viaProxy: boolean, operation: (combined: AbortSignal) => Promise<T>): Promise<T> {
   const timer = AbortSignal.timeout(seconds * 1000);
   const combined = signal ? AbortSignal.any([timer, signal]) : timer;
   try {

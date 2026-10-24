@@ -260,6 +260,20 @@ SQLite 版本 8 移除单管理员索引并增加加密 `user_notifications`。�
 
 清理每小时运行一次。新建的数据库使用 `auto_vacuum=INCREMENTAL`，清理后 `Store.compact()` 把空闲页逐步还给磁盘；更早创建的数据库用 `scripts/compact-db.ts` 一次性转换并压缩，用法见[升级维护](maintenance.md#数据库体积)。完整备份导出时翻译缓存也只取最近使用的 20000 条，因此缓存在两次清理之间短暂超限不会让导出失败。
 
+## 国际化
+
+界面、服务端错误、RSS 浏览器预览页、通知和存储的日志文案都来自 `src/shared/locales/` 下的消息文件，由 `src/shared/i18n.ts`（无第三方依赖）提供：
+
+- `en.ts` 是基准：它的键定义 `MessageKey`。其他语言文件的类型是 `LocaleMessages`，缺键或多键都是编译错误；`tests/i18n.test.ts` 还会检查每种语言的占位符和复数形式一致。
+- 占位符写作 `{name}`，参数可以是字符串、数字（按语言加千分位）或另一条消息 `msg(key, params)`，在同一语言中翻译。复数写作 `{ one, other }`，按 `count` 参数用 `Intl.PluralRules` 选择。日期、相对时间和列表使用 `Intl`（`formatDateTime`、`formatRelative`、`formatList`）。
+- 服务端：`AppError(status, 'error.xxx' | msg(...))` 返回 `{ code, message, error, params? }`，`code` 是去掉 `error.` 前缀的键，`message` 按请求语言翻译。抛出深层错误时用 `LocalizedError`（`BrowserServiceError`、`NetworkPolicyError` 等都继承它），它的 `message` 是当前语言、`englishMessage` 是英文。请求在读者语言（账号偏好 → `Accept-Language` → `DEFAULT_LOCALE`）中运行，后台任务（刷新、翻译、批量、通知）在订阅所有者的语言中运行，见 `src/server/i18n.ts` 的 `withLocale`/`currentLocale`/`tl`。写入数据库的文案按写入时的语言保存。服务端日志统一英文（`describeError` 使用 `englishMessage`）。
+- 前端：`src/web/i18n.ts` 的 `t()` 读取当前语言，`App` 通过 `useLocale()` 在切换语言时整体重新渲染；`api.ts` 发送 `Accept-Language`，并优先按错误 `code` 渲染文案。
+- 迁移 21 给 `users` 加 `locale`（用户选择，现有账号设为 `zh-CN`）和 `detected_locale`（登录时浏览器语言，用于离线通知；不进入备份）。旧备份恢复时 `locale` 默认 `zh-CN`。
+
+新增一种语言：复制 `src/shared/locales/en.ts` 为新文件并翻译（类型改为 `LocaleMessages`），在 `src/shared/locales/index.ts` 登记一行（代码、自称名称）。`pnpm test` 会检查键和占位符；`negotiateLocale` 按语言主标签自动匹配地区变体。
+
+单元测试默认以 `DEFAULT_LOCALE=zh-CN` 运行（沿用原有中文断言），`tests/i18n.test.ts` 自己清除该变量检查英文默认值；e2e 固定 `zh-CN`，英文流程在 `tests/e2e/10-english.spec.ts`。
+
 ## 错误处理
 
-未预期的服务器错误对客户端统一返回 `{error:"服务器内部错误"}`，同时把类型、消息和简短堆栈写入服务日志（不含请求内容）。完整备份导出前会按备份格式校验数据，校验失败时响应里直接给出出错的表和字段，例如 `tables.settings.0`，不会包含数据值。
+未预期的服务器错误对客户端统一返回 `{code:"internal", message:"…", error:"…"}`（`message` 与 `error` 为读者语言的“服务器内部错误”），同时把类型、消息和简短堆栈写入服务日志（不含请求内容）。完整备份导出前会按备份格式校验数据，校验失败时响应里直接给出出错的表和字段，例如 `tables.settings.0`，不会包含数据值。

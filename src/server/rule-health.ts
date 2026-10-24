@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { msg, tl } from './i18n.js';
 import type { DatabaseSync } from 'node:sqlite';
 import { defaultApplicationSettings, type ApplicationSettings, type ExtractedItem, type Feed, type RuleHealthField, type RuleHealthReason, type RuleHealthWarning } from '../shared/types.js';
 import { safeDiagnostic, type FetchHistory } from './fetch-history.js';
@@ -36,7 +37,6 @@ export interface RuleHealthSample {
   rates: Record<RuleHealthField, number>;
 }
 
-const fieldLabels: Record<RuleHealthField, string> = { title: '标题', link: '链接', date: '日期', image: '图片', description: '摘要' };
 const percent = (value: number) => `${Math.round(value * 100)}%`;
 
 function linkKey(link: string): string {
@@ -73,18 +73,18 @@ export function evaluateHealth(sample: RuleHealthSample, history: RuleHealthSamp
   const reasons: RuleHealthReason[] = [];
   const count = median(recent.map(s => s.itemCount));
   if (count >= RULE_HEALTH.minBaselineItems && sample.itemCount < count * RULE_HEALTH.itemDropRatio) {
-    reasons.push({ code: 'item-count', baseline: count, current: sample.itemCount, message: `条目数从约 ${Math.round(count)} 条降到 ${sample.itemCount} 条` });
+    reasons.push({ code: 'item-count', baseline: count, current: sample.itemCount, message: tl('health.itemCount', { baseline: Math.round(count), current: sample.itemCount }) });
   }
   if (sample.itemCount < RULE_HEALTH.minItemsForRates) return reasons;
   const links = median(recent.map(s => s.rates.link));
   if (links >= RULE_HEALTH.fieldBaseline) {
-    if (sample.distinctLinks === 1) reasons.push({ code: 'same-link', baseline: links, current: sample.rates.link, message: `${sample.itemCount} 条内容的链接全部相同` });
-    else if (sample.rates.link < RULE_HEALTH.duplicateRatio) reasons.push({ code: 'duplicate-links', baseline: links, current: sample.rates.link, message: `链接大面积重复：不重复的链接从约 ${percent(links)} 降到 ${percent(sample.rates.link)}` });
+    if (sample.distinctLinks === 1) reasons.push({ code: 'same-link', baseline: links, current: sample.rates.link, message: tl('health.sameLink', { count: sample.itemCount }) });
+    else if (sample.rates.link < RULE_HEALTH.duplicateRatio) reasons.push({ code: 'duplicate-links', baseline: links, current: sample.rates.link, message: tl('health.duplicateLinks', { baseline: percent(links), current: percent(sample.rates.link) }) });
   }
   for (const field of ['title', 'date', 'image', 'description'] as const) {
     const base = median(recent.map(s => s.rates[field]));
     if (base >= RULE_HEALTH.fieldBaseline && sample.rates[field] <= RULE_HEALTH.fieldFloor) {
-      reasons.push({ code: 'field-rate', field, baseline: base, current: sample.rates[field], message: `${fieldLabels[field]}有效率从约 ${percent(base)} 降到 ${percent(sample.rates[field])}` });
+      reasons.push({ code: 'field-rate', field, baseline: base, current: sample.rates[field], message: tl('health.fieldRate', { field: msg(`field.${field}` as const), baseline: percent(base), current: percent(sample.rates[field]) }) });
     }
   }
   return reasons;

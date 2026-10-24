@@ -9,6 +9,10 @@ import { NetworkPolicy } from './network.js';
 import { scopedHeaders, type FetchNetworkOptions } from './fetch-options.js';
 import { openTunnelToAny } from './upstream-proxy.js';
 import { hostOf, withFetchTimeout } from './fetch-errors.js';
+import { LocalizedError, msg } from './i18n.js';
+
+/** Raised when the source is too large; a profile's connection test only needs the status. */
+class SourceTooLargeError extends LocalizedError {}
 
 /** How long one source fetch (all redirects included) may take. */
 export const SOURCE_TIMEOUT_SECONDS = 20;
@@ -44,12 +48,12 @@ const valueText = (value: any): string => typeof value === 'string' || typeof va
 const plain = (text: string) => sanitizeHtml(text, { allowedTags: [], allowedAttributes: {} }).replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
 
 export function parseSource(xml: string, base: string): SourceResult {
-  if (/<!\s*(DOCTYPE|ENTITY)/i.test(xml) || XMLValidator.validate(xml) !== true) throw Error('RSS XML 无效或包含不支持的实体声明');
+  if (/<!\s*(DOCTYPE|ENTITY)/i.test(xml) || XMLValidator.validate(xml) !== true) throw new LocalizedError(msg('rss.xmlInvalid'));
   const doc = new XMLParser({ ignoreAttributes: false, parseTagValue: false, trimValues: false, htmlEntities: true, stopNodes: ['*.div'] }).parse(xml);
   const atom = !!doc.feed;
   const rdf = doc['rdf:RDF'];
   const channel = atom ? doc.feed : doc.rss?.channel ?? rdf?.channel;
-  if (!channel) throw Error('该地址未返回 RSS 1.0、RSS 2.0 或 Atom 1.0 订阅');
+  if (!channel) throw new LocalizedError(msg('rss.notAFeed'));
   const seen = new Set<string>();
   const items: SourceItem[] = [];
   const ordered = list(atom ? channel.entry : rdf ? rdf.item : channel.item).slice(0, 1000);
@@ -65,7 +69,7 @@ export function parseSource(xml: string, base: string): SourceResult {
       // XHTML is parsed separately to preserve its markup instead of flattening it.
       html = valueText(content.div);
     } else if (atom && (!content?.['@_type'] || content['@_type'] === 'text')) html = sanitizeHtml(html.replaceAll('&', '&amp;').replaceAll('<', '&lt;'), { allowedTags: [] });
-    if (html.length > 200_000 || title.length > 20_000) throw Error('RSS 单条内容超过支持的长度限制');
+    if (html.length > 200_000 || title.length > 20_000) throw new LocalizedError(msg('rss.itemTooLong'));
     html = safeHtml(html, link);
     const sourceId = valueText(atom ? row.id : row.guid ?? row['@_rdf:about']).trim();
     const key = digest(sourceId ? `id:${sourceId}` : rawLink ? `link:${link}` : `content:${title}\n${html}`);
@@ -111,7 +115,7 @@ async function requestOnce(url: URL, addresses: readonly string[], policy: Netwo
     }, res => {
       const chunks: Buffer[] = []; let size = 0;
       res.on('error', reject);
-      res.on('data', chunk => { size += chunk.length; if (size > maxBytes) { res.destroy(Error('订阅源超过 5 MB 限制')); return; } chunks.push(chunk); });
+      res.on('data', chunk => { size += chunk.length; if (size > maxBytes) { res.destroy(new SourceTooLargeError(msg('rss.tooLarge', { size: '5 MB' }))); return; } chunks.push(chunk); });
       res.on('end', () => resolve({ status: res.statusCode ?? 0, location: res.headers.location, body: Buffer.concat(chunks).toString('utf8'), etag: res.headers.etag, modified: res.headers['last-modified'] }));
     });
     request.on('error', error => { tunnel?.destroy(); reject(error); });
@@ -154,10 +158,10 @@ export async function fetchSource(raw: string, base: NetworkPolicy, options: Sou
       const response = await requestOnce(url, addresses, policy, headers, signal, options.network);
       if ([301, 302, 303, 307, 308].includes(response.status) && response.location) { target = new URL(response.location, target).href; continue; }
       if (response.status === 304) return { title: '', items: [], unchanged: true };
-      if (response.status !== 200) throw Error(`RSS 获取失败（HTTP ${response.status}）`);
+      if (response.status !== 200) throw new LocalizedError(msg('rss.httpStatus', { status: String(response.status) }));
       return { ...parseSource(response.body, target), etag: response.etag, modified: response.modified };
     }
-    throw Error('RSS 重定向次数过多');
+    throw new LocalizedError(msg('rss.tooManyRedirects'));
   });
 }
 
@@ -167,7 +171,7 @@ export async function probeTarget(raw: string, base: NetworkPolicy, network: Fet
   return withFetchTimeout(SOURCE_TIMEOUT_SECONDS, signal, () => hostOf(raw), !!network?.proxy, async combined => {
     const { url, address, addresses = [address] } = await abortable(policy.resolveForConnection(raw), combined);
     const response = await requestOnce(url, addresses, policy, requestHeaders(raw, raw, network, 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'), combined, network, 1_000_000).catch(error => {
-      if (error instanceof Error && /超过 5 MB/.test(error.message)) return { status: 200, body: '' } as RawResponse;
+      if (error instanceof SourceTooLargeError) return { status: 200, body: '' } as RawResponse;
       throw error;
     });
     return { status: response.status };

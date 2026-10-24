@@ -5,10 +5,11 @@ import { bundleEtag, renderBundleAtom, renderBundleJson, renderBundleRss, type B
 import { etagMatches, renderBundlePreview, wantsHtmlPreview } from './rss-preview.js';
 import type { Store } from './store.js';
 import { asInteger, asNonEmptyString, asRecord } from './validation.js';
+import { headerLocale, msg, withLocale } from './i18n.js';
 
 function parseFeedIds(value: unknown): string[] {
   if (!Array.isArray(value) || value.length > BUNDLE_MAX_FEEDS || !value.every(id => typeof id === 'string' && id.length > 0 && id.length <= 200)) {
-    throw new AppError(400, `请选择最多 ${BUNDLE_MAX_FEEDS} 个订阅`);
+    throw new AppError(400, msg('error.bundleFeedCount', { max: BUNDLE_MAX_FEEDS }));
   }
   return value as string[];
 }
@@ -16,10 +17,10 @@ function parseFeedIds(value: unknown): string[] {
 /** Every field is optional for an update; a new bundle needs a name. */
 export function parseBundleInput(value: unknown, partial = false): Partial<BundleInput> {
   const body = asRecord(value), input: Partial<BundleInput> = {};
-  if (!partial || body.name !== undefined) input.name = asNonEmptyString(body.name, '聚合名称', 200);
+  if (!partial || body.name !== undefined) input.name = asNonEmptyString(body.name, msg('label.bundleName'), 200);
   if (!partial || body.feedIds !== undefined) input.feedIds = parseFeedIds(body.feedIds ?? []);
-  if (body.itemLimit !== undefined) input.itemLimit = asInteger(body.itemLimit, '条目上限', BUNDLE_ITEM_LIMIT.min, BUNDLE_ITEM_LIMIT.max, BUNDLE_ITEM_LIMIT.default);
-  if (partial && !Object.keys(input).length) throw new AppError(400, '请提供需要修改的聚合设置');
+  if (body.itemLimit !== undefined) input.itemLimit = asInteger(body.itemLimit, msg('label.bundleItemLimit'), BUNDLE_ITEM_LIMIT.min, BUNDLE_ITEM_LIMIT.max, BUNDLE_ITEM_LIMIT.default);
+  if (partial && !Object.keys(input).length) throw new AppError(400, 'error.bundleSettingsEmpty');
   return input;
 }
 
@@ -41,14 +42,14 @@ export function registerBundleRoutes(app: FastifyInstance, store: Store, origin:
   const owned = (request: FastifyRequest): Bundle => {
     const owner = guard(request), id = String(asRecord(request.params).id);
     const bundle = store.owns('bundles', id, owner) ? store.bundles.get(id) : null;
-    if (!bundle) throw new AppError(404, '聚合订阅不存在');
+    if (!bundle) throw new AppError(404, 'error.bundleNotFound');
     return bundle;
   };
 
   app.get('/api/bundles', async request => store.bundles.list(guard(request)).map(payload));
   app.post('/api/bundles', async request => {
     const owner = guard(request);
-    if (store.bundles.list(owner).length >= 200) throw new AppError(400, '每个账号最多创建 200 个聚合订阅');
+    if (store.bundles.list(owner).length >= 200) throw new AppError(400, 'error.bundleLimit');
     return payload(store.bundles.create(parseBundleInput(request.body) as BundleInput, owner).bundle);
   });
   app.get('/api/bundles/:id', async request => payload(owned(request)));
@@ -75,7 +76,7 @@ export function registerBundleRoutes(app: FastifyInstance, store: Store, origin:
     const extension = format === 'rss' ? '.xml' : format === 'atom' ? '.atom' : '.json';
     const token = params.token.endsWith(extension) ? params.token.slice(0, -extension.length) : params.token;
     // One key guards every format, so rotating it revokes all three addresses.
-    if (!store.bundles.checkToken(params.id, token)) throw new AppError(404, '聚合订阅不存在');
+    if (!store.bundles.checkToken(params.id, token)) throw new AppError(404, 'error.bundleNotFound');
     const bundle = store.bundles.get(params.id)!;
     const members = bundleMembers(store, bundle);
     const publicUrl = `${origin()}/bundles/${encodeURIComponent(bundle.id)}/${encodeURIComponent(token)}${extension}`;
@@ -83,14 +84,17 @@ export function registerBundleRoutes(app: FastifyInstance, store: Store, origin:
     const query = request.query as Record<string, unknown> | undefined;
     // Only the RSS address has the human-readable browser page.
     const preview = format === 'rss' && wantsHtmlPreview(request.headers, query);
-    const etag = preview ? bundleEtag(bundle, members).replace(/"$/, '-html"') : bundleEtag(bundle, members, format);
+    // The browser page speaks the visitor's language; the bundle's own texts the owner's.
+    const locale = preview ? headerLocale(request.headers['accept-language']) : store.ownerLocale(bundle.ownerId);
+    const etag = (preview ? bundleEtag(bundle, members).replace(/"$/, '-html"') : bundleEtag(bundle, members, format)).replace(/"$/, `-${locale}"`);
     reply.header('Cache-Control', 'private, max-age=60');
     reply.header('Referrer-Policy', 'no-referrer');
     reply.header('X-Robots-Tag', 'noindex, nofollow');
     reply.header('X-Content-Type-Options', 'nosniff');
-    reply.header('Vary', format === 'rss' ? 'Accept, Sec-Fetch-Dest, Sec-Fetch-Mode' : 'Sec-Fetch-Dest');
+    reply.header('Vary', format === 'rss' ? 'Accept, Accept-Language, Sec-Fetch-Dest, Sec-Fetch-Mode' : 'Sec-Fetch-Dest');
     reply.header('ETag', etag);
     if (etagMatches(request.headers['if-none-match'], etag)) return reply.code(304).send();
+    return withLocale(locale, () => {
     if (preview) {
       const page = renderBundlePreview(bundle, members, publicUrl);
       reply.header('Content-Security-Policy', page.csp);
@@ -102,6 +106,7 @@ export function registerBundleRoutes(app: FastifyInstance, store: Store, origin:
     if (format === 'atom') return reply.type(document ? 'application/xml; charset=utf-8' : 'application/atom+xml; charset=utf-8').send(renderBundleAtom(bundle, members, publicUrl, siteUrl));
     const raw = typeof query?.format === 'string' && document;
     return reply.type(raw ? 'application/xml; charset=utf-8' : 'application/rss+xml; charset=utf-8').send(renderBundleRss(bundle, members, publicUrl, siteUrl));
+    });
   };
   app.get('/bundles/:id/:token.xml', publicBundle('rss'));
   app.get('/bundles/:id/:token.atom', publicBundle('atom'));
@@ -119,12 +124,12 @@ export function exportConfigBundles(store: Store, ownerId: string, feedIds: stri
 /** `bundles` is optional so older config files (and older FeedLantern versions) keep working. */
 export function parseConfigBundles(value: unknown, feedCount: number): ConfigBundle[] {
   if (value === undefined) return [];
-  if (!Array.isArray(value) || value.length > 200) throw new AppError(400, '配置中的聚合订阅无效');
+  if (!Array.isArray(value) || value.length > 200) throw new AppError(400, 'error.configBundlesInvalid');
   return value.map(raw => {
     const entry = asRecord(raw);
     const feeds = entry.feeds;
-    if (!Array.isArray(feeds) || feeds.length > BUNDLE_MAX_FEEDS || !feeds.every(n => Number.isInteger(n) && n >= 0 && n < feedCount)) throw new AppError(400, '配置中的聚合订阅无效');
-    return { name: asNonEmptyString(entry.name, '聚合名称', 200), itemLimit: asInteger(entry.itemLimit, '条目上限', BUNDLE_ITEM_LIMIT.min, BUNDLE_ITEM_LIMIT.max, BUNDLE_ITEM_LIMIT.default), feeds: [...new Set(feeds as number[])] };
+    if (!Array.isArray(feeds) || feeds.length > BUNDLE_MAX_FEEDS || !feeds.every(n => Number.isInteger(n) && n >= 0 && n < feedCount)) throw new AppError(400, 'error.configBundlesInvalid');
+    return { name: asNonEmptyString(entry.name, msg('label.bundleName'), 200), itemLimit: asInteger(entry.itemLimit, msg('label.bundleItemLimit'), BUNDLE_ITEM_LIMIT.min, BUNDLE_ITEM_LIMIT.max, BUNDLE_ITEM_LIMIT.default), feeds: [...new Set(feeds as number[])] };
   });
 }
 

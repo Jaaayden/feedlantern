@@ -6,7 +6,7 @@ import type { ServerConfig } from './config.js';
 
 const rate = { concurrency: z.number().int().min(1).max(16), requestIntervalMs: z.number().int().min(0).max(5000) };
 // Keys travel in an HTTP header: printable ASCII only, so CR/LF can never reach it.
-const apiKey = z.string().max(500).regex(/^[\x21-\x7e]*$/, 'API Key 格式无效').default('');
+const apiKey = z.string().max(500).regex(/^[\x21-\x7e]*$/, 'error.apiKeyInvalid').default('');
 /** `apiKeyConfigured` is a read-only flag the API returns instead of the key; accept and drop it. */
 const withoutFlag = <T extends { apiKeyConfigured?: boolean }>({ apiKeyConfigured: _flag, ...rest }: T) => rest;
 const defaults = defaultApplicationSettings.translation;
@@ -20,8 +20,8 @@ export const translationSettingsSchema = z.object({
     baseUrl: z.string().max(2048).refine(value => {
       if (!value) return true;
       try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash; } catch { return false; }
-    }, 'OpenAI 兼容接口地址必须是不含查询参数的 HTTP(S) 地址').transform(value => value.replace(/\/+$/, '')).default(''),
-    model: z.string().max(200).regex(/^[^\u0000-\u001f\u007f]*$/, '模型名称无效').transform(value => value.trim()).default(''),
+    }, 'error.openaiUrlInvalid').transform(value => value.replace(/\/+$/, '')).default(''),
+    model: z.string().max(200).regex(/^[^\u0000-\u001f\u007f]*$/, 'error.modelInvalid').transform(value => value.trim()).default(''),
     systemPrompt: z.string().max(4000).default(''),
   }).strict().transform(withoutFlag).default(defaults.openai),
 }).strict();
@@ -30,7 +30,7 @@ export const barkObjectSchema = z.object({
   enabled: z.boolean(),
   url: z.string().max(2048).transform((value, ctx) => {
     try { return validateBarkUrl(value) ?? ''; }
-    catch { ctx.addIssue({ code: 'custom', message: 'Bark 地址必须是包含设备密钥的 HTTPS 地址' }); return z.NEVER; }
+    catch { ctx.addIssue({ code: 'custom', message: 'error.barkUrlInvalid' }); return z.NEVER; }
   }),
   failureThreshold: z.number().int().min(1).max(1000).default(defaultApplicationSettings.bark.failureThreshold),
   timeoutSeconds: z.number().int().min(1).max(60),
@@ -41,7 +41,7 @@ export const barkObjectSchema = z.object({
   /** Also alert when a feed's rules may have stopped matching (deduplicated apart from failures). */
   ruleHealthAlerts: z.boolean().default(defaultApplicationSettings.bark.ruleHealthAlerts),
 }).strict();
-const barkSchema = barkObjectSchema.refine(value => !value.enabled || !!value.url, '启用 Bark 时请填写推送地址');
+const barkSchema = barkObjectSchema.refine(value => !value.enabled || !!value.url, 'error.barkUrlRequired');
 
 export const applicationSettingsSchema = z.object({
   translation: translationSettingsSchema.default(defaults),
@@ -57,17 +57,17 @@ export const applicationSettingsSchema = z.object({
         const port = Number(value.slice(value.lastIndexOf(':') + 1));
         return !!url.hostname && port >= 1 && port <= 65535;
       } catch { return false; }
-    }, '白名单使用精确的 hostname:port')).max(100),
+    }, 'error.allowedHostFormat')).max(100),
     dnsOverHttps: z.boolean(),
     trustedProxies: z.array(z.string().max(100).refine(value => {
       try { if (value.includes('/')) ipaddr.parseCIDR(value); else ipaddr.parse(value); return true; } catch { return false; }
-    }, '可信代理使用 IP 或 CIDR')).max(100),
+    }, 'error.trustedProxyFormat')).max(100),
     publicOrigin: z.string().max(2048).refine(value => {
       try { const u = new URL(value); return ['http:', 'https:'].includes(u.protocol) && !u.username && !u.password && u.pathname === '/' && !u.search && !u.hash; } catch { return false; }
-    }, '公开访问地址必须是 HTTP(S) 源地址').transform(value => new URL(value).origin),
+    }, 'error.publicOriginFormat').transform(value => new URL(value).origin),
     cookieSecure: z.boolean(),
     sessionTtlDays: z.number().int().min(1).max(365),
-    host: z.string().max(253).refine(value => ipaddr.isValid(value) || value === 'localhost', '监听地址使用 IP 或 localhost'),
+    host: z.string().max(253).refine(value => ipaddr.isValid(value) || value === 'localhost', 'error.hostFormat'),
     port: z.number().int().min(1).max(65535),
   }).strict().default(defaultApplicationSettings.server),
 }).strict();

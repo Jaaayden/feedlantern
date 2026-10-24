@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { lt, rawText } from '../src/server/i18n.js';
 import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:http';
 import type { Socket } from 'node:net';
@@ -40,7 +41,7 @@ test('RSS 来源超时显示主机和秒数及代理提示，不带查询参数�
     assert.match(error.message, /TUN\/增强模式并打开 DNS-over-HTTPS/);
     assert.match(error.message, /网络代理/);
     assert.ok(!error.message.includes('private-query') && !error.message.includes('feed.xml'));
-    assert.equal(friendlyError(error, 'fallback'), error.message);
+    assert.equal(lt(friendlyError(error, rawText('fallback'))), error.message);
 
     // With a network profile proxy the hint points at the proxy instead.
     assert.match(new FetchTimeoutError('rss.example.test', 20, true).message, /^连接 rss\.example\.test 超时（20 秒未响应）。请检查该订阅网络配置中的代理是否可用。$/);
@@ -51,10 +52,10 @@ test('RSS 来源超时显示主机和秒数及代理提示，不带查询参数�
     const canceled = await fetchSource(url, policy, { timeoutSeconds: 5, signal: controller.signal }).then(() => null, (reason: unknown) => reason);
     assert.ok(canceled instanceof Error && !(canceled instanceof FetchTimeoutError), String(canceled));
     assert.equal(canceled.name, 'AbortError');
-    assert.doesNotMatch(friendlyError(canceled, 'fallback'), /超时|aborted/);
+    assert.doesNotMatch(lt(friendlyError(canceled, rawText('fallback'))), /超时|aborted/);
     // Raw English abort and timeout errors from Node never reach the user.
-    assert.equal(friendlyError(new DOMException('The operation was aborted due to timeout', 'TimeoutError'), 'fallback'), '请求超时，目标网站长时间未响应');
-    assert.equal(friendlyError(new DOMException('The operation was aborted', 'AbortError'), 'fallback'), '操作已中止（已取消或服务正在停止）');
+    assert.equal(lt(friendlyError(new DOMException('The operation was aborted due to timeout', 'TimeoutError'), rawText('fallback'))), '请求超时，目标网站长时间未响应');
+    assert.equal(lt(friendlyError(new DOMException('The operation was aborted', 'AbortError'), rawText('fallback'))), '操作已中止（已取消或服务正在停止）');
   } finally { await slow.close(); }
 });
 

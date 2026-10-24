@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { rawText } from '../src/server/i18n.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -266,7 +267,7 @@ test('one article uses six concurrent HTTP requests, preserves DOM order and hon
 
 test('a normal translation failure does not cool down unrelated subscriptions', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'fl-rss-isolation-')); const store = new Store(dir);
-  const worker = new TranslationWorker(store.translations, async text => { if (text === 'Broken') throw new TranslationError('bad response'); return `译${text}`; }, () => ({ concurrency: 1, requestIntervalMs: 0 }));
+  const worker = new TranslationWorker(store.translations, async text => { if (text === 'Broken') throw new TranslationError(rawText('bad response')); return `译${text}`; }, () => ({ concurrency: 1, requestIntervalMs: 0 }));
   try {
     const one = store.createFeed(input).feed, two = store.createFeed({ ...input, name: 'second' }).feed;
     store.translations.upsert(one, [{ ...sourceItem, title: 'Broken', html: '' }]);
@@ -279,7 +280,7 @@ test('a normal translation failure does not cool down unrelated subscriptions', 
 
 test('explicit rate limit stops queued requests and manual retry preserves Retry-After', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'fl-rss-limit-')); const store = new Store(dir); let calls = 0;
-  const worker = new TranslationWorker(store.translations, async () => { calls++; throw new TranslationError('限流', 120_000, true); }, () => ({ concurrency: 1, requestIntervalMs: 0 }));
+  const worker = new TranslationWorker(store.translations, async () => { calls++; throw new TranslationError(rawText('限流'), 120_000, true); }, () => ({ concurrency: 1, requestIntervalMs: 0 }));
   try {
     const { feed } = store.createFeed(input); store.translations.upsert(feed, [sourceItem]); worker.start();
     await until(() => store.exportTables().translations[0].attempts === 1);
@@ -340,7 +341,7 @@ test('translation rate limit automatically sends one Bark alert across failed ar
   let calls = 0;
   const app = await createApp({ store, dataDir: dir, browserService: fakeBrowser, startScheduler: false,
     barkUrl: 'https://api.day.app/test-key/', barkSender: async (_url, body, _signal, title) => { calls++; assert.equal(title, '订阅灯：RSS 翻译失败'); assert.match(body, /限流/); },
-    translator: async () => { throw new TranslationError('Google 限流', 60_000, true); }, translationIntervalMs: 0 });
+    translator: async () => { throw new TranslationError(rawText('Google 限流'), 60_000, true); }, translationIntervalMs: 0 });
   try {
     const { feed } = store.createFeed(input);
     store.translations.upsert(feed, [sourceItem, { ...sourceItem, key: digest('two'), title: 'Second', link: 'https://example.test/two' }]);

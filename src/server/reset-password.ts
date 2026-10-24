@@ -1,6 +1,11 @@
 import { getConfig } from './config.js';
 import { Store } from './store.js';
 import { StringDecoder } from 'node:string_decoder';
+import { formatList, negotiateLocale, translator } from '../shared/i18n.js';
+
+// An interactive operator command: it speaks the shell's language (LANG=zh_CN.UTF-8 gives Simplified Chinese).
+const locale = negotiateLocale((process.env.LC_ALL || process.env.LC_MESSAGES || process.env.LANG || '').split('.')[0].replace('_', '-'));
+const t = translator(locale);
 
 let pipedInput: Promise<string[]> | undefined;
 
@@ -26,7 +31,7 @@ async function promptLine(prompt: string): Promise<string> {
     const onData = (chunk: Buffer): void => {
       for (const character of decoder.write(chunk)) {
         const code = character.codePointAt(0)!;
-        if (code === 3) { output.write('\n'); cleanup(); reject(new Error('已取消')); return; }
+        if (code === 3) { output.write('\n'); cleanup(); reject(new Error(t('cli.canceled'))); return; }
         if (code === 13 || code === 10) { output.write('\n'); cleanup(); resolve(value); return; }
         if (code === 127 || code === 8) { value = Array.from(value).slice(0, -1).join(''); continue; }
         if (code >= 32 && code !== 127) value += character;
@@ -38,7 +43,7 @@ async function promptLine(prompt: string): Promise<string> {
 }
 
 if (process.argv.slice(2).length > 0) {
-  process.stderr.write('为避免密码出现在 shell 历史中，此命令不接受命令行参数；请仅通过 stdin 输入。\n');
+  process.stderr.write(`${t('cli.noArguments')}\n`);
   process.exitCode = 2;
 } else {
   const store = new Store(getConfig());
@@ -46,23 +51,23 @@ if (process.argv.slice(2).length > 0) {
     const admins = store.listUsers().filter(u => u.role === 'admin');
     let selected = admins[0];
     if (admins.length > 1) {
-      process.stdout.write(`管理员账号：${admins.map(u => u.username).join('、')}\n`);
-      const username = await promptLine('要重置的管理员用户名：');
+      process.stdout.write(`${t('cli.admins', { names: formatList(locale, admins.map(u => u.username)) })}\n`);
+      const username = await promptLine(t('cli.promptUsername'));
       selected = admins.find(u => u.username === username)!;
-      if (!selected) throw new Error('管理员不存在。');
+      if (!selected) throw new Error(t('cli.noSuchAdmin'));
     }
     const admin = selected;
-    if (!admin) throw new Error('尚未完成初始化，请先运行服务并使用 setup-token 初始化。');
-    const current = await promptLine('当前密码（可留空以强制重置）：');
-    if (current && !store.authenticate(admin.username, current)) throw new Error('当前密码错误。');
-    const next = await promptLine('新密码：');
-    if (next.length < 8 || next.length > 1024) throw new Error('新密码长度必须为 8 到 1024 个字符。');
-    const confirm = await promptLine('再次输入新密码：');
-    if (next !== confirm) throw new Error('两次输入的密码不一致。');
+    if (!admin) throw new Error(t('cli.notSetUp'));
+    const current = await promptLine(t('cli.promptCurrent'));
+    if (current && !store.authenticate(admin.username, current)) throw new Error(t('cli.currentWrong'));
+    const next = await promptLine(t('cli.promptNew'));
+    if (next.length < 8 || next.length > 1024) throw new Error(t('cli.newLength'));
+    const confirm = await promptLine(t('cli.promptConfirm'));
+    if (next !== confirm) throw new Error(t('cli.mismatch'));
     store.changePassword(next, admin.id);
-    process.stdout.write('密码已重置，管理员的现有登录会话已全部撤销。\n');
+    process.stdout.write(`${t('cli.done')}\n`);
   } catch (error) {
-    process.stderr.write(`${error instanceof Error ? error.message : '密码重置失败'}\n`);
+    process.stderr.write(`${error instanceof Error ? error.message : t('cli.failed')}\n`);
     process.exitCode = 1;
   } finally {
     store.close();

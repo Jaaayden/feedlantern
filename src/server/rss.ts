@@ -3,6 +3,8 @@ import { safeHtml } from './rss-source.js';
 import { createHash } from 'node:crypto';
 import { classifyItems } from './feed-output.js';
 import type { Feed, FeedFormat, FeedItem } from '../shared/types.js';
+import { currentLocale, translate } from './i18n.js';
+import { targetLocale } from './user-locale.js';
 
 export function escapeXml(value: string): string {
   return value
@@ -73,8 +75,9 @@ function feedHost(feed: Feed): string {
 function channelDescription(feed: Feed): string {
   let host = feed.url;
   try { host = new URL(feed.url).host; } catch { /* keep the raw value */ }
-  if (feed.sourceType !== 'rss') return `由 FeedLantern 从 ${host} 网页生成的订阅`;
-  return translationEnabled(feed) ? `由 FeedLantern 翻译的 ${host} RSS 订阅` : `由 FeedLantern 转发的 ${host} RSS 订阅`;
+  // A translated feed describes itself in its target language; others in the owner's.
+  if (feed.sourceType !== 'rss') return translate(currentLocale(), 'output.websiteDescription', { host });
+  return translationEnabled(feed) ? translate(targetLocale(feed.targetLanguage), 'output.translatedDescription', { host }) : translate(currentLocale(), 'output.forwardedDescription', { host });
 }
 
 /** Readers such as Inoreader and NetNewsWire show `media:thumbnail` in list views. */

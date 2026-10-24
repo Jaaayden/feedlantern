@@ -1,7 +1,9 @@
+import { t } from './i18n';
+
 export type Theme = 'system' | 'light' | 'dark';
 
 const key = 'feedlantern:theme';
-export const themeLabels: Record<Theme, string> = { system: '跟随系统', light: '亮色', dark: '暗色' };
+export const themeLabel = (theme: Theme) => t(`theme.${theme}`);
 
 export function readTheme(): Theme {
   try {

@@ -1,4 +1,6 @@
 import type { TranslationProgressData } from './TranslationProgress';
+import { getLocale, t, tKey } from './i18n';
+import { intlTag, type Locale, type Params } from '../shared/i18n';
 import type { RulePreview, RuleRedetectResult, SelectionRules } from '../shared/types';
 import type {
   ApiTokenCallFilter,
@@ -45,12 +47,30 @@ export interface OutputPreview { outputStatus: Record<string, ItemOutputStatus>;
 
 export class ApiError extends Error {
   status: number;
+  /** Stable error code from the server (see `error.*` in the locale catalogs). */
+  code?: string;
+  params?: Params;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, code?: string, params?: Params) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.code = code;
+    this.params = params;
   }
+}
+
+/**
+ * The text of a server error in the current interface language: rendered from
+ * its code when this build knows the code, otherwise the server's message.
+ */
+function errorMessage(payload: unknown, status: number, statusText: string): ApiError {
+  const body = typeof payload === 'object' && payload !== null ? payload as { code?: unknown; message?: unknown; error?: unknown; params?: unknown } : {};
+  const params = body.params && typeof body.params === 'object' ? body.params as Params : undefined;
+  const serverText = typeof body.message === 'string' ? body.message : typeof body.error === 'string' ? body.error : statusText || t('error.requestFailed');
+  const code = typeof body.code === 'string' ? body.code : undefined;
+  const message = code ? tKey(`error.${code}`, params, tKey(code, params, serverText)) : serverText;
+  return new ApiError(message, status, code, params);
 }
 
 let csrfToken: string | undefined;
@@ -80,6 +100,8 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   const generation = sessionGeneration;
   const headers = new Headers(options.headers);
   headers.set('X-FeedLantern', '1');
+  // The server answers errors in this language unless the account chose one (which the UI then uses too).
+  headers.set('Accept-Language', intlTag(getLocale()));
   if (workspaceUser && !/^\/api\/(auth|users|backups|settings|tokens)(?:\/|$)/.test(path)) headers.set('X-FeedLantern-User', workspaceUser);
   if (csrfToken) headers.set('X-CSRF-Token', csrfToken);
   if (options.body !== undefined) headers.set('Content-Type', 'application/json');
@@ -99,14 +121,11 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   }
 
   // A response from the previous login must neither expose its data nor log out the new account.
-  if (generation !== sessionGeneration) throw new ApiError('登录状态已变化，请重试', 0);
+  if (generation !== sessionGeneration) throw new ApiError(t('error.sessionChanged'), 0);
   if (!response.ok) {
-    if (response.status === 401) unauthorizedHandler?.();
-    const message =
-      typeof payload === 'object' && payload !== null && 'error' in payload
-        ? String((payload as { error: unknown }).error)
-        : response.statusText || '请求失败，请稍后重试';
-    throw new ApiError(message, response.status);
+    // A wrong password on the sign-in form is not an expired session.
+    if (response.status === 401 && !/^\/api\/auth\/(login|setup)$/.test(path)) unauthorizedHandler?.();
+    throw errorMessage(payload, response.status, response.statusText);
   }
   return payload as T;
 }
@@ -172,6 +191,8 @@ export const api = {
     logout: () => request<void>('/api/auth/logout', { method: 'POST', body: {} }),
     password: (body: { currentPassword: string; newPassword: string }) =>
       request<AuthState>('/api/auth/password', { method: 'POST', body }),
+    /** Save the account's interface language; null follows the browser. */
+    locale: (locale: Locale | null) => request<AuthState>('/api/auth/locale', { method: 'PUT', body: { locale } }),
   },
   credentials: {
     list: () => request<CredentialSummary[]>('/api/credentials'),
@@ -216,7 +237,7 @@ export const api = {
           while (next < ids.length) {
             const index = next++, id = ids[index];
             try { ordered[index] = (await request<{ results: typeof results }>('/api/feeds/bulk', { method: 'POST', body: { ids: [id], action } })).results[0]; }
-            catch (e) { ordered[index] = { id, ok: false, error: e instanceof Error ? e.message : '操作失败' }; }
+            catch (e) { ordered[index] = { id, ok: false, error: e instanceof Error ? e.message : t('error.actionFailed') }; }
           }
         }));
         return { results: ordered };
@@ -225,7 +246,7 @@ export const api = {
       for (let offset = 0; offset < ids.length; offset += size) {
         const chunk = ids.slice(offset, offset + size);
         try { results.push(...(await request<{ results: typeof results }>('/api/feeds/bulk', { method: 'POST', body: { ids: chunk, action, settings } })).results); }
-        catch (e) { results.push(...chunk.map(id => ({ id, ok: false, error: e instanceof Error ? e.message : '操作失败' }))); }
+        catch (e) { results.push(...chunk.map(id => ({ id, ok: false, error: e instanceof Error ? e.message : t('error.actionFailed') }))); }
       }
       return { results };
     },

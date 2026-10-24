@@ -1,30 +1,33 @@
-<p align="center"><img src="public/favicon.svg" width="96" height="96" alt="FeedLantern 订阅灯"></p>
+<p align="center"><img src="public/favicon.svg" width="96" height="96" alt="FeedLantern"></p>
 
-# FeedLantern · 订阅灯
+# FeedLantern
+
+**English** · [简体中文](README.zh-CN.md)
 
 [![CI](https://github.com/Jaaayden/feedlantern/actions/workflows/ci.yml/badge.svg)](https://github.com/Jaaayden/feedlantern/actions/workflows/ci.yml)
 
-**把任意网页变成你的 RSS 订阅。** 自托管、可视化，数据留在自己的服务器上。
+**Turn any web page into an RSS feed.** Self-hosted and visual, with your data on your own server.
 
-输入网址，自动识别文章列表；识别不准就在页面上点选调整。保存后由后台定时更新，生成一个标准 RSS 地址，交给任意阅读器订阅。
+Enter a URL and FeedLantern finds the list of articles; if it guesses wrong, click on the page to adjust. Once saved, a background job keeps it up to date and you get a standard RSS address for any reader.
 
-## 特性
+## Features
 
-- **网页转 RSS**：自动匹配标题、链接、图片、摘要与日期；用真实 Chromium 渲染，支持动态页面、滚动加载和 Cookie 登录态。
-- **可视化调整**：识别不理想时直接点选页面内容或编辑 CSS 选择器，预览结果与后台抓取使用同一套规则。
-- **RSS 翻译**：把已有的 RSS/Atom 订阅翻译成简体中文、繁体中文、英语、日语或韩语，输出仅译文或双语订阅；可选 Google 免费通道（实验性）、DeepL 或 OpenAI 兼容接口（含本机 Ollama 等模型），带缓存、限流退避与失败重试。
-- **批量管理**：一次添加最多 100 个网址；批量暂停、恢复、刷新、删除，统一修改刷新间隔和输出模式；导出 OPML，一次导入任意阅读器，也可从 OPML 批量添加翻译订阅。
-- **标准又好读的 RSS**：阅读器拿到规范的 RSS 2.0（含刷新间隔与缩略图）；在浏览器里直接打开订阅地址时，看到的是带复制按钮和最近内容的可读页面，而不是一屏 XML。
-- **聚合订阅**：把多个订阅合并成一个订阅地址（RSS / Atom / JSON Feed），按时间合并、注明来源、相同链接只出现一次，不额外抓取。
-- **多用户**：管理员创建账号，每人独立管理自己的订阅、Cookie 和个人通知；管理员可进入任意账号的工作台。
-- **可观测**：每个订阅有抓取日志（默认保留 30 天），连续失败可通过 Bark、Webhook、ntfy 或 Telegram 告警（可同时启用多个）并自动去重；网站改版导致条目骤降、字段缺失时提示“规则可能失效”，可一键重新识别并对比后替换。
-- **安全默认值**：Cookie 加密保存；RSS 地址带独立密钥，可随时轮换；默认拦截内网、回环和云元数据地址；Chromium 沙箱始终开启。
-- **备份与迁移**：加密完整备份、跨服务器恢复，以及只含订阅规则的轻量配置导入导出。
-- **体积可控**：日志、事件、缓存都有上限，数据库体积保持稳定。
+- **Web page to RSS**: matches titles, links, images, summaries and dates automatically. Pages are rendered in a real Chromium, so dynamic pages, lazy loading and cookie sign-ins work.
+- **Visual adjustment**: when detection isn't right, click the content on the page or edit the CSS selectors. The preview uses exactly the same rules as background fetches.
+- **RSS translation**: translate existing RSS/Atom feeds into Simplified Chinese, Traditional Chinese, English, Japanese or Korean, as a translation-only or bilingual feed. Use the free Google channel (experimental), DeepL or any OpenAI-compatible API (including local models such as Ollama), with caching, rate-limit backoff and retries.
+- **Bulk management**: add up to 100 URLs at once; pause, resume, refresh, delete or change settings for many feeds together; export OPML for any reader, or import OPML to create translated feeds.
+- **Standard, readable RSS**: readers get clean RSS 2.0 (with refresh interval and thumbnails). Open a feed address in a browser and you see a readable page with a copy button and recent items instead of raw XML.
+- **Bundles**: combine several feeds into one address (RSS, Atom or JSON Feed), merged by time, with sources noted and each link once — no extra fetching.
+- **Multiple users**: administrators create accounts; everyone manages their own feeds, cookies and notifications, and administrators can step into any workspace.
+- **Observability**: every feed has a fetch log (30 days by default). Repeated failures alert you through Bark, webhooks, ntfy or Telegram (several at once), deduplicated. When a site redesign makes items drop or fields disappear, FeedLantern flags that the rules may have stopped working, and you can re-detect and compare in one click.
+- **Safe defaults**: cookies are stored encrypted; each RSS address has its own rotatable key; private, loopback and cloud metadata addresses are blocked by default; the Chromium sandbox stays on.
+- **Backup & migration**: encrypted full backups, restore onto another server, and lightweight configuration export/import with only the feed rules.
+- **Languages**: English and Simplified Chinese. The language is saved per account, so every device you sign in on agrees; without a choice it follows your browser. Adding a language takes one message file.
+- **Bounded size**: logs, events and caches are capped, so the database stays a stable size.
 
-## 快速开始
+## Quick start
 
-需要 Linux（amd64 或 arm64）、[Docker Engine](https://docs.docker.com/engine/install/) 和 [Compose 插件](https://docs.docker.com/compose/install/linux/)，建议预留 2 GB 内存。新建目录，下载两个配置文件并启动：
+You need Linux (amd64 or arm64), [Docker Engine](https://docs.docker.com/engine/install/) and the [Compose plugin](https://docs.docker.com/compose/install/linux/); allow about 2 GB of memory. Create a directory, download two configuration files and start:
 
 ```sh
 mkdir feedlantern
@@ -34,58 +37,58 @@ docker compose up -d --wait
 docker compose logs feedlantern
 ```
 
-打开 [http://127.0.0.1:4321](http://127.0.0.1:4321)，用日志中的一次性设置码创建管理员。系统没有默认账号和密码。
+Open [http://127.0.0.1:4321](http://127.0.0.1:4321) and create the administrator with the one-time setup code from the log. There is no default account or password.
 
-`seccomp_profile.json` 用来保留 Chromium 沙箱，请勿删除或改用特权模式。数据保存在 Docker 命名卷中，`docker compose down` 不会删除它。
+`seccomp_profile.json` keeps the Chromium sandbox working — don't delete it or switch to privileged mode. Data lives in a Docker named volume, which `docker compose down` does not remove.
 
-## 升级
+## Upgrading
 
-在部署目录执行，数据卷和配置保持不变：
+Run in the deployment directory; the data volume and configuration stay as they are:
 
 ```sh
 docker compose pull feedlantern
 docker compose up -d --wait feedlantern
 ```
 
-升级前建议在网页「设置 → 备份与迁移」导出一份加密备份。注意事项和回退方法见[升级维护](doc/maintenance.md)。
+Export an encrypted backup in Settings → Backup & migration before upgrading. See [Maintenance](doc/maintenance.md) (Chinese) for caveats and rollback.
 
-## 部署到公网
+## Going public
 
-默认只监听本机回环地址。要用域名访问，在宿主机用 Nginx 反向代理并启用 HTTPS，见 [Nginx 配置指南](doc/nginx.md)。有反向代理时，务必在「设置 → 服务器与网络」里把代理地址填入「可信反向代理」，否则登录限速会把所有人当成同一个来源，见[配置参考](doc/configuration.md)。
+By default FeedLantern listens on the loopback address only. To serve a domain, put Nginx with HTTPS in front of it on the host — see the [Nginx guide](doc/nginx.md) (Chinese). Behind a reverse proxy, always add the proxy's address to Trusted reverse proxies in Settings → Server & network; otherwise login rate limiting treats everyone as one client. See the [configuration reference](doc/en/configuration.md).
 
-## 工作原理
+## How it works
 
 ```mermaid
 flowchart TB
-    A[网址] --> B[Chromium 渲染并识别重复列表]
-    B --> C[保存匹配规则]
-    C --> D[定时抓取并提取条目]
+    A[URL] --> B[Chromium renders the page and finds repeated lists]
+    B --> C[Save the rules]
+    C --> D[Fetch on a schedule and extract items]
     D --> E[(SQLite)]
-    E --> F["RSS 地址：/feeds/ID/密钥.xml"]
-    F --> G[RSS 阅读器]
+    E --> F["RSS address: /feeds/ID/KEY.xml"]
+    F --> G[RSS reader]
 ```
 
-React + Vite 前端，Fastify API，SQLite 存储，Playwright 驱动 Chromium。预览、批量识别和后台刷新共用同一套提取逻辑，所以所见即所得。
+A React + Vite web app, a Fastify API, SQLite storage and Playwright driving Chromium. Previews, batch detection and background refreshes share one extraction path, so what you see is what you get.
 
-## 适用范围
+## Scope
 
-支持普通 DOM 列表、动态渲染页面和需要 Cookie 的页面。可按“下一页”链接或按钮、URL 页码模板或“加载更多”按钮采集多页（默认只抓一页，最多 10 页，页间有间隔）。目前不支持：全文抓取、无限滚动的完整采集、iframe 内部点选、封闭 Shadow DOM、Canvas 内容，以及交互式登录和验证码。服务主机需要持续运行，定时更新才会继续。详见[使用指南](doc/user-guide.md#兼容范围)。
+Works with ordinary DOM lists, dynamically rendered pages and pages behind a cookie sign-in. Multiple pages can be collected through a “Next page” link or button, a URL page template or a “Load more” button (one page by default, up to 10, with a pause between pages). Not supported yet: full-article fetching, complete collection of infinite scroll, picking inside iframes, closed Shadow DOM, canvas content, and interactive sign-ins or CAPTCHAs. Scheduled updates need the server to keep running. Details are in the [user guide](doc/en/user-guide.md#scope).
 
-## 文档
+## Documentation
 
-| 想做什么 | 看这里 |
+| I want to… | Read |
 | --- | --- |
-| 部署、HTTPS、配置 | [部署步骤](doc/deployment.md) · [Nginx](doc/nginx.md) · [配置参考](doc/configuration.md) |
-| 日常使用 | [使用指南](doc/user-guide.md) |
-| 备份、迁移、升级、数据库体积 | [备份与迁移](doc/backup-and-migration.md) · [升级维护](doc/maintenance.md) |
-| 出问题了 | [故障排查](doc/troubleshooting.md) |
-| 参与开发 | [开发与接口](doc/development.md) · [CONTRIBUTING](CONTRIBUTING.md) · [SECURITY](SECURITY.md) |
+| Deploy, set up HTTPS, configure | [Deployment](doc/en/deployment.md) · [Nginx](doc/nginx.md) (Chinese) · [Configuration](doc/en/configuration.md) |
+| Use FeedLantern day to day | [User guide](doc/en/user-guide.md) |
+| Back up, migrate, upgrade, manage database size | [Backup & migration](doc/backup-and-migration.md) · [Maintenance](doc/maintenance.md) (Chinese) |
+| Fix a problem | [Troubleshooting](doc/troubleshooting.md) (Chinese) |
+| Contribute | [Development & API](doc/development.md) (Chinese) · [CONTRIBUTING](CONTRIBUTING.md) · [SECURITY](SECURITY.md) |
 
-完整目录见[文档索引](doc/README.md)，版本变化见 [CHANGELOG](CHANGELOG.md)。
+The full index is in the [documentation index](doc/README.md); changes are in the [CHANGELOG](CHANGELOG.md).
 
-## 本地开发
+## Local development
 
-需要 Node.js 24 和 pnpm：
+You need Node.js 24 and pnpm:
 
 ```sh
 pnpm install --frozen-lockfile
@@ -93,6 +96,6 @@ pnpm browser:install
 pnpm dev
 ```
 
-## 许可
+## License
 
-[MIT](LICENSE)。
+[MIT](LICENSE).

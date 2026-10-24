@@ -3,15 +3,22 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { ApiTokenScope, AuthState } from '../shared/types.js';
 import type { ServerConfig } from './config.js';
 import { Store, verifyPassword } from './store.js';
+import { errorCode, instanceLocale, LocalizedError, textOf, type LocalizedText, type SimpleErrorKey } from './i18n.js';
 
 export const SESSION_COOKIE = 'feedlantern_session';
 
-export class AppError extends Error {
+/**
+ * An error returned to the API client: `code` is stable, and the message is
+ * translated into the reader's language when the response is sent.
+ */
+export class AppError extends LocalizedError {
   readonly statusCode: number;
-  constructor(statusCode: number, message: string) {
-    super(message);
+  readonly code: string;
+  constructor(statusCode: number, text: LocalizedText | SimpleErrorKey) {
+    super(textOf(text));
     this.name = 'AppError';
     this.statusCode = statusCode;
+    this.code = errorCode(this.text);
   }
 }
 
@@ -99,7 +106,7 @@ export function sessionFromRequest(request: FastifyRequest, store: Store, config
 
 export function requireAuth(request: FastifyRequest, store: Store, config: ServerConfig): AuthContext {
   const session = sessionFromRequest(request, store, config);
-  if (!session) throw new AppError(401, '请先登录');
+  if (!session) throw new AppError(401, 'error.signInRequired');
   return session;
 }
 
@@ -107,12 +114,12 @@ export function requireCsrf(request: FastifyRequest, store: Store, context: Auth
   // A cross-site page cannot attach a bearer token, so token requests need no CSRF token,
   // but a write still needs a write token.
   if (context.token) {
-    if (context.token.scope !== 'write') throw new AppError(403, '只读令牌不能执行写操作');
+    if (context.token.scope !== 'write') throw new AppError(403, 'error.readOnlyToken');
     return;
   }
   const csrf = request.headers['x-csrf-token'];
   const token = Array.isArray(csrf) ? csrf[0] : csrf;
-  if (!store.checkCsrf(context.sessionId, token)) throw new AppError(403, '请求验证已失效，请刷新页面后重试');
+  if (!store.checkCsrf(context.sessionId, token)) throw new AppError(403, 'error.csrfInvalid');
 }
 
 export function setSessionCookie(reply: FastifyReply, config: ServerConfig, sessionId: string): void {
@@ -138,8 +145,9 @@ export function authState(store: Store, config: ServerConfig, context: AuthConte
   return {
     setupRequired: !store.hasAdmin(),
     authenticated: Boolean(context),
-    ...(context ? { userId: context.userId, role: context.role, username: context.username, csrfToken, ...(context.token ? { tokenScope: context.token.scope } : {}) } : {}),
+    ...(context ? { userId: context.userId, role: context.role, username: context.username, csrfToken, locale: store.userLocale(context.userId), ...(context.token ? { tokenScope: context.token.scope } : {}) } : {}),
     version: config.version,
+    defaultLocale: instanceLocale(),
   };
 }
 

@@ -114,7 +114,7 @@ test('直连 DoH 不通时，走代理的订阅经同一代理查询，结果照
     // A proxy that is down: the message names the proxy and the DNS step.
     const down = new NetworkPolicy({ dnsOverHttps: true, dohUrl: env.dohUrl, allowedHosts: ['127.0.0.1:9'] }).forProxy({ type: 'http', host: '127.0.0.1', port: 9 });
     await assert.rejects(down.assertAllowed('https://news.example/'), (error: Error) => {
-      assert.match(error.message, /^经代理 127\.0\.0\.1:9（HTTP 代理） 的加密 DNS 查询失败：无法连接代理服务器：连接被拒绝/);
+      assert.match(error.message, /^经代理 127\.0\.0\.1:9（HTTP 代理） 的加密 DNS 查询失败：无法连接代理服务器 127\.0\.0\.1:9（HTTP 代理）：连接被拒绝/);
       assert.match(error.message, /关闭 DNS over HTTPS/);
       return true;
     });

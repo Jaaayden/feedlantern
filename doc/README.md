@@ -1,5 +1,7 @@
 # FeedLantern 文档
 
+英文版（English）：[User guide](en/user-guide.md) · [Deployment](en/deployment.md) · [Configuration](en/configuration.md)。其他文档目前只有中文。
+
 ## 安装与部署
 
 1. [部署步骤](deployment.md)：环境准备、快速安装、手动部署、首次初始化和验证。

@@ -1,5 +1,7 @@
 import { isIP } from 'node:net';
 import { AppError } from './auth.js';
+import { msg } from './i18n.js';
+import type { Param } from '../shared/i18n.js';
 import type { ProxyType, UpstreamProxy } from './upstream-proxy.js';
 import { forbiddenHeaderReason, HEADER_TOKEN as TOKEN, HEADER_VALUE, NETWORK_LIMITS } from '../shared/network-rules.js';
 
@@ -28,13 +30,13 @@ export interface NetworkProfileValue {
   headers: CustomHeader[];
 }
 
-function text(value: unknown, label: string, max: number): string | undefined {
+function text(value: unknown, label: Param, max: number): string | undefined {
   if (value === undefined || value === null || value === '') return undefined;
-  if (typeof value !== 'string') throw new AppError(400, `${label}必须是字符串`);
+  if (typeof value !== 'string') throw new AppError(400, msg('error.mustBeString', { label }));
   const trimmed = value.trim();
   if (!trimmed) return undefined;
-  if (trimmed.length > max) throw new AppError(400, `${label}不能超过 ${max} 个字符`);
-  if (!HEADER_VALUE.test(trimmed)) throw new AppError(400, `${label}只能包含可见 ASCII 字符`);
+  if (trimmed.length > max) throw new AppError(400, msg('error.maxChars', { label, max }));
+  if (!HEADER_VALUE.test(trimmed)) throw new AppError(400, msg('error.visibleAscii', { label }));
   return trimmed;
 }
 
@@ -44,12 +46,12 @@ const defaultPorts: Record<ProxyType, number> = { http: 80, https: 443, socks5: 
 export function parseProxyUrl(raw: string): UpstreamProxy {
   let url: URL;
   const value = raw.trim();
-  try { url = new URL(value); } catch { throw new AppError(400, '代理地址无效，格式例如 http://proxy.example.com:8080 或 socks5://127.0.0.1:1080'); }
+  try { url = new URL(value); } catch { throw new AppError(400, 'error.proxyUrlFormat'); }
   const type = url.protocol.slice(0, -1) as ProxyType;
-  if (!['http', 'https', 'socks5'].includes(type)) throw new AppError(400, '代理只支持 http://、https:// 或 socks5://');
-  if ((url.pathname && url.pathname !== '/') || url.search || url.hash) throw new AppError(400, '代理地址只能包含协议、主机和端口');
+  if (!['http', 'https', 'socks5'].includes(type)) throw new AppError(400, 'error.proxyScheme');
+  if ((url.pathname && url.pathname !== '/') || url.search || url.hash) throw new AppError(400, 'error.proxyUrlExtra');
   const host = url.hostname.startsWith('[') ? url.hostname.slice(1, -1) : url.hostname;
-  if (!host) throw new AppError(400, '代理地址缺少主机名');
+  if (!host) throw new AppError(400, 'error.proxyHostMissing');
   const port = url.port ? Number(url.port) : defaultPorts[type];
   const proxy: UpstreamProxy = { type, host: host.toLowerCase(), port };
   if (url.username || url.password) {
@@ -59,11 +61,11 @@ export function parseProxyUrl(raw: string): UpstreamProxy {
   return proxy;
 }
 
-function credential(value: unknown, label: string): string {
-  if (typeof value !== 'string') throw new AppError(400, `${label}必须是字符串`);
+function credential(value: unknown, label: Param): string {
+  if (typeof value !== 'string') throw new AppError(400, msg('error.mustBeString', { label }));
   // RFC 1929 limits SOCKS5 user names and passwords to 255 bytes.
-  if (Buffer.byteLength(value, 'utf8') > NETWORK_LIMITS.proxyUser) throw new AppError(400, `${label}不能超过 ${NETWORK_LIMITS.proxyUser} 字节`);
-  if (/[\x00-\x1f\x7f]/.test(value)) throw new AppError(400, `${label}不能包含控制字符`);
+  if (Buffer.byteLength(value, 'utf8') > NETWORK_LIMITS.proxyUser) throw new AppError(400, msg('error.maxBytes', { label, max: NETWORK_LIMITS.proxyUser }));
+  if (/[\x00-\x1f\x7f]/.test(value)) throw new AppError(400, msg('error.controlChars', { label }));
   return value;
 }
 
@@ -74,36 +76,36 @@ function credential(value: unknown, label: string): string {
  * Saved proxy logins are never moved to a different proxy server.
  */
 export function parseNetworkProfileInput(body: Record<string, unknown>, existing?: NetworkProfileValue): NetworkProfileValue {
-  const name = text(body.name, '网络配置名称', NETWORK_LIMITS.name);
-  if (!name) throw new AppError(400, '网络配置名称不能为空');
+  const name = text(body.name, msg('label.networkProfileName'), NETWORK_LIMITS.name);
+  if (!name) throw new AppError(400, 'error.networkProfileNameRequired');
 
   let proxy: UpstreamProxy | null = null;
   const rawProxy = body.proxyUrl;
   if (rawProxy !== undefined && rawProxy !== null && rawProxy !== '') {
-    if (typeof rawProxy !== 'string' || rawProxy.length > 1024) throw new AppError(400, '代理地址无效');
+    if (typeof rawProxy !== 'string' || rawProxy.length > 1024) throw new AppError(400, 'error.proxyInvalid');
     proxy = parseProxyUrl(rawProxy);
     const embedded = proxy.username !== undefined;
-    if (embedded && (body.proxyUsername !== undefined || body.proxyPassword !== undefined)) throw new AppError(400, '代理用户名和密码请只填写一处');
+    if (embedded && (body.proxyUsername !== undefined || body.proxyPassword !== undefined)) throw new AppError(400, 'error.proxyCredentialsTwice');
     if (!embedded) {
       if (body.proxyUsername === null || body.proxyUsername === '') {
         // No login.
       } else if (body.proxyUsername !== undefined) {
-        proxy.username = credential(body.proxyUsername, '代理用户名');
-        proxy.password = body.proxyPassword === undefined || body.proxyPassword === null ? '' : credential(body.proxyPassword, '代理密码');
-        if (!proxy.username) throw new AppError(400, '代理用户名不能为空');
+        proxy.username = credential(body.proxyUsername, msg('label.proxyUsername'));
+        proxy.password = body.proxyPassword === undefined || body.proxyPassword === null ? '' : credential(body.proxyPassword, msg('label.proxyPassword'));
+        if (!proxy.username) throw new AppError(400, 'error.proxyUserEmpty');
       } else if (body.proxyPassword !== undefined && body.proxyPassword !== null && body.proxyPassword !== '') {
-        throw new AppError(400, '填写代理密码时也需要填写用户名');
+        throw new AppError(400, 'error.proxyUserRequired');
       } else if (existing?.proxy?.username !== undefined) {
         const saved = existing.proxy;
         if (saved.type !== proxy.type || saved.host !== proxy.host || saved.port !== proxy.port) {
-          throw new AppError(400, '代理地址已更改，请重新填写代理用户名和密码，或选择不使用认证');
+          throw new AppError(400, 'error.proxyChanged');
         }
         proxy.username = saved.username;
         proxy.password = saved.password;
       }
     } else {
-      proxy.username = credential(proxy.username, '代理用户名');
-      proxy.password = credential(proxy.password ?? '', '代理密码');
+      proxy.username = credential(proxy.username, msg('label.proxyUsername'));
+      proxy.password = credential(proxy.password ?? '', msg('label.proxyPassword'));
     }
   }
 
@@ -112,40 +114,40 @@ export function parseNetworkProfileInput(body: Record<string, unknown>, existing
   let referer: string | undefined;
   if (refererText) {
     let parsed: URL;
-    try { parsed = new URL(refererText); } catch { throw new AppError(400, 'Referer 必须是完整的 HTTP(S) 网址'); }
-    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) throw new AppError(400, 'Referer 只能是不带账号密码的 HTTP(S) 网址');
+    try { parsed = new URL(refererText); } catch { throw new AppError(400, 'error.refererInvalid'); }
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) throw new AppError(400, 'error.refererCredentials');
     referer = parsed.href;
   }
 
   const headers: CustomHeader[] = [];
   if (body.headers !== undefined && body.headers !== null) {
-    if (!Array.isArray(body.headers)) throw new AppError(400, '额外请求头格式无效');
-    if (body.headers.length > NETWORK_LIMITS.headers) throw new AppError(400, `额外请求头最多 ${NETWORK_LIMITS.headers} 个`);
+    if (!Array.isArray(body.headers)) throw new AppError(400, 'error.headersInvalid');
+    if (body.headers.length > NETWORK_LIMITS.headers) throw new AppError(400, msg('error.tooManyHeaders', { max: NETWORK_LIMITS.headers }));
     const seen = new Set<string>();
     for (const raw of body.headers) {
       const entry = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
       const headerName = typeof entry.name === 'string' ? entry.name.trim() : '';
-      if (!headerName || headerName.length > NETWORK_LIMITS.headerName || !TOKEN.test(headerName)) throw new AppError(400, `请求头名称无效：只能使用字母、数字和 - 等符号，最长 ${NETWORK_LIMITS.headerName} 个字符`);
+      if (!headerName || headerName.length > NETWORK_LIMITS.headerName || !TOKEN.test(headerName)) throw new AppError(400, msg('error.headerNameInvalid', { max: NETWORK_LIMITS.headerName }));
       const reason = forbiddenHeaderReason(headerName);
       if (reason) throw new AppError(400, reason);
       const key = headerName.toLowerCase();
-      if (seen.has(key)) throw new AppError(400, `请求头 ${headerName} 重复`);
+      if (seen.has(key)) throw new AppError(400, msg('error.headerDuplicate', { name: headerName }));
       seen.add(key);
       let value: string | undefined;
       if (entry.value === undefined || entry.value === null) {
         value = existing?.headers.find(header => header.name.toLowerCase() === key)?.value;
-        if (value === undefined) throw new AppError(400, `请填写请求头 ${headerName} 的值`);
+        if (value === undefined) throw new AppError(400, msg('error.headerValueRequired', { name: headerName }));
       } else {
-        if (typeof entry.value !== 'string') throw new AppError(400, `请求头 ${headerName} 的值必须是字符串`);
-        if (entry.value.length > NETWORK_LIMITS.headerValue) throw new AppError(400, `请求头 ${headerName} 的值不能超过 ${NETWORK_LIMITS.headerValue} 个字符`);
-        if (!HEADER_VALUE.test(entry.value)) throw new AppError(400, `请求头 ${headerName} 的值只能包含可见 ASCII 字符，不能换行`);
+        if (typeof entry.value !== 'string') throw new AppError(400, msg('error.headerValueString', { name: headerName }));
+        if (entry.value.length > NETWORK_LIMITS.headerValue) throw new AppError(400, msg('error.headerValueLong', { name: headerName, max: NETWORK_LIMITS.headerValue }));
+        if (!HEADER_VALUE.test(entry.value)) throw new AppError(400, msg('error.headerValueAscii', { name: headerName }));
         value = entry.value.trim();
       }
       headers.push({ name: headerName, value });
     }
   }
 
-  if (!proxy && !userAgent && !referer && !headers.length) throw new AppError(400, '请至少设置代理、User-Agent、Referer 或一个请求头');
+  if (!proxy && !userAgent && !referer && !headers.length) throw new AppError(400, 'error.networkProfileEmpty');
   return { name, proxy, ...(userAgent ? { userAgent } : {}), ...(referer ? { referer } : {}), headers };
 }
 

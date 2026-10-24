@@ -21,6 +21,9 @@ import type { CredentialSummary, ExtractedItem, Feed, FeedInput, FeedSettingsInp
 import type { ServerConfig } from './config.js';
 import { proxyUrl } from '../shared/network-rules.js';
 import type { NetworkProfileValue } from './fetch-options.js';
+import { isLocale, type Locale } from '../shared/i18n.js';
+import { LocalizedError, msg, tl } from './i18n.js';
+import { ownerLocale } from './user-locale.js';
 
 export interface CredentialValue {
   id?: string;
@@ -406,6 +409,19 @@ export class Store {
     }
     this.tokenLog = new ApiTokenLog(this.db, () => this.getSettings().logRetentionDays);
     this.ruleHealth = new RuleHealth(this.db, () => this.getSettings(), this.history);
+    // Interface language of each account: `locale` is the user's own choice,
+    // `detected_locale` the language their browser last asked for. 21 is
+    // reserved for this migration; like 13–19 it checks for its own columns.
+    // Accounts that existed before languages could be chosen used the
+    // Chinese-only interface, so they keep Simplified Chinese.
+    const userColumns = new Set(this.db.prepare('PRAGMA table_info(users)').all().map(column => String(column.name)));
+    if (!userColumns.has('locale') || !userColumns.has('detected_locale')) {
+      const current = Number((this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
+      this.db.exec(`BEGIN;
+        ${userColumns.has('locale') ? '' : "ALTER TABLE users ADD COLUMN locale TEXT; UPDATE users SET locale='zh-CN';"}
+        ${userColumns.has('detected_locale') ? '' : 'ALTER TABLE users ADD COLUMN detected_locale TEXT;'}
+        PRAGMA user_version=${Math.max(21, current)}; COMMIT;`);
+    }
     this.migrateBark();
     this.ensureSetupToken();
   }
@@ -493,12 +509,12 @@ export class Store {
   updateUser(actorId: string, id: string, patch: Partial<Pick<UserSummary, 'username' | 'enabled' | 'role'>>): UserSummary {
     return this.transaction(() => {
       const user = this.getUser(id);
-      if (!user) throw new AppError(404, '用户不存在');
+      if (!user) throw new AppError(404, 'error.userNotFound');
       const next = { ...user, ...patch };
-      if (actorId === id && !next.enabled) throw new AppError(403, '不能停用自己');
+      if (actorId === id && !next.enabled) throw new AppError(403, 'error.cannotDisableSelf');
       if (user.role === 'admin' && user.enabled && (!next.enabled || next.role !== 'admin') &&
-          !this.listUsers().some(u => u.id !== id && u.role === 'admin' && u.enabled)) throw new AppError(409, '必须保留至少一名启用的管理员');
-      if (this.listUsers().some(u => u.id !== id && u.username === next.username)) throw new AppError(409, '用户名已存在');
+          !this.listUsers().some(u => u.id !== id && u.role === 'admin' && u.enabled)) throw new AppError(409, 'error.lastAdmin');
+      if (this.listUsers().some(u => u.id !== id && u.username === next.username)) throw new AppError(409, 'error.usernameTaken');
       const identityChanged = next.username !== user.username || next.role !== user.role;
       if (identityChanged) {
         this.db.prepare('UPDATE users SET username=?,role=?,generation=generation+1,updated_at=? WHERE id=?').run(next.username, next.role, nowIso(), id);
@@ -517,24 +533,24 @@ export class Store {
     this.translations.cancelActor(id);
     for (const job of this.listImportJobs()) {
       if (job.actorId !== id || job.ownerId === id) continue;
-      for (const entry of job.entries) if (['queued', 'running'].includes(entry.state)) { entry.state = 'canceled'; entry.error = '操作人身份已变化，请重新重试'; }
+      for (const entry of job.entries) if (['queued', 'running'].includes(entry.state)) { entry.state = 'canceled'; entry.error = tl('import.actorChanged'); }
       this.saveImportJob(job);
     }
   }
 
   deletionPreview(id: string) {
     const user = this.getUser(id);
-    if (!user) throw new AppError(404, '用户不存在');
+    if (!user) throw new AppError(404, 'error.userNotFound');
     return { user, feeds: this.listFeeds(id).length, bundles: this.bundles.list(id).length, credentials: this.listCredentialSummaries(id).length, jobs: this.listImportJobs(id).length };
   }
 
   deleteUser(actorId: string, id: string, confirmation: string): void {
     this.transaction(() => {
       const user = this.getUser(id);
-      if (!user) throw new AppError(404, '用户不存在');
-      if (actorId === id) throw new AppError(403, '不能删除自己');
-      if (confirmation !== user.username) throw new AppError(400, '请输入目标用户名确认删除');
-      if (user.role === 'admin' && user.enabled && !this.listUsers().some(u => u.id !== id && u.role === 'admin' && u.enabled)) throw new AppError(409, '必须保留至少一名启用的管理员');
+      if (!user) throw new AppError(404, 'error.userNotFound');
+      if (actorId === id) throw new AppError(403, 'error.cannotDeleteSelf');
+      if (confirmation !== user.username) throw new AppError(400, 'error.confirmUsername');
+      if (user.role === 'admin' && user.enabled && !this.listUsers().some(u => u.id !== id && u.role === 'admin' && u.enabled)) throw new AppError(409, 'error.lastAdmin');
       this.revokeUser(id);
       for (const table of ['import_jobs', 'bundles', 'feeds', 'credentials', 'network_profiles']) this.db.prepare(`DELETE FROM ${table} WHERE owner_id=?`).run(id);
       // The shared translation cache can contain this user's source fragments.
@@ -586,7 +602,7 @@ export class Store {
   isFeedActive(id: string): boolean { const feed = this.getFeed(id); return !!feed && this.isUserActive(feed.ownerId); }
 
   setUserEnabled(id: string, enabled: boolean): void {
-    if (!enabled && this.getUser(id)?.role === 'admin' && !this.listUsers().some(u => u.id !== id && u.role === 'admin' && u.enabled)) throw new AppError(409, '必须保留至少一名启用的管理员');
+    if (!enabled && this.getUser(id)?.role === 'admin' && !this.listUsers().some(u => u.id !== id && u.role === 'admin' && u.enabled)) throw new AppError(409, 'error.lastAdmin');
     this.transaction(() => {
       this.db.prepare('UPDATE users SET enabled=?,generation=generation+1,updated_at=? WHERE id=?').run(enabled ? 1 : 0, nowIso(), id);
       if (!enabled) {
@@ -624,7 +640,7 @@ export class Store {
 
   createSession(username: string, ttlMs: number): StoredSession {
     const user = this.listUsers().find(u => u.username === username && u.enabled);
-    if (!user) throw new Error('用户不存在或已停用');
+    if (!user) throw new LocalizedError(msg('error.userNotFound'));
     const id = randomBytes(32).toString('base64url');
     const csrfToken = this.deriveCsrfToken(id);
     const createdAt = Date.now();
@@ -852,8 +868,8 @@ export class Store {
   }
 
   createFeed(input: FeedInput, ownerId = 'admin'): { feed: Feed; token: string } {
-    if (input.credentialId && !this.owns('credentials', input.credentialId, ownerId)) throw new Error('Cookie 凭据不存在');
-    if (input.networkProfileId && !this.owns('network_profiles', input.networkProfileId, ownerId)) throw new AppError(400, '网络配置不存在');
+    if (input.credentialId && !this.owns('credentials', input.credentialId, ownerId)) throw new AppError(400, 'error.credentialNotFound');
+    if (input.networkProfileId && !this.owns('network_profiles', input.networkProfileId, ownerId)) throw new AppError(400, 'error.networkProfileNotFound');
     const id = randomId('feed');
     const token = randomBytes(32).toString('base64url');
     const timestamp = nowIso();
@@ -873,8 +889,8 @@ export class Store {
   updateFeed(id: string, input: FeedInput): Feed | null {
     const existing = this.getFeed(id);
     if (!existing) return null;
-    if (input.credentialId && !this.owns('credentials', input.credentialId, existing.ownerId!)) throw new Error('Cookie 凭据不存在');
-    if (input.networkProfileId && !this.owns('network_profiles', input.networkProfileId, existing.ownerId!)) throw new AppError(400, '网络配置不存在');
+    if (input.credentialId && !this.owns('credentials', input.credentialId, existing.ownerId!)) throw new AppError(400, 'error.credentialNotFound');
+    if (input.networkProfileId && !this.owns('network_profiles', input.networkProfileId, existing.ownerId!)) throw new AppError(400, 'error.networkProfileNotFound');
     this.translations.invalidate(id);
     if (input.networkProfileId !== undefined) this.db.prepare('UPDATE feeds SET network_profile_id=? WHERE id=?').run(input.networkProfileId, id);
     if ((existing.sourceType === 'rss' || input.sourceType === 'rss') && (existing.url !== input.url || existing.sourceType !== (input.sourceType ?? 'website'))) {
@@ -919,7 +935,7 @@ export class Store {
     if (input.translationMode && input.translationMode !== feed.translationMode) this.translations.invalidate(id);
     if (input.translationMode) this.db.prepare('UPDATE feeds SET translation_mode=? WHERE id=?').run(input.translationMode, id);
     if (input.networkProfileId !== undefined) {
-      if (input.networkProfileId && !this.owns('network_profiles', input.networkProfileId, feed.ownerId!)) throw new AppError(400, '网络配置不存在');
+      if (input.networkProfileId && !this.owns('network_profiles', input.networkProfileId, feed.ownerId!)) throw new AppError(400, 'error.networkProfileNotFound');
       this.db.prepare('UPDATE feeds SET network_profile_id=? WHERE id=?').run(input.networkProfileId, id);
     }
     this.setTranslationTarget(feed, input);
@@ -951,6 +967,8 @@ export class Store {
         if (table === 'credentials' || table === 'network_profiles') return { ...row, encrypted_value: decrypt(this.masterKey, String(row.encrypted_value)) };
         if (table === 'feeds' || table === 'bundles') return { ...row, token_ciphertext: decrypt(this.masterKey, String(row.token_ciphertext)) };
         if (table === 'settings' && row.key === 'application') return { ...row, value: decrypt(this.masterKey, String(row.value)) };
+        // The browser's language is a hint for this instance, not part of the account.
+        if (table === 'users') { const { detected_locale: _detected, ...user } = row; return user; }
         return { ...row };
       });
     }
@@ -1040,7 +1058,27 @@ export class Store {
     const owner = this.feedOwner(feedId);
     const { bark, channels } = owner ? this.getNotifications(owner) : { bark: structuredClone(defaultApplicationSettings.bark), channels: structuredClone(defaultNotificationChannels) };
     const { enabled: _enabled, url: _url, ...policy } = bark;
-    return { policy, configs: activeChannels(bark, channels) };
+    return { policy, configs: activeChannels(bark, channels), locale: this.ownerLocale(owner) };
+  }
+
+  /** The language a user chose, or null to follow their browser. */
+  userLocale(id: string): Locale | null {
+    const value = this.db.prepare('SELECT locale FROM users WHERE id=?').get(id)?.locale;
+    return isLocale(value) ? value : null;
+  }
+  setUserLocale(id: string, locale: Locale | null): void {
+    this.db.prepare('UPDATE users SET locale=? WHERE id=?').run(locale, id);
+  }
+  /** Remember the browser's language for messages sent while the user is away. */
+  noteDetectedLocale(id: string, locale: Locale): void {
+    this.db.prepare('UPDATE users SET detected_locale=? WHERE id=? AND detected_locale IS NOT ?').run(locale, id, locale);
+  }
+  /** The language of alerts and stored messages for a user (see `ownerLocale`). */
+  ownerLocale(id: string | undefined): Locale {
+    return ownerLocale(this.db, id);
+  }
+  feedLocale(feedId: string): Locale {
+    return this.ownerLocale(this.feedOwner(feedId) ?? undefined);
   }
   private writeNotifications(userId: string, bark: ApplicationSettings['bark'], channels: NotificationChannelSettings): void {
     const value = storedNotificationSchema.parse({ ...bark, channels });

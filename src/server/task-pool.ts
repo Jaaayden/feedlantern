@@ -6,10 +6,10 @@ export class TaskPool {
   private exclusive = false;
   private waiters: Array<() => void> = [];
   constructor(public concurrency: number) {
-    if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 4) throw new Error('后台并发必须是 1–4 的整数');
+    if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 4) throw new Error('Background concurrency must be a whole number from 1 to 4');
   }
   setConcurrency(value: number): void {
-    if (!Number.isInteger(value) || value < 1 || value > 4) throw new Error('后台并发必须是 1–4 的整数');
+    if (!Number.isInteger(value) || value < 1 || value > 4) throw new Error('Background concurrency must be a whole number from 1 to 4');
     this.concurrency = value;
     this.pump();
   }
