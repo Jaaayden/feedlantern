@@ -129,6 +129,7 @@ CLI 用令牌调用时不检查 Host，所以用内网地址（例如 Docker 网
 | `rss preview <url>` | 预览 RSS 源前 3 条 |
 | `pubmed preview [--query <查询式> \| 检索条件选项]` | 预览 PubMed 检索：实际发送的 `query`、匹配总数 `count`、NCBI 提示 `warnings` 和最新 5 篇 |
 | `pubmed create [--query … \| 检索条件选项] [--name …] [--limit 10\|20\|50\|100]` | 创建 PubMed 检索订阅（首次抓取在后台进行） |
+| `pubmed convert <id> \| --all-verified [--query …] [--yes]` | 验证并把 PubMed RSS 订阅转换为检索订阅；默认只出报告 |
 | `bundles list\|get\|create\|update\|delete` | 聚合订阅；`update` 用 `--feeds` 整体替换成员，`--add-feeds` 追加 |
 | `bulk <action> <id>...` | 批量 `copy`、`pause`、`resume`、`refresh`、`delete`、`settings --settings <JSON>` |
 | `imports list\|create <url>...\|cancel <id>\|retry <id>` | 批量添加任务（后台自动识别并创建） |
@@ -175,6 +176,14 @@ feedlantern pubmed create --journal "PLoS Pathog" --days 30 --limit 50 --transla
 feedlantern pubmed preview --query '("Zhang Y"[Author]) AND ("ShanghaiTech"[Affiliation])' --table
 ```
 
+`pubmed convert <订阅 ID>` 验证一个 PubMed RSS 订阅（期刊 RSS 或检索式 RSS）能否转换为检索订阅：从 RSS 标题还原查询式，用 E-utilities 执行并对比最新条目，输出 `status`（`verified` 可直接转换 / `review` 需要核对）、`reason`、还原的 `query` 和覆盖率；默认只输出报告，不改动任何订阅，加 `--yes` 才转换。需要核对的订阅要用 `--query <核对后的查询式> --yes` 指定。`pubmed convert --all-verified` 检查全部 PubMed RSS 订阅，加 `--yes` 时只转换 `verified` 的。转换保留订阅 ID、RSS 地址、条目、译文和全部设置。验证请求不改变任何东西，`--dry-run` 下也会照常发出，只有转换请求被列出。
+
+```bash
+feedlantern pubmed convert --all-verified --table
+feedlantern pubmed convert --all-verified --yes
+feedlantern pubmed convert feed_123 --query '(Hu wanlong[Author]) AND (The University of Hong Kong[Affiliation])' --yes
+```
+
 `pubmed create` 默认输出原文、每次抓取最新 20 篇、刷新间隔 60 分钟，名称省略时根据条件生成。修改已有检索订阅用 `feeds update <id> --data '{"pubmed":{"query":"…"}}'`（不写 `limit` 时保留原篇数，已存条目保留）。所有 NCBI 请求共用实例的限流队列（不带 NCBI API Key 每秒 3 个，带 Key 10 个），请不要在循环里高频预览。
 
 判断规则是否可靠：`coverage.title` 和 `coverage.link` 应等于 `count`，`duplicateLinks` 应为 0；日期、图片和摘要缺失不影响订阅可用。页面需要等待脚本渲染时加 `--wait-for <选择器>` 或 `--wait-ms`。之后如果订阅出现规则失效预警（`feeds list --status warning`），用 `preview --feed <id>` 在订阅的网页上试新规则，再用 `feeds update <id>` 保存。
@@ -188,6 +197,8 @@ feedlantern pubmed preview --query '("Zhang Y"[Author]) AND ("ShanghaiTech"[Affi
 | `whoami`、`health` | 当前令牌、实例状态 | read |
 | `feeds_list`、`feed_get`、`feed_items`、`feed_logs` | 查询订阅、条目和日志 | read |
 | `detect_feed`、`preview_rules`、`rss_preview`、`pubmed_preview` | 识别网页、按规则预览、预览 RSS、预览 PubMed 检索（不保存） | write |
+| `pubmed_convert_check` | 验证 PubMed RSS 订阅能否转换（不传 `feedIds` 时检查全部），返回还原的查询式、覆盖率和 status，不改动订阅 | write |
+| `pubmed_convert` | 用验证通过或用户核对过的查询式转换一个订阅，需要 `confirm: true` | write |
 | `pubmed_create` | 创建 PubMed 检索订阅：`query`，或 `conditions`（`[{field, term, op?}]`）加 `filters`（`days`、`from`、`to`、`hasAbstract`、`types`） | write |
 | `feed_create`、`feed_update`、`feed_pause`、`feed_resume`、`feed_refresh` | 创建和修改订阅 | write |
 | `feed_delete` | 删除订阅，需要 `confirm: true` | write |
