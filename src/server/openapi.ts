@@ -158,7 +158,12 @@ const schemas: Record<string, Schema> = {
       concurrency: int({ description: 'Google 通道的并发数' }), requestIntervalMs: int({ description: 'Google 通道的请求启动间隔' }), defaultProvider: providerId,
       deepl: object({ apiKey: str({ description: '只写：响应中始终为空字符串；更新时省略或留空保持原值，null 删除' }), apiKeyConfigured: bool, plan: str({ enum: ['auto', 'free', 'pro'] }), concurrency: int(), requestIntervalMs: int() }),
       openai: object({ baseUrl: str({ description: '请求发送到 baseUrl/chat/completions' }), model: str(), apiKey: str({ description: '只写，同 deepl.apiKey' }), apiKeyConfigured: bool, systemPrompt: str({ maxLength: 4000 }), concurrency: int(), requestIntervalMs: int() }),
-    }), feedView: str({ enum: ['list', 'cards'] }), logRetentionDays: int(),
+    }),
+    ncbi: object({
+      apiKey: str({ description: 'NCBI API Key（可选，PubMed 期刊订阅使用）。只写，同 deepl.apiKey' }), apiKeyConfigured: bool,
+      email: str({ description: '随 E-utilities 请求发送的联系邮箱；留空则不发送' }),
+    }),
+    feedView: str({ enum: ['list', 'cards'] }), logRetentionDays: int(),
     bark: ref('BarkSettings'), server: { type: 'object', description: '后台并发、目标白名单、代理与会话等服务器设置' },
   }),
   ImportJob: object({ id: str(), createdAt: dateTime, ownerId: str(), actorId: str(), entries: array({ type: 'object', description: '每个网址的识别状态、结果和错误' }) }, ['id', 'createdAt', 'entries']),

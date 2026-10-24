@@ -1,5 +1,22 @@
 # Changelog
 
+## 未发布
+
+### PubMed 期刊订阅改用 NCBI E-utilities
+
+- PubMed 的期刊 RSS 地址（`https://pubmed.ncbi.nlm.nih.gov/rss/journals/<NLM ID>/…`）现在对程序访问一律返回工作量证明验证页，原先这类订阅全部失败。FeedLantern 不会尝试绕过这类验证，而是改用 NCBI 官方的 E-utilities 读取同一期刊：esearch 按 NLM ID 检索、按出版日期取最新文章（条数与地址中的 `limit` 一致，默认 15，最多 100），efetch 取标题、作者、期刊、发表日期和摘要，摘要放进正文供翻译。原地址本身不再请求。
+- 已有的期刊订阅无需操作：条目身份沿用原 RSS 的 `pubmed:<PMID>`，已存文章和译文继续使用，不会重复推送；发表时间与原 RSS 相同。
+- 遵守 NCBI 使用规则：所有 PubMed 请求共用一个队列，不带 API Key 时每秒最多 3 个、带 Key 时 10 个，批量刷新依次排队；每个请求带 `tool=feedlantern`，填写后带联系邮箱；429 时整条队列暂停后重试一次。
+- 新增“设置 → PubMed（NCBI）”：可选的 NCBI API Key（加密保存，不回显，轻量配置导出不含）和联系邮箱。
+- 订阅面板的来源地址旁标出“通过 NCBI E-utilities 获取”；新建 RSS 翻译订阅时粘贴期刊地址会提示，预览照常可用。E-utilities 请求同样经过网络安全策略、DNS over HTTPS 和订阅的网络配置代理。
+- 检索式订阅（`/rss/search/…`）仍直接抓取。
+- 接口：应用设置新增 `ncbi`（`apiKey` 只写、`apiKeyConfigured`、`email`）。
+
+### 非订阅源响应的准确报错
+
+- RSS 来源返回网页（`Content-Type: text/html`，或正文以 `<!doctype html` / `<html` 开头）或 200 以外的 2xx 状态时，不再误报“RSS XML 无效或包含不支持的实体声明”，而是提示“来源返回的是网页而不是 RSS/Atom（HTTP 203）……FeedLantern 不会尝试绕过”。能识别出验证页（captcha、challenge、cookies-required 等）时注明标记。抓取日志、订阅列表的错误原因、告警和新建预览都使用新文案。
+- 被标成 `text/html` 的合法 RSS 仍正常解析；带外部实体或 DTD 的 XML 仍按原逻辑拒绝。
+
 ## v0.7.0
 
 这一版新增了 10 组功能，涉及订阅输出、通知、开放接口、翻译、聚合、预警、翻页、网络和界面。

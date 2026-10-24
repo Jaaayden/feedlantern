@@ -66,6 +66,12 @@ Chromium 侧：有代理的配置会为该浏览器上下文单独创建一个�
 
 `fetch-errors.ts` 的 `withFetchTimeout` 给一次抓取加上自己的超时信号，只有它触发时才抛出 `FetchTimeoutError`（“连接 主机 超时（N 秒未响应）”加代理提示）；调用方的取消信号（用户取消、停用账号、服务停止）原样抛出，`refreshOnce` 记为“中断”。RSS 来源（`fetchSource`、网络配置的“测试连接”）超时 20 秒；网页由 Playwright 的导航超时（30 秒）转换，等待元素超时单独提示。错误只含主机名，`friendlyError` 直接透传；其他英文的 `AbortError`／`TimeoutError` 会被换成中文。
 
+### 非订阅源响应与 PubMed 期刊订阅
+
+`fetchSource` 和 `parseSource` 在解析 XML 之前调用 `fetch-errors.ts` 的 `nonFeedReason(body, status?, contentType?)`：正文以 `<!doctype html` / `<html` 开头（允许前置 BOM、XML 声明和注释）、`Content-Type` 为 HTML 且正文不像 XML，或状态码是 200 以外的 2xx 时抛出 `NotAFeedError`；页面含 `cookies-required`、`identity_pow`、captcha、challenge 等标记时在文案中注明。被标成 `text/html` 的合法 RSS 照常解析；带 DTD／实体声明的 XML 仍由原有检查拒绝。新增的用户可见文案都在 `fetch-errors.ts` 的 `sourceMessages` 中（界面文案在 `src/shared/pubmed.ts`），便于统一迁到语言文件。
+
+`rss-source.ts` 的 `fetchRaw` 是两者共用的一次 GET（网络策略、固定 IP、代理、DoH、重定向和超时），`fetchSource` 与 `pubmed.ts` 都基于它。`app.ts` 的 RSS 抓取入口是 `sourceFetcher(policy, ncbi)`：`src/shared/pubmed.ts` 的 `pubmedJournalSource(url)` 识别出期刊地址时调用 `fetchPubmedJournal`（esearch `term=<NLM ID>[jid]&sort=pub_date&retmax=<limit>`，再 efetch XML），其他地址照旧 `fetchSource`。`createApp` 内只有一个 `NcbiRateLimiter`，按调用顺序分配起始时间，不带 Key 间隔 350 毫秒、带 Key 110 毫秒（略宽于 NCBI 的每秒 3／10 个）；429 时 `pause` 整条队列再重试一次。条目 key 为 `digest('id:pubmed:<PMID>')`，与 `parseSource` 处理原 RSS guid `pubmed:<PMID>` 的结果相同；`publishedAt` 取 Entrez 日期当天纽约时间 6:00，与原 RSS 的 `pubDate` 相同。efetch 只接受它自己的 DOCTYPE 公共标识（解析前删除，从不加载外部 DTD），其他声明一律拒绝。设置存放在应用设置的 `ncbi`（`apiKey`、`email`）中，没有数据库迁移；测试和 e2e 后端用 `createApp({ ncbiEndpoint })` 指向本地 fixture（`tests/fixtures/pubmed`），CI 不访问 NCBI。
+
 ### 完整恢复与服务器设置
 
 `Store.restoreTables(tables, { restoreServer })` 默认把备份中应用设置的 `server` 整组替换为恢复前本机的值，只有 `POST /api/backups/restore` 传入 `restoreServerSettings: true` 时才使用备份的值。`POST /api/backups/preview` 返回 `serverChanges`（`key`、`label`、`current`、`backup`），预览中的 `settings` 不再包含 `server`。
