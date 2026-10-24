@@ -283,6 +283,53 @@ Choose “Add in bulk” from the “New feed” menu and switch “Batch type�
 
 ### Translating web page feeds, and list filters
 
-The list and cards show each feed's source (Web page / RSS source) and output (Original / Chinese translation / Bilingual; other target languages show as “Japanese translation”, “Bilingual (Japanese)” and so on). You can filter by source or by whether it's translated, and select-all only affects the filtered results.
+The list and cards show each feed's source (Web page / RSS source / PubMed search) and output (Original / Chinese translation / Bilingual; other target languages show as “Japanese translation”, “Bilingual (Japanese)” and so on). You can filter by source or by whether it's translated, and select-all only affects the filtered results.
 
 Turn on translation for a web page feed by choosing “Translation only” or “Bilingual” under Feed settings → Output, together with a target language and translation service. FeedLantern translates the titles and extracted summaries it already has, keeps images and item IDs, and translates again when fetched content changes; it doesn't visit full articles. Only finished items reach the public RSS; you can watch progress, logs and retries in the details, and failures use the same alerts. Switching back to Original restores the original output at once, with the same address. Existing web page feeds keep original output after upgrading.
+
+## PubMed feeds
+
+**Recommended: a PubMed search feed.** Choose “PubMed search” in the “New feed” menu (or switch to it at the top of the new feed page) and combine conditions as in PubMed's Advanced Search Builder; the feed is created directly, without generating an RSS link on PubMed. FeedLantern reads the newest matches through NCBI's official [E-utilities](https://www.ncbi.nlm.nih.gov/books/NBK25497/): esearch takes the newest N articles in PubMed's “Most recent” order (newest added to PubMed first, the order of PubMed's RSS), and efetch reads their titles, authors, journal, publication date and abstract.
+
+### The search builder
+
+- **Conditions**: each line has an operator (AND / OR / NOT; none on the first line), a field and a search term. Lines combine from top to bottom as in PubMed's builder (three lines become `((A) AND (B)) OR (C)`). Fields: All Fields, Title/Abstract, Title, Author, First Author (Author - First), Last Author (Author - Last), Journal, Affiliation, MeSH Terms, Publication Type, Language, and Journal NLM ID (`[jid]`).
+- **Terms are quoted for you**: what you type is escaped and put in double quotes, so brackets, quotes, `AND` or `[Title]` can't break the query (PubMed has no escape for a double quote inside a phrase, so a quote in a term becomes a space). Plain words in All Fields stay unquoted so PubMed still maps them to MeSH terms and synonyms; put a term in quotes yourself to match the exact phrase.
+- **Filters**: publication date (any time / last N days / a range written `YYYY`, `YYYY/MM` or `YYYY/MM/DD`, either end may be empty), only articles with an abstract (`hasabstract`), and article-type shortcuts (Review, Systematic Review, Meta-Analysis, Clinical Trial, Randomized Controlled Trial, Case Reports; several are OR-ed).
+- **Query**: the PubMed query is shown under the builder as you edit, for example `("cryo-EM"[Title/Abstract]) AND ("ShanghaiTech"[Affiliation])`. You can edit it directly: when it can be shown as conditions, the builder follows; when it can't (a group on the right such as `a AND (b OR c)`, or a field the builder doesn't offer), it says “Switched to manual editing” and the query is saved exactly as written — “Discard manual edits” returns to the builder. Unbalanced quotes or parentheses and an operator without a term on one side are pointed out and never sent to NCBI.
+- **Preview**: the panel beside it shows how many articles match and the newest 5 (title, journal, date, authors), NCBI's notes (such as a quoted phrase that wasn't found) and how PubMed read the query. It asks once you pause typing (about 0.8 s), reuses the answer for the same query for a minute, and shares the instance's NCBI rate limit with refreshes; when the queue is long, the preview asks you to try again shortly. “Open in PubMed” shows the same search on the PubMed site.
+- **Feed settings**: the name is filled in from your conditions (for example “PubMed: cryo-EM · ShanghaiTech”) until you change it. “Newest articles per fetch” is 10, 20, 50 or 100 (20 by default); stored articles are never added twice. Output can be original, translation only or bilingual, with the same translation pipeline, target languages and services as RSS translations. Refresh interval, network profiles (proxy and DNS over HTTPS), item filters, output and retention limits, bundles and alerts all work as for other feeds. Rule health warnings only apply to web page feeds; a PubMed search that fails is recorded as a failed fetch with a readable reason.
+- **Editing**: Feed settings → “Edit search conditions” opens the same builder. Stored articles are kept when the search changes (items are keyed by PMID); new matches are added on the next refresh.
+
+Example queries:
+
+| To follow | Query |
+| --- | --- |
+| An author at an institution | `("Zhang Y"[Author]) AND ("ShanghaiTech"[Affiliation])` |
+| A topic in one journal | `("PLoS Pathog"[Journal]) AND ("Wolbachia"[Title/Abstract])` |
+| An institution's cryo-EM papers with abstracts | `(("cryo-EM"[Title/Abstract]) AND ("ShanghaiTech"[Affiliation])) AND (hasabstract)` |
+| Reviews in a field from the last 30 days | `("CRISPR"[MeSH Terms]) AND ("last 30 days"[Date - Publication]) AND ("Review"[pt])` |
+
+Item links are `https://pubmed.ncbi.nlm.nih.gov/<PMID>/`, and the content is laid out like PubMed's RSS: the citation (journal abbreviation, date, volume, pages and DOI), the authors (ending in “et al.” after 10), the abstract (one paragraph per labelled section, or NO ABSTRACT) and PMID / PMC / DOI links. Item dates are 06:00 New York time on the day the article was added to PubMed, as in PubMed's RSS. Translated feeds translate the title and abstract. The CLI and the MCP server can preview and create PubMed searches too; see [Agent CLI](../agent.md).
+
+### If you still want a PubMed RSS link
+
+PubMed RSS addresses still work as ordinary RSS translation feeds; FeedLantern never rewrites them in the background:
+
+- **Journal RSS** (`https://pubmed.ncbi.nlm.nih.gov/rss/journals/<NLM ID>/…`, from a journal's RSS button): NCBI now answers every program that reads journal RSS with a proof-of-work verification page (it needs a browser to run scripts and set a cookie) instead of RSS, so these feeds fail with “NCBI answered this PubMed journal RSS address with a verification page”. FeedLantern doesn't try to get past such checks. For a journal, use a **search RSS link** instead: search PubMed for `"PLoS Pathog"[jour]` (with your journal's abbreviation), click Create RSS and subscribe to the `/rss/search/…` link — or use a PubMed search feed as above.
+- **Search RSS** (`/rss/search/<ID>/…`): still fetched directly and currently working.
+
+The feed panel points out both kinds of link and offers “Convert to PubMed search”:
+
+- A journal RSS link prefills a Journal condition from the abbreviation in the address (its `name` parameter), for example `"PLoS Pathog"[Journal]`; without one, the NLM ID (`101238921[jid]`, which PubMed maps to the same journal).
+- A search RSS link only holds PubMed's opaque search ID, so the conditions can't be recovered: enter them again in the builder (“Open the original RSS link” to compare).
+- Nothing is converted until you check the preview, click “Convert feed” and confirm. The feed ID, its RSS address, stored items and translations are kept; items have the same identity as in PubMed's RSS (`pubmed:<PMID>`), so stored articles aren't sent again as new. On the first fetch after converting, small layout differences in the content may queue recent articles for translation once more; identical paragraphs come from the translation cache.
+
+### NCBI usage rules and settings
+
+NCBI asks programs that use E-utilities to stay within its rate limits and to name their tool and a contact email:
+
+- All PubMed search refreshes and builder previews share one request queue: at most 3 requests per second without an API key, 10 with one. Each refresh and each preview sends 2 requests (esearch, efetch), and batch refreshes wait their turn. If NCBI still answers 429 (too many requests), FeedLantern pauses the whole queue for `Retry-After` and tries once more; if that fails too, the fetch fails with “Too many requests to NCBI E-utilities (HTTP 429)…”.
+- Administrators can set an **NCBI API key** (optional; free under Account Settings → API Key Management in an NCBI account) and a **contact email** (optional) in Settings → PubMed (NCBI). The key is stored encrypted like translation keys, never shown again and left out of configuration exports; “Delete the saved key when saving” removes it. If NCBI rejects the key, the fetch log says to check or remove it.
+- Every request carries `tool=feedlantern`, and `email` when a contact email is set. NCBI recommends the email: if something goes wrong they contact you before blocking the source IP. It's especially useful when several services share one outgoing IP.
+- E-utilities requests go through the same network policy, DNS over HTTPS setting and the feed's network profile proxy and User-Agent as RSS sources; a profile's custom headers are only sent to the feed's own site, never to `eutils.ncbi.nlm.nih.gov`.

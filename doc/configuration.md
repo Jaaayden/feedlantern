@@ -47,7 +47,7 @@ Cookie 明文仅在输入和服务端实际抓取时使用，查询接口仅返�
 
 “翻译服务”选择默认翻译服务（Google 免费翻译、DeepL、OpenAI 兼容接口），配置 DeepL API Key 与套餐、OpenAI 兼容接口的地址、模型、API Key 与可选系统提示词，以及每个服务各自的并发数（1–16）和请求启动间隔（0–5000 毫秒）。默认服务必须已配置才能保存。API Key 加密保存且不回显；使用本机或局域网模型需把精确的 `host:port` 加入网络白名单。详见[使用指南](user-guide.md#翻译服务)。
 
-“PubMed（NCBI）”配置 PubMed 期刊订阅所用的 NCBI E-utilities：可选的 NCBI API Key（加密保存、不回显，把限额从每秒 3 个请求提高到 10 个）和可选的联系邮箱（随请求发送给 NCBI，留空则不发送）。详见[使用指南](user-guide.md#pubmed-订阅)。
+“PubMed（NCBI）”配置 PubMed 检索订阅和检索预览所用的 NCBI E-utilities：可选的 NCBI API Key（加密保存、不回显，把限额从每秒 3 个请求提高到 10 个）和可选的联系邮箱（随请求发送给 NCBI，留空则不发送）。详见[使用指南](user-guide.md#pubmed-订阅)。
 
 “服务器与网络”提供后台并发（1–4）、精确网络白名单、DNS over HTTPS、可信代理 IP/CIDR、公开访问地址、安全 Cookie、登录会话有效期及监听地址和端口。保存后，通知与抓取配置立即生效；网络或并发设置变化会关闭旧网页编辑会话。监听地址和端口需重启服务生效；容器端口映射仍需与部署配置匹配。
 
