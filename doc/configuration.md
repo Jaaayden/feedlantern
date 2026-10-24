@@ -1,5 +1,7 @@
 # 配置参考
 
+[English](en/configuration.md) · **简体中文**
+
 标准部署无需 `.env`：启动 Compose 后按 [Nginx 模板](nginx.md)转发即可。应用和服务器高级设置在网页“设置”中管理；下表环境变量仅用于首次初始化及部署引导。
 
 | 变量 | 默认与用途 |
@@ -15,6 +17,7 @@
 | `BACKGROUND_CONCURRENCY` | 默认 1，允许整数 1–4；刷新与批量识别共享容量。同一来源 hostname（跨协议、端口）串行，编辑会话独立 |
 | `BROWSER_EXECUTABLE_PATH` | 默认使用随 Playwright 安装的 Chromium |
 | `PLAYWRIGHT_BROWSERS_PATH` | Docker 固定 `/ms-playwright`；源码测试与安装必须使用同一值 |
+| `DEFAULT_LOCALE` | 默认 `en`，可设 `zh-CN`；兜底语言，见[界面语言](#界面语言) |
 
 网页加载默认等待 1000 毫秒，允许 0–10000；刷新间隔 5–1440 分钟，默认 60。保存的规则用于预览与后台刷新。每个订阅默认输出 100 条，可在订阅设置中调整为 10–500 条；网页订阅保留 max(200, 输出条数) 条历史，RSS 翻译订阅保留 max(100, 输出条数) 条。条目过滤的正则每条不超过 200 个字符、每类最多 30 条，单个订阅运行超过 100 毫秒会被中断。日志、翻译事件和缓存同样有上限，数据库体积保持稳定，见[升级维护](maintenance.md#数据库体积)。
 
@@ -25,6 +28,18 @@ Cookie 明文仅在输入和服务端实际抓取时使用，查询接口仅返�
 反代域名仅接受回环地址或私有网络中的直接代理（含 Docker 网桥）发来的 `X-Forwarded-Host` 和 `X-Forwarded-Proto`。Nginx 必须覆盖这两个头，容器端口保持绑定 `127.0.0.1`；客户端 IP 的信任仍由 `TRUSTED_PROXIES` 单独控制，默认登录限速按代理连接来源共享：检测到转发请求但未设置时，日志会提示一次，此时 8 次失败会锁定所有人 15 分钟，请按[Nginx 指南](nginx.md)填写代理地址。
 
 资源较弱或订阅集中在同一站点时保留默认 1；有多个独立站点且内存有余量时，可在 `.env` 设置 `BACKGROUND_CONCURRENCY=2` 并重启。4 仅用于资源充足且已测量的环境；并发减少排队，不保证单个抓取更快。测试方法与测量结果见 [性能验证](performance.md)。
+
+## 界面语言
+
+界面、服务端错误提示、存储的日志文案和通知支持 English（`en`）与简体中文（`zh-CN`）。
+
+- **界面**：每个账号在“设置 → 账号与密码”或顶栏选择的语言保存在服务端，各设备一致；未选择时按浏览器偏好语言显示。登录和初始化页按浏览器语言显示，并提供语言切换。
+- **接口**：错误返回稳定的 `code`（见 [Agent CLI 与 MCP](agent.md)）和本地化的 `message`，语言按账号偏好，其次按请求的 `Accept-Language`。响应还带有文案键 `messageKey`，网页界面据此按自己的语言渲染。
+- **离线产生的文案**：抓取日志、批量结果、翻译进度和通知（Bark、Webhook、ntfy、Telegram）按订阅所有者的语言写入：用户的选择，其次是其最近一次登录时浏览器请求的语言。
+- **`DEFAULT_LOCALE`**：以上都无法确定时的兜底语言，例如没有可用 `Accept-Language` 的脚本请求、既未选择语言也未在升级后登录过的账号、其他语言访问者看到的订阅预览页。未设置时为 `en`。中文实例可在 `.env`（或 Compose 环境变量）设置 `DEFAULT_LOCALE=zh-CN` 后重启。
+- **升级**：升级前已有的账号自动设为简体中文，界面不会因为升级变成英文；旧版本的完整备份恢复后同样为简体中文。
+- **订阅内容不受影响**：RSS、Atom、JSON 输出保持原有语言，翻译订阅按目标语言输出（`<language>` 随之），其他订阅按来源内容输出；只有 FeedLantern 为未翻译订阅生成的频道描述按所有者语言书写。
+- **服务端日志**统一为英文。`pnpm admin:reset` 按终端语言（`LANG`、`LC_ALL`）显示。
 
 ## 网页管理应用与服务器设置
 
@@ -75,7 +90,7 @@ Cookie 明文仅在输入和服务端实际抓取时使用，查询接口仅返�
 }
 ```
 
-`event` 为 `fetch.failed`、`translation.failed` 或 `test`（测试通知的 `feedId`、`feedName`、`error` 为 `null`），同时放在 `X-FeedLantern-Event` 请求头中。`panelUrl` 是订阅面板链接，基于“公开访问地址”生成。返回 2xx 视为成功，不跟随重定向。
+`event` 为 `fetch.failed`、`translation.failed`、`rules.warning` 或 `test`（测试通知的 `feedId`、`feedName`、`error` 为 `null`），同时放在 `X-FeedLantern-Event` 请求头中。`title` 和 `message` 按订阅所有者的语言书写，集成应按 `event` 判断。`panelUrl` 是订阅面板链接，基于“公开访问地址”生成。返回 2xx 视为成功，不跟随重定向。
 
 可选“自定义请求头”每行一个 `名称: 值`，最多 10 个，例如 `Authorization: Bearer …`；`Host`、`Content-Type`、`Content-Length` 等由系统设置的请求头不能自定义。填写“签名密钥”后，请求带 `X-FeedLantern-Signature-256: sha256=<hex>`，值为以密钥对原始请求体计算的 HMAC-SHA256。接收端校验示例（Node.js）：
 

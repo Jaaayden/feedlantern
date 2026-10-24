@@ -87,7 +87,7 @@ export function getConfig(overrides: ConfigInput = {}, cwd = process.cwd()): Ser
   const allowedHosts = overrides.allowedHosts ?? parseAllowedHosts(process.env.ALLOWED_TARGET_HOSTS);
 
   const backgroundConcurrency = Number(overrides.backgroundConcurrency ?? process.env.BACKGROUND_CONCURRENCY ?? 1);
-  if (!Number.isInteger(backgroundConcurrency) || backgroundConcurrency < 1 || backgroundConcurrency > 4) throw new Error('BACKGROUND_CONCURRENCY 必须是 1–4 的整数');
+  if (!Number.isInteger(backgroundConcurrency) || backgroundConcurrency < 1 || backgroundConcurrency > 4) throw new Error('BACKGROUND_CONCURRENCY must be a whole number from 1 to 4');
   return {
     barkUrl: validateBarkUrl(overrides.barkUrl ?? process.env.BARK_URL),
     dnsOverHttps: overrides.dnsOverHttps ?? parseBool(process.env.DNS_OVER_HTTPS, false),

@@ -14,6 +14,7 @@ import { headerScopeMatches, type CustomHeader } from './fetch-options.js';
 import { request as httpsRequest } from 'node:https';
 import { connect as tlsConnect } from 'node:tls';
 import { formatHost, openResolverTunnel, openTunnelToAny, ProxyConnectError, proxyLabel, type UpstreamProxy } from './upstream-proxy.js';
+import { LocalizedError, msg, rawText, type LocalizedText } from './i18n.js';
 
 export interface NetworkPolicyOptions {
   /** Opt in for hosts using a local fake-IP DNS proxy. Results remain checked. */
@@ -38,11 +39,11 @@ export function policyOptionsFor(options: NetworkPolicyOptions, proxy: UpstreamP
   return proxy ? { ...options, dohProxy: proxy } : options;
 }
 
-export class NetworkPolicyError extends Error {
+export class NetworkPolicyError extends LocalizedError {
   readonly url?: string;
 
-  constructor(message: string, url?: string) {
-    super(message);
+  constructor(text: LocalizedText, url?: string) {
+    super(text);
     this.name = 'NetworkPolicyError';
     this.url = url;
   }
@@ -117,7 +118,7 @@ function normalizeAllowedHosts(values: readonly string[] | undefined): Set<strin
       const parsed = new URL(value.includes('://') ? value : `http://${value}`);
       result.add(hostKey(parsed));
     } catch {
-      throw new NetworkPolicyError(`ALLOWED_TARGET_HOSTS 中存在无效 host：${raw}`);
+      throw new NetworkPolicyError(msg('network.allowedHostInvalid', { host: raw }));
     }
   }
   return result;
@@ -128,13 +129,13 @@ function parseUrl(raw: string): URL {
   try {
     parsed = new URL(raw);
   } catch {
-    throw new NetworkPolicyError('目标 URL 无效', raw);
+    throw new NetworkPolicyError(msg('network.urlInvalid'), raw);
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new NetworkPolicyError('只允许访问 HTTP 或 HTTPS URL', raw);
+    throw new NetworkPolicyError(msg('network.httpOnly'), raw);
   }
   if (parsed.username || parsed.password) {
-    throw new NetworkPolicyError('目标 URL 不允许携带用户名或密码', raw);
+    throw new NetworkPolicyError(msg('network.noCredentials'), raw);
   }
   return parsed;
 }
@@ -170,7 +171,7 @@ async function resolveHostAddresses(hostname: string): Promise<string[]> {
     const records = await lookup(normalized, { all: true, verbatim: true });
     return records.map(record => record.address);
   } catch {
-    throw new NetworkPolicyError(`无法解析目标主机：${normalized}`);
+    throw new NetworkPolicyError(msg('network.unresolved', { host: normalized }));
   }
 }
 
@@ -200,7 +201,7 @@ export async function resolveDnsOverHttps(hostname: string, fetcher: typeof fetc
     if (!response.ok) throw new Error('DNS response failed');
     return dohAddresses(await response.json() as Parameters<typeof dohAddresses>[0]);
   } catch {
-    throw new NetworkPolicyError('加密 DNS 查询失败，请检查网络连接或关闭 DNS_OVER_HTTPS 设置');
+    throw new NetworkPolicyError(msg('network.dohFailed'));
   }
 }
 
@@ -239,10 +240,9 @@ export async function resolveDnsOverHttpsViaProxy(hostname: string, proxy: Upstr
     });
     return dohAddresses(JSON.parse(body));
   } catch (error) {
-    const label = proxyLabel(proxy);
-    // Proxy errors already name the proxy; say it once.
-    const reason = error instanceof ProxyConnectError ? `：${error.message.replace(` ${label}`, '')}` : signal.aborted ? '：10 秒内没有响应' : '';
-    throw new NetworkPolicyError(`经代理 ${label} 的加密 DNS 查询失败${reason}。请检查代理是否可用，或在“设置 → 服务器与网络”关闭 DNS over HTTPS`);
+    const proxyName = proxyLabel(proxy);
+    const reason = error instanceof ProxyConnectError ? error.text : signal.aborted ? msg('network.dohNoResponse', { seconds: DOH_TIMEOUT_MS / 1000 }) : undefined;
+    throw new NetworkPolicyError(reason ? msg('network.dohProxyFailedReason', { proxy: proxyName, reason }) : msg('network.dohProxyFailed', { proxy: proxyName }));
   }
 }
 
@@ -306,15 +306,15 @@ export class NetworkPolicy {
 
     const hostname = normalizeHostname(url.hostname);
     if (BLOCKED_HOSTNAMES.has(hostname) || hostname.endsWith('.localhost')) {
-      throw new NetworkPolicyError(`目标主机被 SSRF 策略阻止：${hostname}`, rawUrl);
+      throw new NetworkPolicyError(msg('network.ssrfBlocked', { host: hostname }), rawUrl);
     }
 
     const addresses = await this.lookupCached(hostname);
     if (addresses.length === 0 || addresses.some(address => isPrivateOrSpecialAddress(address))) {
       const fakeIp = addresses.some(address => ipaddr.isValid(address) && ipaddr.parse(address).kind() === 'ipv4' && matchesBlockedRange(address, [['198.18.0.0', 15]]));
       throw new NetworkPolicyError(fakeIp
-        ? `目标域名被本机 DNS 解析到保留地址（可能启用了代理 Fake-IP）：${hostname}。可设置 DNS_OVER_HTTPS=true 后重启服务`
-        : `目标主机解析到私网或特殊地址，已阻止：${hostname}`, rawUrl);
+        ? msg('network.fakeIp', { host: hostname })
+        : msg('network.privateAddress', { host: hostname }), rawUrl);
     }
     return url;
   }
@@ -325,7 +325,7 @@ export class NetworkPolicy {
     const explicit = isExplicitlyAllowed(url, this.allowedHosts);
     if (!explicit) await this.assertAllowed(rawUrl);
     const addresses = (await this.lookupCached(url.hostname)).filter(item => explicit || !isPrivateOrSpecialAddress(item));
-    if (!addresses.length) throw new NetworkPolicyError(`目标主机没有可连接的公网地址：${url.hostname}`, rawUrl);
+    if (!addresses.length) throw new NetworkPolicyError(msg('network.noPublicAddress', { host: url.hostname }), rawUrl);
     // `addresses` are all checked; tunnels through a profile proxy try each in turn.
     return { url, address: addresses[0], addresses };
   }
@@ -341,8 +341,8 @@ export class NetworkPolicy {
       return (await this.directPolicy().resolveForConnection(raw)).address;
     } catch (error) {
       if (!(error instanceof NetworkPolicyError)) throw error;
-      if (/无法解析/.test(error.message)) throw new NetworkPolicyError(`无法解析代理服务器地址：${proxyLabel(proxy)}`);
-      throw new NetworkPolicyError(`代理服务器 ${proxyLabel(proxy)} 指向内网、回环或保留地址，已被安全策略阻止；如确需使用，请管理员把 ${formatHost(proxy.host)}:${proxy.port} 加入允许访问的主机`);
+      if (error.text.key === 'network.unresolved') throw new NetworkPolicyError(msg('network.proxyUnresolved', { proxy: proxyLabel(proxy) }));
+      throw new NetworkPolicyError(msg('network.proxyPrivate', { proxy: proxyLabel(proxy), address: `${formatHost(proxy.host)}:${proxy.port}` }));
     }
   }
 
@@ -392,7 +392,7 @@ export interface RestrictedForwardProxy {
   /** Present when the proxy requires its own per-instance login. */
   readonly credentials?: { username: string; password: string };
   /** The latest upstream proxy failure, safe to show to the user. */
-  readonly lastError?: string;
+  readonly lastError?: LocalizedText;
   /** Forget lastError, before a new navigation. */
   resetError(): void;
   close(): Promise<void>;
@@ -471,7 +471,7 @@ export async function createRestrictedForwardProxy(
   const upstreamRequests = new Set<ClientRequest>();
   const credentials = requireAuth ? { username: 'feedlantern', password: randomBytes(24).toString('base64url') } : undefined;
   const expectedAuth = credentials ? Buffer.from(`Basic ${Buffer.from(`${credentials.username}:${credentials.password}`).toString('base64')}`) : undefined;
-  let lastError: string | undefined;
+  let lastError: LocalizedText | undefined;
   const authorized = (header: string | string[] | undefined): boolean => {
     if (!expectedAuth) return true;
     const actual = Buffer.from(typeof header === 'string' ? header : '');
@@ -484,7 +484,7 @@ export async function createRestrictedForwardProxy(
       const proxyAddress = await policy.resolveProxy(upstream);
       return await openTunnelToAny(upstream, proxyAddress, addresses, port);
     } catch (error) {
-      if (error instanceof ProxyConnectError || error instanceof NetworkPolicyError) lastError = error.message;
+      if (error instanceof ProxyConnectError || error instanceof NetworkPolicyError) lastError = error.text;
       throw error;
     }
   };
@@ -502,14 +502,14 @@ export async function createRestrictedForwardProxy(
     try {
       target = new URL(raw, `http://${hostHeader ?? ''}`);
       if (target.protocol !== 'http:' && target.protocol !== 'https:') {
-        throw new NetworkPolicyError('代理只支持 HTTP(S) 请求');
+        throw new NetworkPolicyError(rawText('The proxy only handles HTTP(S) requests'));
       }
       if (target.protocol === 'https:') {
-        throw new NetworkPolicyError('HTTPS 请求必须通过 CONNECT 建立隧道');
+        throw new NetworkPolicyError(rawText('HTTPS requests must use a CONNECT tunnel'));
       }
       const connection = await policy.resolveForConnection(target.toString());
       const port = targetPort(target);
-      if (!validPort(port)) throw new NetworkPolicyError('目标端口无效');
+      if (!validPort(port)) throw new NetworkPolicyError(rawText('Invalid target port'));
       if (incoming.destroyed || outgoing.destroyed) return;
 
       const headers: Record<string, string | string[] | undefined> = { ...incoming.headers };
@@ -561,10 +561,10 @@ export async function createRestrictedForwardProxy(
         });
         response.pipe(outgoing);
       });
-      upstreamRequest.on('error', error => writeProxyError(outgoing, 502, `上游请求失败：${error.message}`));
+      upstreamRequest.on('error', error => writeProxyError(outgoing, 502, `Upstream request failed: ${error.message}`));
       incoming.pipe(upstreamRequest);
     } catch (error) {
-      const message = error instanceof Error ? error.message : '代理请求被阻止';
+      const message = error instanceof Error ? error.message : 'Proxy request blocked';
       if (error instanceof ProxyConnectError) {
         // An upstream proxy failure is answered with a readable 502, so the
         // browser service can report the reason; a body still arriving is dropped.
@@ -600,11 +600,11 @@ export async function createRestrictedForwardProxy(
     try {
       const authority = request.url ?? '';
       target = new URL(`https://${authority}/`);
-      if (target.username || target.password) throw new NetworkPolicyError('CONNECT 目标不允许凭证');
-      if (target.pathname !== '/' || target.search || target.hash) throw new NetworkPolicyError('CONNECT 目标格式无效');
+      if (target.username || target.password) throw new NetworkPolicyError(rawText('CONNECT targets cannot carry credentials'));
+      if (target.pathname !== '/' || target.search || target.hash) throw new NetworkPolicyError(rawText('Invalid CONNECT target'));
       const connection = await policy.resolveForConnection(target.toString());
       const port = targetPort(target);
-      if (!validPort(port)) throw new NetworkPolicyError('CONNECT 目标端口无效');
+      if (!validPort(port)) throw new NetworkPolicyError(rawText('Invalid CONNECT target port'));
       if (client.destroyed) return;
       if (upstream) {
         const tunnel = await dial(connection.addresses ?? [connection.address], port);
@@ -676,7 +676,7 @@ export async function createRestrictedForwardProxy(
   const address = server.address();
   if (!address || typeof address === 'string') {
     await new Promise<void>(resolve => server.close(() => resolve()));
-    throw new NetworkPolicyError('受限代理未能获取监听端口');
+    throw new NetworkPolicyError(rawText('The restricted proxy could not get a listening port'));
   }
   let closed = false;
   return {

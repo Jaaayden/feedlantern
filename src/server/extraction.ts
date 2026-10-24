@@ -2,10 +2,11 @@ import type { Page } from 'playwright';
 import { readDateContext, resolveDate, type DateFields } from './dates.js';
 export { isoDate } from './dates.js';
 import type { ExtractedItem, SelectionRules } from '../shared/types';
+import { LocalizedError, msg, type LocalizedText } from './i18n.js';
 
-export class ExtractionError extends Error {
-  constructor(message: string) {
-    super(message);
+export class ExtractionError extends LocalizedError {
+  constructor(text: LocalizedText) {
+    super(text);
     this.name = 'ExtractionError';
   }
 }
@@ -110,13 +111,13 @@ function httpUrl(value: string | undefined, baseUrl: string): string | undefined
 }
 
 function assertRules(rules: SelectionRules): void {
-  if (!rules || typeof rules !== 'object') throw new ExtractionError('抽取规则为空');
+  if (!rules || typeof rules !== 'object') throw new ExtractionError(msg('extract.rulesEmpty'));
   for (const [name, selector] of Object.entries(rules)) {
     if (selector !== undefined && typeof selector !== 'string') {
-      throw new ExtractionError(`抽取规则 ${name} 必须是 CSS selector 字符串`);
+      throw new ExtractionError(msg('extract.ruleNotString', { name }));
     }
     if (typeof selector === 'string' && !selector.trim() && ['item', 'title', 'link'].includes(name)) {
-      throw new ExtractionError(`抽取规则 ${name} 不能为空`);
+      throw new ExtractionError(msg('extract.ruleEmpty', { name }));
     }
   }
 }
@@ -137,7 +138,7 @@ export async function extractPage(page: Page, rules: SelectionRules): Promise<Ex
   } catch {
     // A closed page is reported by the extraction evaluation below.
   }
-  if (!/^https?:\/\//i.test(baseUrl)) throw new ExtractionError('当前页面不是 HTTP(S) 页面，无法生成 RSS');
+  if (!/^https?:\/\//i.test(baseUrl)) throw new ExtractionError(msg('extract.notHttp'));
 
   let rawItems: RawExtractedItem[];
   try {
@@ -146,9 +147,9 @@ export async function extractPage(page: Page, rules: SelectionRules): Promise<Ex
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (/failed to execute 'queryselector|not a valid selector|syntaxerror/i.test(message)) {
-      throw new ExtractionError(`抽取规则包含无效 CSS selector：${message}`);
+      throw new ExtractionError(msg('extract.selectorInvalid', { detail: message }));
     }
-    throw new ExtractionError(`读取页面 DOM 失败：${message}`);
+    throw new ExtractionError(msg('extract.domFailed', { detail: message }));
   }
 
   const dateContext = rules.date ? await readDateContext(page) : undefined;
@@ -166,7 +167,7 @@ export async function extractPage(page: Page, rules: SelectionRules): Promise<Ex
   }
 
   if (items.length === 0) {
-    throw new ExtractionError('没有抽取到有效条目：请检查 item/title/link selector，以及页面是否已完成渲染');
+    throw new ExtractionError(msg('extract.noItems'));
   }
   return items;
 }

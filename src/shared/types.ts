@@ -1,3 +1,4 @@
+import type { Locale, Translator } from './i18n.js';
 export type FieldName = 'title' | 'link' | 'description' | 'image' | 'date';
 export type RuleOrigins = Partial<Record<'item' | FieldName, 'auto' | 'manual'>>;
 export interface SelectionRules {
@@ -34,20 +35,24 @@ export interface PaginationReport { pages: PageReport[]; stoppedAt: number; stop
 export type TranslationMode = 'original' | 'translated' | 'bilingual';
 export type TargetLanguage = 'zh-CN' | 'zh-TW' | 'en' | 'ja' | 'ko';
 export type TranslationProviderId = 'google' | 'deepl' | 'openai';
-export const targetLanguages: Record<TargetLanguage, { label: string; short: string; rss: string }> = {
-  'zh-CN': { label: '简体中文', short: '中文', rss: 'zh-cn' },
-  'zh-TW': { label: '繁體中文', short: '繁体中文', rss: 'zh-tw' },
-  en: { label: 'English（英语）', short: '英语', rss: 'en' },
-  ja: { label: '日本語（日语）', short: '日语', rss: 'ja' },
-  ko: { label: '한국어（韩语）', short: '韩语', rss: 'ko' },
+/** Target languages of feed translation; names are in the locale catalogs (`targetLanguage.*`). */
+export const targetLanguages: Record<TargetLanguage, { rss: string }> = {
+  'zh-CN': { rss: 'zh-cn' },
+  'zh-TW': { rss: 'zh-tw' },
+  en: { rss: 'en' },
+  ja: { rss: 'ja' },
+  ko: { rss: 'ko' },
 };
-export const translationProviderLabels: Record<TranslationProviderId, string> = { google: 'Google 免费翻译', deepl: 'DeepL', openai: 'OpenAI 兼容接口' };
+export const translationProviders: readonly TranslationProviderId[] = ['google', 'deepl', 'openai'];
 export const isTargetLanguage = (value: unknown): value is TargetLanguage => typeof value === 'string' && Object.hasOwn(targetLanguages, value);
-export const isTranslationProvider = (value: unknown): value is TranslationProviderId => typeof value === 'string' && Object.hasOwn(translationProviderLabels, value);
-export function translationLabel(feed: Pick<FeedInput, 'translationMode' | 'targetLanguage'>): string {
-  const short = targetLanguages[feed.targetLanguage ?? 'zh-CN'].short;
-  if (feed.translationMode === 'translated') return `${short}翻译`;
-  return feed.targetLanguage && feed.targetLanguage !== 'zh-CN' ? `双语翻译（${short}）` : '双语翻译';
+export const isTranslationProvider = (value: unknown): value is TranslationProviderId => typeof value === 'string' && translationProviders.includes(value as TranslationProviderId);
+export const targetLanguageName = (t: Translator, id: TargetLanguage) => t(`targetLanguage.${id}`);
+export const translationProviderName = (t: Translator, id: TranslationProviderId) => t(`provider.${id}`);
+/** "Chinese translation", "Bilingual", "Bilingual (Japanese)". */
+export function translationLabel(feed: Pick<FeedInput, 'translationMode' | 'targetLanguage'>, t: Translator): string {
+  const language = t(`targetLanguage.short.${feed.targetLanguage ?? 'zh-CN'}`);
+  if (feed.translationMode === 'translated') return t('translationLabel.translated', { language });
+  return feed.targetLanguage && feed.targetLanguage !== 'zh-CN' ? t('translationLabel.bilingualTo', { language }) : t('translationLabel.bilingual');
 }
 export interface FeedInput {
   /** Omitted: keep the saved setting; null: single page. */
@@ -148,7 +153,7 @@ export interface FeedItem extends ExtractedItem { id: string; firstSeenAt: strin
 export type FetchSource = 'scheduled' | 'manual' | 'create' | 'edit' | 'resume' | 'import';
 export type FetchStatus = 'running' | 'success' | 'failure' | 'interrupted';
 export type AlertStatus = 'pending' | 'sent' | 'failed' | 'canceled' | 'disabled';
-export const fetchSourceLabels: Record<FetchSource, string> = { scheduled: '定时', manual: '手动', create: '创建订阅', edit: '修改规则', resume: '恢复订阅', import: '批量创建' };
+export const fetchSourceName = (t: Translator, source: FetchSource) => t(`fetchSource.${source}`);
 export interface FetchLog {
   id: number; feedId: string; source: FetchSource; status: FetchStatus;
   startedAt: string; finishedAt: string | null; durationMs: number | null;
@@ -302,7 +307,7 @@ export interface DetectionCandidate {
 export interface DetectionResult { candidates: DetectionCandidate[]; recommendedId: string | null; warnings: string[] }
 /** GET /api/translation/providers: what any signed-in user may choose for a feed. */
 export interface TranslationProvidersInfo { defaultProvider: TranslationProviderId; providers: Array<{ id: TranslationProviderId; label: string; configured: boolean }> }
-export interface AuthState { userId?: string; role?: "admin" | "user"; setupRequired: boolean; authenticated: boolean; username?: string; csrfToken?: string; version: string; /** Set when the request was authenticated with a personal access token. */ tokenScope?: ApiTokenScope }
+export interface AuthState { /** The account's chosen interface language; null follows the browser. */ locale?: Locale | null; /** The instance's fallback language (DEFAULT_LOCALE). */ defaultLocale?: Locale; userId?: string; role?: "admin" | "user"; setupRequired: boolean; authenticated: boolean; username?: string; csrfToken?: string; version: string; /** Set when the request was authenticated with a personal access token. */ tokenScope?: ApiTokenScope }
 export type ApiTokenScope = 'read' | 'write';
 /** A personal access token as listed to its owner; the secret itself is only returned on creation. */
 export interface ApiTokenSummary { id: string; name: string; scope: ApiTokenScope; prefix: string; createdAt: string; expiresAt: string | null; lastUsedAt: string | null; /** Calls and failed calls (status >= 400) recorded in the last 24 hours. */ usage24h?: { calls: number; failures: number } }

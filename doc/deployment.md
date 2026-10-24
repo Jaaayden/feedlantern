@@ -1,5 +1,7 @@
 # 部署步骤
 
+[English](en/deployment.md) · **简体中文**
+
 ## 1. 准备环境
 
 支持 Linux amd64、arm64。建议预留 2 GB 内存及数 GB 磁盘，实际用量取决于目标网页。服务器需要访问目标网站；镜像下载需要访问 GitHub Container Registry。

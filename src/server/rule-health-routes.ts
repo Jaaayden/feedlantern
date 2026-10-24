@@ -5,6 +5,7 @@ import { AppError } from './auth.js';
 import type { Store } from './store.js';
 import type { FetchNetworkOptions } from './fetch-options.js';
 import { asRecord, friendlyError, parseRules } from './validation.js';
+import { lt, msg } from './i18n.js';
 
 const PREVIEW_ITEMS = 5;
 
@@ -36,8 +37,8 @@ export function registerRuleHealthRoutes(app: FastifyInstance, context: RuleHeal
   const websiteFeed = (request: FastifyRequest): Feed => {
     context.guard(request);
     const feed = store.getFeed(String(asRecord(request.params).id));
-    if (!feed) throw new AppError(404, 'Feed 不存在');
-    if (feed.sourceType === 'rss') throw new AppError(400, 'RSS 来源订阅没有匹配规则');
+    if (!feed) throw new AppError(404, 'error.feedNotFound');
+    if (feed.sourceType === 'rss') throw new AppError(400, 'error.rssNoRules');
     return feed;
   };
   // Both captures read page 1 only, also for multi-page feeds: rule health is
@@ -49,14 +50,14 @@ export function registerRuleHealthRoutes(app: FastifyInstance, context: RuleHeal
       return { count: items.length, items: items.slice(0, PREVIEW_ITEMS) };
     } catch (error) {
       if (signal.aborted || error instanceof AppError) throw error;
-      return { count: 0, items: [], error: friendlyError(error, '没有抽取到有效条目') };
+      return { count: 0, items: [], error: lt(friendlyError(error, msg('extract.noItemsShort'))) };
     }
   };
 
   app.post('/api/feeds/:id/health/redetect', async (request): Promise<RuleRedetectResult> => {
     const feed = websiteFeed(request);
     const browser = context.browser();
-    if (!browser.discover) throw new AppError(501, '当前浏览器服务不支持自动识别');
+    if (!browser.discover) throw new AppError(501, 'error.detectUnsupported');
     return context.enqueue(async () => {
       const latest = websiteFeed(request);
       const signal = context.signal(request);
@@ -64,7 +65,7 @@ export function registerRuleHealthRoutes(app: FastifyInstance, context: RuleHeal
       let detection: DetectionResult;
       const network = context.network(latest);
       try { detection = (await browser.discover!({ url: latest.url, signal, cookies: context.cookies(latest), waitMs: latest.waitMs, waitForSelector: latest.waitForSelector, ...(network ? { network } : {}) })).detection; }
-      catch (error) { if (signal.aborted || error instanceof AppError) throw error; throw new AppError(502, friendlyError(error, '自动识别失败，请稍后重试')); }
+      catch (error) { if (signal.aborted || error instanceof AppError) throw error; throw new AppError(502, friendlyError(error, msg('error.detectRetry'))); }
       return { current, detection: { ...detection, candidates: detection.candidates.map(candidate => ({ ...candidate, items: candidate.items.slice(0, PREVIEW_ITEMS), rects: [] })) } };
     }, () => context.keys(feed.id));
   });

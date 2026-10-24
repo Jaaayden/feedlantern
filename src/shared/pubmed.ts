@@ -28,7 +28,3 @@ export function pubmedJournalSource(raw: string): PubmedJournalSource | null {
   const name = url.searchParams.get('name')?.trim().slice(0, 200);
   return { nlmId: match[1].toUpperCase(), limit, ...(name ? { name } : {}) };
 }
-
-/** Shown next to a PubMed journal source in the interface. */
-export const PUBMED_EUTILS_LABEL = '通过 NCBI E-utilities 获取';
-export const PUBMED_EUTILS_HINT = 'PubMed 期刊 RSS 地址会改用 NCBI 官方的 E-utilities 接口读取最新文章（含摘要），条目与原 RSS 保持一致。';

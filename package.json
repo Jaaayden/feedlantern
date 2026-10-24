@@ -15,7 +15,7 @@
     "start": "node --import tsx --env-file-if-exists=.env src/server/index.ts",
     "admin:reset": "node --import tsx --env-file-if-exists=.env src/server/reset-password.ts",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test tests/*.test.ts",
+    "test": "DEFAULT_LOCALE=zh-CN tsx --test tests/*.test.ts",
     "test:e2e": "playwright test",
     "browser:install": "playwright install chromium"
   },

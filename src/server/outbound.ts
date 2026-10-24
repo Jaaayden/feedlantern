@@ -32,7 +32,7 @@ export async function postJson(raw: string, body: string, options: { signal: Abo
       response.on('error', reject);
       response.on('data', (chunk: Buffer) => {
         size += chunk.length;
-        if (size > RESPONSE_LIMIT) { response.destroy(Error('推送服务响应过大')); return; }
+        if (size > RESPONSE_LIMIT) { response.destroy(Error('Push service response too large')); return; }
         chunks.push(chunk);
       });
       response.on('end', () => resolve({ status: response.statusCode ?? 0, text: Buffer.concat(chunks).toString('utf8') }));

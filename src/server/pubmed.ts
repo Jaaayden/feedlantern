@@ -16,6 +16,7 @@ import sanitizeHtml from 'sanitize-html';
 import type { NetworkPolicy } from './network.js';
 import { digest, fetchRaw, fetchSource, safeHtml, type RawResponse, type SourceFetcher, type SourceItem, type SourceOptions, type SourceResult } from './rss-source.js';
 import { looksLikeHtml, NcbiError, sourceMessages } from './fetch-errors.js';
+import { LocalizedError, msg } from './i18n.js';
 import { pubmedJournalSource, type PubmedJournalSource } from '../shared/pubmed.js';
 
 export const EUTILS_ENDPOINT = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils';
@@ -244,7 +245,7 @@ export function parseEfetch(xml: string): { items: Map<string, SourceItem>; jour
     const link = `https://pubmed.ncbi.nlm.nih.gov/${pmid}/`;
     const built = articleHtml(pmid, record);
     journal ??= built.journal || undefined;
-    if (built.html.length > 200_000 || title.length > 20_000) throw Error('RSS 单条内容超过支持的长度限制');
+    if (built.html.length > 200_000 || title.length > 20_000) throw new LocalizedError(msg('rss.itemTooLong'));
     const history = record.PubmedData?.History;
     const publishedAt = historyDate(history, 'entrez') ?? historyDate(history, 'pubmed');
     items.set(pmid, { key: pubmedItemKey(pmid), title, link, html: safeHtml(built.html, link), ...(publishedAt ? { publishedAt } : {}) });

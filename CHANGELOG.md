@@ -25,6 +25,20 @@
 - API 错误响应新增机器可读的 `code` 字段（例如 `token_read_only`、`token_not_allowed`、`unauthorized`、`not_found`、`validation`），脚本不必再匹配中文错误说明；预览 RSS 来源时，来源返回网页而不是 RSS/Atom 为 `source_not_feed`。
 - 接口：新增 `GET /api/tokens/current` 和 `GET /api/tokens/current/logs`，令牌可以查看自己的摘要和调用记录（只能看自己）。
 
+### 国际化：English 与简体中文
+
+- 界面支持 English 和简体中文，覆盖全部页面、提示和日期、数字、相对时间格式（按语言用 `Intl` 格式化）。语言在顶栏或“设置 → 账号与密码 → 界面语言”中切换，按账号保存在服务端，登录后各设备一致；也可选择“跟随浏览器”。未选择时按浏览器语言显示，都不支持时使用服务器默认语言（英文）。`<html lang>` 随语言变化。
+- 登录页和初始化页按浏览器语言显示，并提供语言切换（保存在当前设备）。
+- 升级不改变现有界面：升级前已有的账号自动设为简体中文（数据库迁移 21）；旧版本的完整备份恢复后同样为简体中文。新建账号在用户选择前跟随浏览器。
+- 接口错误统一为 `{ code, message, error, messageKey, params? }`：`code` 沿用 Agent CLI 引入的稳定错误代码（脚本、CLI、MCP 和网页都按它判断）；`message`（以及保留兼容的 `error`）按账号语言、其次按 `Accept-Language` 翻译；`messageKey` 和 `params` 标识具体文案，网页界面据此按当前语言显示。新增 `PUT /api/auth/locale` 保存账号语言，`GET /api/auth/status` 返回 `locale` 和 `defaultLocale`。
+- 通知（Bark、Webhook、ntfy、Telegram）的标题和正文、抓取日志（包括“来源返回的是网页而不是 RSS”和 PubMed/NCBI 的错误说明）、批量结果和翻译进度按订阅所有者的语言书写；Webhook 的 `event` 不变，集成应按 `event` 判断。
+- 在浏览器中直接打开订阅地址看到的预览页按访问者的 `Accept-Language` 显示。RSS、Atom、JSON 输出的语言不变：翻译订阅仍按目标语言输出，其他订阅保持原样。
+- 新增环境变量 `DEFAULT_LOCALE`（默认 `en`，可设 `zh-CN`），作为没有可用浏览器语言时的兜底语言；中文实例可设为 `zh-CN`。
+- 服务端日志统一改为英文；`pnpm admin:reset` 按终端语言显示。
+- 新增英文 README（`README.md`，中文版移至 `README.zh-CN.md`），以及英文版使用指南、部署步骤和配置参考（`doc/en/`）。
+- OpenAPI 文档（`/api/openapi.json`）的说明改为英文，并描述新的错误格式。
+- 修复：登录页输错密码时不再误报“登录已失效”。
+
 ## v0.7.0
 
 这一版新增了 10 组功能，涉及订阅输出、通知、开放接口、翻译、聚合、预警、翻页、网络和界面。

@@ -10,6 +10,7 @@ import { NetworkPolicy } from '../src/server/network.js';
 import { NCBI_INTERVAL_MS, NcbiRateLimiter, fetchPubmedJournal, parseEfetch, pubmedItemKey, pubmedRssDate, sourceFetcher, type NcbiContext } from '../src/server/pubmed.js';
 import { NcbiError } from '../src/server/fetch-errors.js';
 import { friendlyError } from '../src/server/validation.js';
+import { lt, rawText } from '../src/server/i18n.js';
 import { pubmedJournalSource } from '../src/shared/pubmed.js';
 import { startHttpProxy, startTarget } from './proxy-fixtures.js';
 
@@ -167,7 +168,7 @@ test('NCBI 返回 429、错误 JSON、网页或无效数据时给出可读报错
   const failure = async (settings?: { apiKey: string; email: string }) => {
     const error = await run(settings).then(() => null, (reason: unknown) => reason);
     assert.ok(error instanceof NcbiError, String(error));
-    assert.equal(friendlyError(error, 'fallback'), error.message);
+    assert.equal(lt(friendlyError(error, rawText('fallback'))), error.message);
     assert.ok(!error.message.includes('secret-key-123') && !error.message.includes('http'), error.message);
     return error.message;
   };

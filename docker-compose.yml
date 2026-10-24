@@ -14,6 +14,7 @@ services:
       ALLOWED_TARGET_HOSTS: ${ALLOWED_TARGET_HOSTS:-}
       BACKGROUND_CONCURRENCY: ${BACKGROUND_CONCURRENCY:-1}
       BARK_URL: ${BARK_URL:-}
+      DEFAULT_LOCALE: ${DEFAULT_LOCALE:-en}
       DNS_OVER_HTTPS: ${DNS_OVER_HTTPS:-false}
     volumes:
       - data:/app/data

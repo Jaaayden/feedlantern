@@ -1,5 +1,5 @@
 /* ==========================================================================
-   FeedLantern · 订阅灯 — "Night Lantern" interface
+   FeedLantern — "Night Lantern" interface
    Forest ink, warm paper and a lime lantern glow. Light and dark themes are
    driven by tokens; components below only reference tokens.
    ========================================================================== */
@@ -476,7 +476,7 @@ p[role="status"], p[role="alert"] { font-size: 13.5px; }
 .page-footer a:hover { color: var(--ink); }
 
 /* New-feed source switch sits opposite the back link */
-.main-content > .detail-actions[aria-label="订阅来源类型"] { float: right; margin-top: -4px; }
+.main-content > .detail-actions.source-switch { float: right; margin-top: -4px; }
 .main-content > .page-heading { clear: both; }
 
 /* ---------- Page heading ---------- */
@@ -534,30 +534,30 @@ p[role="status"], p[role="alert"] { font-size: 13.5px; }
 .search-input { width: min(320px, 100%); }
 .search-input input { min-height: 38px; border-radius: 999px; background: var(--surface); }
 
-section[aria-label="订阅集合"] { display: grid; gap: 12px; }
+section.feed-collection { display: grid; gap: 12px; }
 .collection-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .collection-toolbar label { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 600; color: var(--muted); white-space: nowrap; }
 .collection-toolbar select { width: auto; min-width: 128px; min-height: 34px; padding: 4px 32px 4px 12px; border-radius: 999px; font-size: 13px; font-weight: 550; color: var(--ink); }
-section[aria-label="订阅集合"] > .collection-toolbar:first-child > .inline { gap: 10px 16px; }
+section.feed-collection > .collection-toolbar:first-child > .inline { gap: 10px 16px; }
 /* Bulk action bar shown when feeds are selected */
-section[aria-label="订阅集合"] > .collection-toolbar:has(> span:first-child) {
+section.feed-collection > .collection-toolbar:has(> span:first-child) {
   position: sticky; top: 72px; z-index: 10;
   padding: 8px 8px 8px 18px; border-radius: 14px;
   background: #13261f; color: #eef3ea;
   box-shadow: 0 16px 34px -16px rgba(10, 28, 21, .6);
   animation: rise .25s var(--ease);
 }
-section[aria-label="订阅集合"] > .collection-toolbar:has(> span:first-child) > span { font-weight: 650; font-size: 13.5px; display: inline-flex; align-items: center; gap: 8px; }
-section[aria-label="订阅集合"] > .collection-toolbar:has(> span:first-child) > span::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #d8e88f; box-shadow: 0 0 10px 2px rgba(216, 232, 143, .6); }
-section[aria-label="订阅集合"] > .collection-toolbar:has(> span:first-child) .button {
+section.feed-collection > .collection-toolbar:has(> span:first-child) > span { font-weight: 650; font-size: 13.5px; display: inline-flex; align-items: center; gap: 8px; }
+section.feed-collection > .collection-toolbar:has(> span:first-child) > span::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #d8e88f; box-shadow: 0 0 10px 2px rgba(216, 232, 143, .6); }
+section.feed-collection > .collection-toolbar:has(> span:first-child) .button {
   background: rgba(255, 255, 255, .06); border-color: rgba(255, 255, 255, .1); color: #e6ede4; box-shadow: none;
 }
-section[aria-label="订阅集合"] > .collection-toolbar:has(> span:first-child) .button:hover:not(:disabled) { background: rgba(255, 255, 255, .12); }
-section[aria-label="订阅集合"] > .collection-toolbar:has(> span:first-child) .button:first-child,
-section[aria-label="订阅集合"] > .collection-toolbar:has(> span:first-child) .button:first-child:hover:not(:disabled) { background: #d8e88f; color: #13261f; border-color: transparent; }
-section[aria-label="订阅集合"] > .collection-toolbar:has(> span:first-child) .button:first-child:hover:not(:disabled) { background: #e6f2a8; }
-section[aria-label="订阅集合"] > .collection-toolbar:has(> span:first-child) .button:last-child { color: #ffb1a3; }
-section[aria-label="订阅集合"] > p.muted { padding: 30px; text-align: center; border: 1px dashed var(--line-2); border-radius: var(--r-lg); }
+section.feed-collection > .collection-toolbar:has(> span:first-child) .button:hover:not(:disabled) { background: rgba(255, 255, 255, .12); }
+section.feed-collection > .collection-toolbar:has(> span:first-child) .button:first-child,
+section.feed-collection > .collection-toolbar:has(> span:first-child) .button:first-child:hover:not(:disabled) { background: #d8e88f; color: #13261f; border-color: transparent; }
+section.feed-collection > .collection-toolbar:has(> span:first-child) .button:first-child:hover:not(:disabled) { background: #e6f2a8; }
+section.feed-collection > .collection-toolbar:has(> span:first-child) .button:last-child { color: #ffb1a3; }
+section.feed-collection > p.muted { padding: 30px; text-align: center; border: 1px dashed var(--line-2); border-radius: var(--r-lg); }
 
 /* List view */
 .feed-list {
@@ -759,7 +759,7 @@ section[aria-label="订阅集合"] > p.muted { padding: 30px; text-align: center
   font-size: 12px; color: var(--ink-2); font-variant-numeric: tabular-nums;
 }
 .detail-status > span:first-child { background: var(--glow-soft); border-color: var(--glow-line); color: var(--accent-ink); font-weight: 600; }
-.modal-body > .detail-actions[aria-label="详情内容"] { margin-top: 6px; }
+.modal-body > .detail-actions.feed-tabs { margin-top: 6px; }
 .feed-settings-source { font-family: var(--font-mono); font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; padding: 10px 12px; border-radius: var(--r-md); background: var(--surface-2); border: 1px solid var(--line); }
 .feed-settings-section { display: grid; gap: 14px; padding-top: 20px; border-top: 1px solid var(--line); }
 .feed-settings-section h3 { font-size: 14px; }
@@ -1186,11 +1186,11 @@ section.settings-form > .collection-toolbar:first-child { background: none; bord
   .stats-row strong { font-size: 20px; }
   .stats-row small { font-size: 11px; }
   .search-input { width: 100%; }
-  section[aria-label="订阅集合"] > .collection-toolbar:first-child > .inline { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); width: 100%; gap: 8px; }
-  section[aria-label="订阅集合"] > .collection-toolbar:first-child label { display: grid; gap: 4px; font-size: 11.5px; }
+  section.feed-collection > .collection-toolbar:first-child > .inline { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); width: 100%; gap: 8px; }
+  section.feed-collection > .collection-toolbar:first-child label { display: grid; gap: 4px; font-size: 11.5px; }
   .collection-toolbar select { min-width: 0; width: 100%; }
-  section[aria-label="订阅集合"] > .collection-toolbar:has(> span:first-child) { top: 60px; padding: 10px; }
-  section[aria-label="订阅集合"] > .collection-toolbar:has(> span:first-child) .detail-actions { width: 100%; }
+  section.feed-collection > .collection-toolbar:has(> span:first-child) { top: 60px; padding: 10px; }
+  section.feed-collection > .collection-toolbar:has(> span:first-child) .detail-actions { width: 100%; }
   .feed-row { grid-template-columns: 20px minmax(0, 1fr) auto; gap: 10px 12px; padding: 14px; align-items: start; }
   .feed-row > .feed-select { padding-top: 3px; }
   .feed-row > .feed-metrics { display: grid; grid-column: 2 / -1; }
@@ -1387,7 +1387,7 @@ button.card-error:hover { text-decoration: underline; text-underline-offset: 3px
 @media (max-width: 760px) {
   .feed-avatar { width: 32px; height: 32px; font-size: 14px; }
   .search-key { display: none; }
-  section[aria-label="订阅集合"] > .collection-toolbar:first-child > .inline { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  section.feed-collection > .collection-toolbar:first-child > .inline { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 .feed-row[data-state="paused"] .feed-avatar, .feed-card[data-state="paused"] .feed-avatar { filter: grayscale(1); opacity: .55; }
 .feed-row[data-state="paused"] .card-title, .feed-card[data-state="paused"] .card-title { color: var(--muted); }
@@ -1744,4 +1744,18 @@ button.card-warning:hover { text-decoration: underline; text-underline-offset: 3
   .service-card-head { flex-wrap: wrap; padding: 4px 4px 10px; }
   .service-card-head > .button { margin-left: 12px; }
   .service-card-toggle { flex-basis: 100%; }
+}
+
+/* Interface language menu (top bar and sign-in page) */
+.language-select { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+.language-select select { width: auto; min-height: 32px; padding: 4px 26px 4px 8px; font-size: 13px; border-radius: 9px; background-color: transparent; }
+.auth-form-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; flex-wrap: wrap; }
+.auth-form-top .section-kicker { margin-bottom: 0; }
+@media (max-width: 640px) {
+  .topbar .language-select svg { display: none; }
+  .topbar .language-select select { padding-right: 22px; max-width: 96px; }
+  /* Keep only the page name, cut short if needed, so it never runs under the menus. */
+  .topbar > span:first-child { flex: 1; display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .topbar > span:first-child > .muted, .topbar > span:first-child > .slash { display: none; }
+  .topbar-status-text { display: none; }
 }
