@@ -108,5 +108,6 @@ test('验证页的新文案出现在抓取日志、订阅列表错误原因和�
     const preview = await app.inject({ method: 'POST', url: '/api/rss/preview', headers, payload: { url: `http://${target.host}/feed` } });
     assert.equal(preview.statusCode, 400);
     assert.match(preview.json().error, expected);
+    assert.equal(preview.json().code, 'source_not_feed');
   } finally { await app.close(); store.close(); await target.close(); rmSync(dir, { recursive: true, force: true }); }
 });

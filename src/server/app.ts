@@ -1,4 +1,4 @@
-import { defaultApplicationSettings, isTargetLanguage, isTranslationProvider, OUTPUT_LIMIT, translationEnabled, translationProviderLabels, type TranslationProviderId, type TranslationProvidersInfo } from '../shared/types.js';
+import { defaultApplicationSettings, errorCodeForStatus, isTargetLanguage, isTranslationProvider, OUTPUT_LIMIT, translationEnabled, translationProviderLabels, type TranslationProviderId, type TranslationProvidersInfo } from '../shared/types.js';
 import { providerProblem } from './translation-providers.js';
 import { probeTarget, type SourceFetcher } from './rss-source.js';
 import { NcbiRateLimiter, sourceFetcher } from './pubmed.js';
@@ -9,7 +9,7 @@ import type { BarkSender } from './bark.js';
 import { NotificationWorker, alertTitle, channelsSummary, defaultSenders, ntfySchema, notificationChannelsSchema, telegramSchema, webhookSchema, type ChannelConfigs, type ChannelSender, type NotificationEvent, type NotificationSenders } from './notify.js';
 import { applicationSettingsSchema, settingsFromConfig, applyRuntimeSettings, ncbiSettingsSchema } from './settings.js';
 import { safeDiagnostic } from './fetch-history.js';
-import { isAbortError } from './fetch-errors.js';
+import { isAbortError, NcbiError, NotAFeedError } from './fetch-errors.js';
 import { TaskPool, siteKey } from './task-pool.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import ipaddr from 'ipaddr.js';
@@ -173,11 +173,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   // Fastify captures the error handler when a route is registered.
   // Install it before plugins/routes so errors share the frontend contract.
   app.setErrorHandler((error, request, reply) => {
-    if (error instanceof AppError) return reply.code(error.statusCode).send({ error: error.message });
+    if (error instanceof AppError) return reply.code(error.statusCode).send({ error: error.message, code: error.code });
     const status = (error as { statusCode?: number }).statusCode;
-    if (status === 400 || status === 413 || status === 415) return reply.code(status).send({ error: '请求格式无效或内容过大' });
+    if (status === 400 || status === 413 || status === 415) return reply.code(status).send({ error: '请求格式无效或内容过大', code: errorCodeForStatus(status) });
     console.error(`未处理的服务器错误 ${request.method} ${request.routeOptions.url ?? ''}：${describeError(error)}`);
-    return reply.code(500).send({ error: '服务器内部错误' });
+    return reply.code(500).send({ error: '服务器内部错误', code: errorCodeForStatus(500) });
   });
   const routes: RegisteredRoute[] = [];
   appRoutes.set(app, routes);
@@ -423,8 +423,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         throw new AppError(401, '访问令牌无效、已过期或已被吊销');
       }
       const route = request.routeOptions.url;
-      if (route && !tokenAllowedRoute(request.method, route)) throw new AppError(403, '此接口只能在网页登录后使用，访问令牌无权调用');
-      if (owner.scope === 'read' && !READ_METHODS.has(request.method)) throw new AppError(403, '只读令牌不能执行写操作');
+      if (route && !tokenAllowedRoute(request.method, route)) throw new AppError(403, '此接口只能在网页登录后使用，访问令牌无权调用', 'token_not_allowed');
+      if (owner.scope === 'read' && !READ_METHODS.has(request.method)) throw new AppError(403, '只读令牌不能执行写操作', 'token_read_only');
       return;
     }
     const requestHost = Array.isArray(request.headers.host) ? request.headers.host[0] : request.headers.host;
@@ -556,7 +556,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const resourceGuard = (request: FastifyRequest, table?: 'feeds' | 'credentials' | 'import_jobs' | 'network_profiles') => {
     const context = authenticated(request);
     // The request hook already enforces this; repeated here so no route depends on that alone.
-    if (context.token && !tokenAllowedRoute(request.method, request.routeOptions.url ?? '')) throw new AppError(403, '此接口只能在网页登录后使用，访问令牌无权调用');
+    if (context.token && !tokenAllowedRoute(request.method, request.routeOptions.url ?? '')) throw new AppError(403, '此接口只能在网页登录后使用，访问令牌无权调用', 'token_not_allowed');
     if (request.method !== 'GET' && request.method !== 'HEAD') requireCsrf(request, store, context);
     const id = asRecord(request.params).id;
     if (table && typeof id === 'string') requireOwned(request, table, id);
@@ -584,7 +584,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   // Token management needs the browser session: a token can never mint or revoke tokens.
   const sessionGuard = (request: FastifyRequest) => {
     const context = resourceGuard(request);
-    if (context.token) throw new AppError(403, '此接口只能在网页登录后使用，访问令牌无权调用');
+    if (context.token) throw new AppError(403, '此接口只能在网页登录后使用，访问令牌无权调用', 'token_not_allowed');
     return context;
   };
   // An administrator can read another account's tokens and their call logs in
@@ -600,10 +600,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const usage = store.tokenLog.usage(userId, Date.now() - 86_400_000);
     return store.tokens.list(userId).map(token => ({ ...token, usage24h: usage.get(token.id) ?? { calls: 0, failures: 0 } }));
   });
-  app.get('/api/tokens/:id/logs', async request => {
-    const userId = tokenWorkspace(request);
-    const id = String(asRecord(request.params).id);
-    if (!store.tokens.exists(userId, id)) throw new AppError(404, '令牌不存在');
+  const tokenCallLog = (request: FastifyRequest, userId: string, tokenId: string) => {
     const query = asRecord(request.query);
     if (query.status !== undefined && !['success', 'denied', 'error'].includes(String(query.status))) throw new AppError(400, '调用状态筛选无效');
     const integer = (value: unknown, fallback: number, max: number): number => {
@@ -613,7 +610,30 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     };
     const limit = integer(query.limit, 20, 100);
     const cursor = query.cursor === undefined ? undefined : integer(query.cursor, 0, Number.MAX_SAFE_INTEGER);
-    return store.tokenLog.list(userId, id, query.status as ApiTokenCallFilter | undefined, cursor, limit);
+    return store.tokenLog.list(userId, tokenId, query.status as ApiTokenCallFilter | undefined, cursor, limit);
+  };
+  app.get('/api/tokens/:id/logs', async request => {
+    const userId = tokenWorkspace(request);
+    const id = String(asRecord(request.params).id);
+    if (!store.tokens.exists(userId, id)) throw new AppError(404, '令牌不存在');
+    return tokenCallLog(request, userId, id);
+  });
+  // A token may read its own summary and call log (never another token's), so
+  // scripts and agents can check what they are allowed to do and what they did.
+  const presentedToken = (request: FastifyRequest) => {
+    const context = resourceGuard(request);
+    if (!context.token) throw new AppError(400, '此接口只能用访问令牌调用；网页中请在“设置 → 访问令牌”查看');
+    return { userId: context.userId, id: context.token.id };
+  };
+  app.get('/api/tokens/current', async request => {
+    const { userId, id } = presentedToken(request);
+    const token = store.tokens.list(userId).find(entry => entry.id === id);
+    if (!token) throw new AppError(404, '令牌不存在');
+    return { ...token, usage24h: store.tokenLog.usage(userId, Date.now() - 86_400_000).get(id) ?? { calls: 0, failures: 0 } };
+  });
+  app.get('/api/tokens/current/logs', async request => {
+    const { userId, id } = presentedToken(request);
+    return tokenCallLog(request, userId, id);
   });
   app.post('/api/tokens', async request => {
     const { userId } = ownTokens(request);
@@ -1253,7 +1273,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return enqueueRefresh(async () => {
       feedsGuard(request);
       try { const signal = operationSignal(request); const network = networkFor(profileId, workspace(request).userId); const result = await getRss(url, { signal, ...(network ? { network } : {}) }); feedsGuard(request); if (signal.aborted) throw new AppError(409, '操作已取消'); return { title: result.title, items: result.items.slice(0, 3).map(item => ({ title: item.title, link: item.link, contentHtml: item.html })) }; }
-      catch (error) { throw new AppError(400, safeDiagnostic(friendlyError(error, 'RSS 获取失败'))); }
+      catch (error) {
+        // Scripts tell a page served instead of a feed (and NCBI trouble) apart from a bad address.
+        const code = error instanceof NotAFeedError ? 'source_not_feed' : error instanceof NcbiError ? (error.status === 429 ? 'rate_limited' : 'upstream_error') : undefined;
+        throw new AppError(400, safeDiagnostic(friendlyError(error, 'RSS 获取失败')), code);
+      }
     }, [siteKey(url)]);
   });
   app.get('/api/feeds/:id/translation/progress', async request => {
@@ -1536,7 +1560,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
   if (hasDist(config.distDir)) await app.register(fastifyStatic, { root: config.distDir, wildcard: false });
   app.setNotFoundHandler(async (request, reply) => {
-    if (request.url.startsWith('/api/') || request.url.startsWith('/feeds/') || request.url.startsWith('/bundles/')) return reply.code(404).send({ error: '资源不存在' });
+    if (request.url.startsWith('/api/') || request.url.startsWith('/feeds/') || request.url.startsWith('/bundles/')) return reply.code(404).send({ error: '资源不存在', code: errorCodeForStatus(404) });
     if (request.method === 'GET' && existsSync(resolve(config.distDir, 'index.html'))) return reply.type('text/html; charset=utf-8').send(await readFile(resolve(config.distDir, 'index.html')));
     return reply.type('text/html; charset=utf-8').send('<!doctype html><meta charset="utf-8"><title>FeedLantern</title><p>FeedLantern 服务已启动，请先构建或启动前端。</p>');
   });

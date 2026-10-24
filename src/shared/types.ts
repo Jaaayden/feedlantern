@@ -316,9 +316,31 @@ export interface ApiTokenCall {
   route: string | null;
   status: number; durationMs: number; ip: string | null;
 }
+/**
+ * Machine-readable reason of an API error, sent as `{ error, code }`. Scripts
+ * should branch on `code`; `error` is a message for people and may be translated.
+ */
+export type ApiErrorCode =
+  | 'validation' | 'unauthorized' | 'forbidden' | 'token_read_only' | 'token_not_allowed' | 'not_found' | 'conflict'
+  | 'too_large' | 'rate_limited' | 'server_error' | 'upstream_error' | 'unavailable'
+  /** The source answered with a web page (often a bot check) or an unusual status instead of RSS/Atom. */
+  | 'source_not_feed';
+export const API_ERROR_CODES: readonly ApiErrorCode[] = ['validation', 'unauthorized', 'forbidden', 'token_read_only', 'token_not_allowed', 'not_found', 'conflict', 'too_large', 'rate_limited', 'server_error', 'upstream_error', 'unavailable', 'source_not_feed'];
+/** The code an error with this HTTP status gets unless the server names a more specific one. */
+export function errorCodeForStatus(status: number): ApiErrorCode {
+  if (status === 401) return 'unauthorized';
+  if (status === 403) return 'forbidden';
+  if (status === 404) return 'not_found';
+  if (status === 409) return 'conflict';
+  if (status === 413) return 'too_large';
+  if (status === 429) return 'rate_limited';
+  if (status === 502 || status === 504) return 'upstream_error';
+  if (status === 503) return 'unavailable';
+  return status >= 500 ? 'server_error' : 'validation';
+}
 export interface ApiTokenCallPage { calls: ApiTokenCall[]; nextCursor: string | null; retentionDays: number; perTokenLimit: number }
 
-// JSON API: errors always { error: string }; all mutations require X-FeedLantern: 1.
+// JSON API: errors always { error: string, code: ApiErrorCode }; all mutations require X-FeedLantern: 1.
 // GET /api/auth/status -> AuthState; POST /api/auth/setup {setupToken,username,password}
 // POST /api/auth/login {username,password}; POST /api/auth/logout {}; successful auth -> AuthState
 // POST /api/auth/password {currentPassword,newPassword}; authenticated mutations also require X-CSRF-Token.
