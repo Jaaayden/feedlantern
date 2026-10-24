@@ -1,5 +1,15 @@
 # Changelog
 
+## 未发布
+
+### Agent CLI 与 MCP server
+
+- 新增 `feedlantern` 命令行（仓库内 workspace 包 `packages/cli`，npm 包名 `feedlantern-cli`），用访问令牌管理实例：`whoami`、`health`、`feeds list/get/create/update/delete/pause/resume/refresh/items/logs`、`detect`（自动识别并给出可直接创建的建议）、`preview`（按规则预览，报告各字段命中数和重复链接）、`rss preview`、`bundles`、`bulk`、`imports`、`tokens logs`，以及调用任意开放接口的 `api`。默认输出 JSON，`--pretty` / `--table` 给人看；退出码区分用法、鉴权、请求被拒、服务端和网络错误。
+- 所有写操作支持 `--dry-run`（只打印将要发出的请求）；删除类操作必须加 `--yes`。地址和令牌来自 `FEEDLANTERN_URL` / `FEEDLANTERN_TOKEN` 或 `feedlantern login` 写入的配置文件（权限 0600，支持多个档案）。
+- `feedlantern mcp` 以 stdio 方式提供同一批操作的 MCP 工具，可接入 Claude Code 和 Claude Desktop；删除类工具需要 `confirm: true`，写工具支持 `dryRun`，`--read-only` 只提供查询工具。CLI 版本号与服务端保持一致。说明见 `doc/agent.md`。
+- API 错误响应新增机器可读的 `code` 字段（例如 `token_read_only`、`token_not_allowed`、`unauthorized`、`not_found`、`validation`），脚本不必再匹配中文错误说明。
+- 接口：新增 `GET /api/tokens/current` 和 `GET /api/tokens/current/logs`，令牌可以查看自己的摘要和调用记录（只能看自己）。
+
 ## v0.7.0
 
 这一版新增了 10 组功能，涉及订阅输出、通知、开放接口、翻译、聚合、预警、翻页、网络和界面。

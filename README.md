@@ -79,6 +79,7 @@ React + Vite 前端，Fastify API，SQLite 存储，Playwright 驱动 Chromium�
 | 日常使用 | [使用指南](doc/user-guide.md) |
 | 备份、迁移、升级、数据库体积 | [备份与迁移](doc/backup-and-migration.md) · [升级维护](doc/maintenance.md) |
 | 出问题了 | [故障排查](doc/troubleshooting.md) |
+| 用脚本或 AI Agent 管理 | [Agent CLI 与 MCP](doc/agent.md) |
 | 参与开发 | [开发与接口](doc/development.md) · [CONTRIBUTING](CONTRIBUTING.md) · [SECURITY](SECURITY.md) |
 
 完整目录见[文档索引](doc/README.md)，版本变化见 [CHANGELOG](CHANGELOG.md)。

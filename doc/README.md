@@ -12,6 +12,7 @@
 - [备份与迁移](backup-and-migration.md)：完整恢复和轻量配置合并。
 - [升级维护](maintenance.md)：运行状态、更新、回退、数据库体积与压缩。
 - [故障排查](troubleshooting.md)：按症状定位常见问题。
+- [Agent CLI 与 MCP](agent.md)：`feedlantern` 命令行、退出码、接入 Claude Code / Claude Desktop 和推荐工作流。
 
 ## 开发
 
