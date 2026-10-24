@@ -2,14 +2,14 @@ import { useState, type FormEvent } from 'react';
 import type { Feed, ExtractedItem, TargetLanguage, TranslationMode, TranslationProviderId } from '../shared/types';
 import { LanguageOptions, ProviderOptions, useTranslationProviders } from './TranslationFields';
 import { api } from './api';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, Microscope } from 'lucide-react';
 import { sameAddress } from './format';
 import { NetworkProfileSelect, useNetworkProfiles } from './NetworkProfiles';
 import { ArticleFrame } from './ItemList';
 import { t } from './i18n';
-import { pubmedJournalSource } from '../shared/pubmed';
+import { pubmedRssSource } from '../shared/pubmed';
 
-export function RssEditor({ initial, existing = [], saved, cancel }: { initial?: Feed; existing?: Feed[]; saved: (id: string) => void; cancel: () => void }) {
+export function RssEditor({ initial, existing = [], saved, cancel, usePubmed }: { initial?: Feed; existing?: Feed[]; saved: (id: string) => void; cancel: () => void; /** Switch to a PubMed search (prefilled from a PubMed RSS address); never automatic. */ usePubmed?: (url: string) => void }) {
   const [url, setUrl] = useState(initial?.url ?? '');
   const [name, setName] = useState(initial?.name ?? '');
   const [interval, setInterval] = useState(initial?.intervalMinutes ?? 30);
@@ -39,7 +39,11 @@ export function RssEditor({ initial, existing = [], saved, cancel }: { initial?:
     <div className="notice">{t('rssEditor.notice')}</div>
     <form className="panel settings-form rss-editor-form" onSubmit={submit}>
       <label className="field"><span>{t('rssEditor.url')}</span><input type="url" required value={url} disabled={busy} onChange={e => { setUrl(e.target.value); setPreview(undefined); }} onKeyDown={e => { if (e.key === 'Enter' && url && preview?.url !== `${networkProfileId}\n${url}`) { e.preventDefault(); void inspect(); } }} placeholder="https://example.com/feed.xml" /></label>
-      {pubmedJournalSource(url) && <p className="hint" data-testid="pubmed-eutils-hint">{t('pubmed.eutilsHint')}</p>}
+      {(() => {
+        const rss = pubmedRssSource(url);
+        if (!rss) return null;
+        return <div className={`notice pubmed-rss-notice ${rss.kind === 'journal' ? 'is-warning' : ''}`} data-testid="pubmed-rss-hint"><span>{rss.kind === 'journal' ? t('pubmed.rssEditorJournal') : t('pubmed.rssEditorSearch')}</span>{usePubmed && (!initial || sameAddress(url, initial.url)) && <button type="button" className="button small" disabled={busy} onClick={() => usePubmed(url)}><Microscope size={14} />{initial ? t('pubmed.convert') : t('pubmed.useSearchInstead')}</button>}</div>;
+      })()}
       <NetworkProfileSelect value={networkProfileId} disabled={busy} onChange={id => { setNetworkProfileId(id); setPreview(undefined); }} profiles={profiles} />
       <button type="button" className="button" disabled={busy || !url} onClick={() => void inspect()}>{busy ? t('common.working') : t('rssEditor.preview')}</button>
       <label className="field"><span>{t('label.feedName')}</span><input required maxLength={200} value={name} disabled={busy} onChange={e => setName(e.target.value)} /></label>

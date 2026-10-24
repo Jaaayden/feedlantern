@@ -46,7 +46,7 @@ export async function withFetchTimeout<T>(seconds: number, signal: AbortSignal |
 
 /**
  * User-visible messages for sources that do not answer with a feed, and for
- * PubMed sources fetched through NCBI E-utilities. None of them contains an
+ * PubMed searches fetched through NCBI E-utilities. None of them contains an
  * address, so they are safe in fetch logs, the feed list and alerts.
  */
 export const sourceMessages = {
@@ -65,7 +65,6 @@ export const sourceMessages = {
     htmlPage: (status: number): LocalizedText => msg('ncbi.htmlPage', { status: String(status) }),
     serviceError: (detail: string): LocalizedText => msg('ncbi.serviceError', { detail }),
     unreadable: msg('ncbi.unreadable'),
-    journalNotFound: (nlmId: string): LocalizedText => msg('ncbi.journalNotFound', { nlmId }),
   },
 } as const;
 

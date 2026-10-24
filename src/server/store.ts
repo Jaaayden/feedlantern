@@ -1,5 +1,6 @@
 import type { UserSummary } from '../shared/types.js';
-import { isTargetLanguage, isTranslationProvider, translationEnabled } from '../shared/types.js';
+import { isFeedSource, isTargetLanguage, isTranslationProvider, translationEnabled } from '../shared/types.js';
+import { pubmedRssSource, pubmedSearchFromUrl } from '../shared/pubmed.js';
 import { RssTranslations } from './rss-translation.js';
 import { TRANSLATION_CACHE_LIMIT, type Tables } from './backups.js';
 import { FetchHistory } from './fetch-history.js';
@@ -130,10 +131,13 @@ function storedItemFilter(value: unknown): ItemFilter | undefined {
 
 function rowToFeed(row: Record<string, unknown>): Feed {
   const itemFilter = storedItemFilter(row.item_filter_json);
+  // A PubMed search keeps its query in the stored address (the PubMed search page).
+  const pubmed = row.source_type === 'pubmed' ? pubmedSearchFromUrl(String(row.url)) : null;
   return {
     id: String(row.id),
     ownerId: String(row.owner_id),
-    sourceType: row.source_type === 'rss' ? 'rss' : 'website',
+    sourceType: row.source_type === 'rss' || row.source_type === 'pubmed' ? row.source_type : 'website',
+    ...(pubmed ? { pubmed } : {}),
     translationMode: row.translation_mode === 'original' ? 'original' : row.translation_mode === 'translated' || row.translation_mode === 'chinese' ? 'translated' : 'bilingual',
     targetLanguage: isTargetLanguage(row.target_language) ? row.target_language : 'zh-CN',
     translationProvider: isTranslationProvider(row.translation_provider) ? row.translation_provider : null,
@@ -893,16 +897,20 @@ export class Store {
     if (input.networkProfileId && !this.owns('network_profiles', input.networkProfileId, existing.ownerId!)) throw new AppError(400, 'error.networkProfileNotFound');
     this.translations.invalidate(id);
     if (input.networkProfileId !== undefined) this.db.prepare('UPDATE feeds SET network_profile_id=? WHERE id=?').run(input.networkProfileId, id);
-    if ((existing.sourceType === 'rss' || input.sourceType === 'rss') && (existing.url !== input.url || existing.sourceType !== (input.sourceType ?? 'website'))) {
+    const nextType = input.sourceType ?? 'website';
+    // PubMed items are keyed by PMID: a changed query, or a PubMed RSS address
+    // converted to a search, keeps the stored articles and their translations.
+    const keepsItems = nextType === 'pubmed' && (existing.sourceType === 'pubmed' || existing.sourceType === 'rss' && !!pubmedRssSource(existing.url));
+    if ((isFeedSource(existing) || isFeedSource(input)) && (existing.url !== input.url || existing.sourceType !== nextType) && !keepsItems) {
       this.db.prepare('DELETE FROM feed_items WHERE feed_id=?').run(id);
       this.translations.resetSource(id);
     }
-    this.db.prepare('UPDATE feeds SET source_type=?,translation_mode=? WHERE id=?').run(input.sourceType ?? 'website', input.translationMode ?? existing.translationMode ?? 'bilingual', id);
+    this.db.prepare('UPDATE feeds SET source_type=?,translation_mode=? WHERE id=?').run(nextType, input.translationMode ?? existing.translationMode ?? 'bilingual', id);
     this.setTranslationTarget(existing, input);
     const origins = mergeRuleOrigins(existing.ruleOrigins, input.ruleOrigins);
     // An input without the field (older client) keeps the saved pagination.
-    if (input.pagination !== undefined) this.db.prepare('UPDATE feeds SET pagination_json=? WHERE id=?').run(input.pagination && input.sourceType !== 'rss' ? JSON.stringify(input.pagination) : null, id);
-    else if (input.sourceType === 'rss') this.db.prepare('UPDATE feeds SET pagination_json=NULL WHERE id=?').run(id);
+    if (input.pagination !== undefined) this.db.prepare('UPDATE feeds SET pagination_json=? WHERE id=?').run(input.pagination && !isFeedSource(input) ? JSON.stringify(input.pagination) : null, id);
+    else if (isFeedSource(input)) this.db.prepare('UPDATE feeds SET pagination_json=NULL WHERE id=?').run(id);
     const nextFetchAt = new Date(Date.now() + input.intervalMinutes * 60_000).toISOString();
     this.db.prepare(`UPDATE feeds SET name = ?, channel_title = ?, url = ?, rules_json = ?, rule_origins_json = ?, credential_id = ?, interval_minutes = ?, wait_ms = ?, wait_for_selector = ?, next_fetch_at = ?, last_error = NULL WHERE id = ?`)
       .run(input.name, input.name, input.url, JSON.stringify(input.rules), origins ? JSON.stringify(origins) : null, input.credentialId, input.intervalMinutes, input.waitMs, input.waitForSelector ?? null, nextFetchAt, id);

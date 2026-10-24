@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import vm from 'node:vm';
 import { DomUtils, parseDocument } from 'htmlparser2';
-import { ITEM_FILTER_LIMITS, OUTPUT_LIMIT, RETENTION_LIMIT, translationEnabled } from '../shared/types.js';
+import { isFeedSource, ITEM_FILTER_LIMITS, OUTPUT_LIMIT, RETENTION_LIMIT, translationEnabled } from '../shared/types.js';
 import type { Feed, FeedItem, ItemFilter, ItemOutputStatus } from '../shared/types.js';
 import { LocalizedError, msg, type LocalizedText } from './i18n.js';
 import type { Param } from '../shared/i18n.js';
@@ -50,7 +50,7 @@ export function retentionProblem(retention: unknown, outputLimit: number | undef
  * then stored again as new.
  */
 export function storedItemLimit(feed: Pick<Feed, 'sourceType' | 'outputLimit' | 'retentionLimit'>): number {
-  const automatic = feed.sourceType === 'rss' ? RETENTION_LIMIT.rssAuto : RETENTION_LIMIT.websiteAuto;
+  const automatic = isFeedSource(feed) ? RETENTION_LIMIT.rssAuto : RETENTION_LIMIT.websiteAuto;
   return Math.max(clampRetentionLimit(feed.retentionLimit) ?? automatic, clampOutputLimit(feed.outputLimit));
 }
 
@@ -149,7 +149,7 @@ export function parseItemFilter(value: unknown): ItemFilter | null {
  */
 export function itemFields(feed: Feed, item: FeedItem): [string, string] {
   const html = translationEnabled(feed) && item.contentHtml !== undefined ? item.contentHtml : item.description ?? '';
-  const summary = feed.sourceType === 'rss' || translationEnabled(feed) ? DomUtils.textContent(parseDocument(html)) : html;
+  const summary = isFeedSource(feed) || translationEnabled(feed) ? DomUtils.textContent(parseDocument(html)) : html;
   return [item.title.slice(0, TITLE_LIMIT), summary.replace(/\s+/g, ' ').trim().slice(0, SUMMARY_LIMIT)];
 }
 

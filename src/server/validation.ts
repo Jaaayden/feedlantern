@@ -7,10 +7,12 @@ import { redactForLog } from './log.js';
 import { LocalizedError, msg, rawText, type LocalizedText } from './i18n.js';
 import type { Param } from '../shared/i18n.js';
 import type { CredentialValue } from './store.js';
+import { PUBMED_DEFAULT_LIMIT, PUBMED_LIMITS, PUBMED_QUERY_MAX, pubmedQueryProblem, pubmedSearchFromUrl, pubmedSearchUrl, type PubmedSearch } from '../shared/pubmed.js';
 
 interface FeedBody {
   pagination?: unknown;
   sourceType?: unknown;
+  pubmed?: unknown;
   translationMode?: unknown;
   targetLanguage?: unknown;
   translationProvider?: unknown;
@@ -154,12 +156,48 @@ export function parsePagination(value: unknown): PaginationRules | null | undefi
   return { mode, maxPages, delayMs, nextSelector };
 }
 
+/** A PubMed query that can be sent, trimmed; otherwise `pubmed_query_invalid` naming the problem. */
+export function parsePubmedQueryText(value: unknown): string {
+  if (typeof value !== 'string') throw new AppError(400, 'error.pubmedQueryRequired', 'pubmed_query_invalid');
+  const problem = pubmedQueryProblem(value);
+  if (problem === 'empty') throw new AppError(400, 'error.pubmedQueryRequired', 'pubmed_query_invalid');
+  if (problem) throw new AppError(400, msg('error.pubmedQueryInvalid', { reason: msg(`pubmed.problem.${problem}`, { max: PUBMED_QUERY_MAX }) }), 'pubmed_query_invalid');
+  return value.trim();
+}
+
+/** `{ query, limit }`, or the PubMed search address a backup or configuration export stores. */
+export function parsePubmedSearch(value: unknown, url: unknown): PubmedSearch {
+  if (value === undefined || value === null) {
+    const stored = typeof url === 'string' ? pubmedSearchFromUrl(url) : null;
+    if (!stored) throw new AppError(400, 'error.pubmedQueryRequired', 'pubmed_query_invalid');
+    return { query: parsePubmedQueryText(stored.query), limit: stored.limit };
+  }
+  const record = asRecord(value);
+  const limit = record.limit === undefined || record.limit === null ? PUBMED_DEFAULT_LIMIT : record.limit;
+  if (typeof limit !== 'number' || !(PUBMED_LIMITS as readonly number[]).includes(limit)) throw new AppError(400, msg('error.pubmedLimitInvalid', { allowed: PUBMED_LIMITS.join(' / ') }));
+  return { query: parsePubmedQueryText(record.query), limit };
+}
+
 export function parseFeedInput(value: unknown): FeedInput {
   const record = asRecord(value) as FeedBody;
-  if (record.sourceType !== undefined && !['website','rss'].includes(String(record.sourceType))) throw new AppError(400, 'error.sourceTypeInvalid');
+  if (record.sourceType !== undefined && !['website', 'rss', 'pubmed'].includes(String(record.sourceType))) throw new AppError(400, 'error.sourceTypeInvalid');
   const mode = parseTranslationMode(record.translationMode);
   const targetLanguage = parseTargetLanguage(record.targetLanguage);
   const translationProvider = parseTranslationProvider(record.translationProvider);
+  if (record.sourceType === 'pubmed') {
+    const pubmed = parsePubmedSearch(record.pubmed, record.url);
+    return {
+      sourceType: 'pubmed', pubmed, pagination: null, translationMode: mode ?? 'original',
+      ...(targetLanguage ? { targetLanguage } : {}),
+      ...(translationProvider !== undefined ? { translationProvider } : {}),
+      name: asNonEmptyString(record.name, 'feed name', 200),
+      url: pubmedSearchUrl(pubmed),
+      rules: { item: '', title: '', link: '' }, credentialId: null,
+      ...(record.networkProfileId === undefined ? {} : { networkProfileId: record.networkProfileId === null || record.networkProfileId === '' ? null : asNonEmptyString(record.networkProfileId, 'networkProfileId', 200) }),
+      intervalMinutes: asInteger(record.intervalMinutes, 'intervalMinutes', 5, 1_440, 60),
+      waitMs: 0,
+    };
+  }
   const rss = record.sourceType === 'rss';
   const credentialId = record.credentialId === undefined || record.credentialId === null || record.credentialId === '' ? null : asNonEmptyString(record.credentialId, 'credentialId', 200);
   const pagination = rss ? null : parsePagination(record.pagination);

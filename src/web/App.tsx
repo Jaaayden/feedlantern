@@ -1,13 +1,14 @@
 import type { UserSummary } from '../shared/types';
 import { NotificationsPanel } from './NotificationsPanel';
 import { UsersPanel } from './UsersPanel';
-import { feedFormatUrl, ITEM_FILTER_LIMITS, OUTPUT_LIMIT, RETENTION_LIMIT, translationEnabled } from '../shared/types';
+import { feedFormatUrl, isFeedSource, ITEM_FILTER_LIMITS, OUTPUT_LIMIT, RETENTION_LIMIT, translationEnabled } from '../shared/types';
 import type { FeedFormat, ItemFilter, ItemOutputStatus } from '../shared/types';
 import { TranslationLog } from './TranslationProgress';
 import { ItemPreview } from './ItemList';
 import { LanguageOptions, ProviderOptions, useTranslationProviders } from './TranslationFields';
 import { RssEditor } from './RssEditor';
-import { pubmedJournalSource } from '../shared/pubmed';
+import { PubmedEditor } from './PubmedEditor';
+import { pubmedConversion, pubmedRssSource, type PubmedBuilder } from '../shared/pubmed';
 import { ApplicationSettingsPanel } from './ApplicationSettingsPanel';
 import { BackupPanel } from './BackupPanel';
 import { ApiTokensPanel } from './ApiTokensPanel';
@@ -22,7 +23,7 @@ import { levelsBetween, liftNode } from '../shared/element-map';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type React from 'react';
 import type { FormEvent, ReactNode } from 'react';
-import { Archive, BookOpen, ChevronRight, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bell, Check, ChevronDown, CircleHelp, Cookie, Copy, ExternalLink, Globe2, Info, KeyRound, KeySquare, Languages, Layers, ListPlus, LoaderCircle, LogOut, Monitor, Moon, Network, MousePointer2, Pencil, Plus, Radio, RefreshCw, Rss, Search, Server, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Sun, Trash2 } from 'lucide-react';
+import { Archive, BookOpen, Microscope, ChevronRight, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bell, Check, ChevronDown, CircleHelp, Cookie, Copy, ExternalLink, Globe2, Info, KeyRound, KeySquare, Languages, Layers, ListPlus, LoaderCircle, LogOut, Monitor, Moon, Network, MousePointer2, Pencil, Plus, Radio, RefreshCw, Rss, Search, Server, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Sun, Trash2 } from 'lucide-react';
 import { Modal } from './Modal';
 import { NetworkProfileSelect, NetworkProfilesView, useNetworkProfiles } from './NetworkProfiles';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
@@ -100,9 +101,18 @@ function CredentialsView({ notify }: { notify: Notify }) {
   return <section className="panel settings-form credentials-panel" aria-label={t('cookies.title')}><div className="panel-heading"><h2>{t('cookies.title')}</h2><button className="button small" onClick={() => setEditing(null)}><Plus size={15} />{t('cookies.add')}</button></div><p className="muted">{t('cookies.lead')}</p><ErrorNote error={error} /><div className="info-strip"><ShieldCheck size={18} /><span>{t('cookies.info')}</span></div>{loading ? <Busy label={t('cookies.loading')} /> : credentials.length ? <div className="credential-grid">{credentials.map(item => <article className="credential-card" key={item.id}><div className="card-top"><span className="soft-icon"><Cookie size={21} /></span><div className="inline"><button className="icon-button" title={t('cookies.update')} aria-label={t('cookies.updateOf', { name: item.name })} onClick={() => setEditing(item)}><Pencil size={16} /></button><button className="icon-button danger" aria-label={t('cookies.deleteOf', { name: item.name })} onClick={() => void remove(item)}><Trash2 size={16} /></button></div></div><h3>{item.name}</h3><p className="muted">{item.domains.join(' · ')}</p><div className="credential-meta"><span>{t('cookies.count', { count: item.count })}</span><span>{t('cookies.updatedAt', { time: dateLabel(item.updatedAt) })}</span><span>{item.expiresAt ? t('cookies.expires', { time: dateLabel(item.expiresAt) }) : t('cookies.session')}</span></div></article>)}</div> : <div className="empty-state"><span className="large-icon"><Cookie size={30} /></span><h2>{t('cookies.emptyTitle')}</h2><p>{t('cookies.emptyBody')}</p><button className="button" onClick={() => setEditing(null)}><Plus size={16} />{t('cookies.addFirst')}</button></div>}{editing !== undefined && <Modal title={editing ? t('cookies.updateTitle') : t('cookies.addTitle')} close={close}><CredentialForm editing={editing ?? undefined} cancel={close} done={() => { close(); notify(t('cookies.saved')); void load(); }} /></Modal>}</section>;
 }
 
-function FeedEditor({ source: initialSource, ...props }: { initial?: Feed; source?: 'website' | 'rss'; existing?: Feed[]; saved: (id: string) => void; cancel: () => void }) {
-  const [source, setSource] = useState<'website' | 'rss'>(props.initial?.sourceType ?? initialSource ?? 'website');
-  return <>{!props.initial && <div className="detail-actions source-switch" aria-label={t('editor.sourceType')}><button className="button" aria-pressed={source === 'website'} onClick={() => setSource('website')}>{t('newFeed.website')}</button><button className="button" aria-pressed={source === 'rss'} onClick={() => setSource('rss')}>{t('newFeed.rss')}</button></div>}{source === 'rss' ? <RssEditor {...props} /> : <Editor {...props} />}</>;
+function FeedEditor({ source: initialSource, convert: initialConvert = false, ...props }: { initial?: Feed; source?: NewSource; convert?: boolean; existing?: Feed[]; saved: (id: string) => void; cancel: () => void }) {
+  const [source, setSource] = useState<NewSource>(props.initial?.sourceType ?? initialSource ?? 'website');
+  // Converting a PubMed RSS feed opens the PubMed editor on the same feed; a new PubMed RSS address can start a prefilled search.
+  const [convert, setConvert] = useState(initialConvert);
+  const [prefill, setPrefill] = useState<{ builder: PubmedBuilder; limit: number }>();
+  const pubmed = source === 'pubmed' || convert;
+  const usePubmed = (url: string) => {
+    const rss = pubmedRssSource(url);
+    if (props.initial) { setConvert(true); return; }
+    setPrefill(rss ? pubmedConversion(rss) : undefined); setSource('pubmed');
+  };
+  return <>{!props.initial && <div className="detail-actions source-switch" aria-label={t('editor.sourceType')}><button className="button" aria-pressed={source === 'website'} onClick={() => setSource('website')}>{t('newFeed.website')}</button><button className="button" aria-pressed={source === 'rss'} onClick={() => setSource('rss')}>{t('newFeed.rss')}</button><button className="button" aria-pressed={source === 'pubmed'} onClick={() => setSource('pubmed')}>{t('newFeed.pubmed')}</button></div>}{pubmed ? <PubmedEditor key={prefill ? 'prefilled' : 'blank'} {...props} convert={convert} prefill={prefill} /> : source === 'rss' ? <RssEditor {...props} usePubmed={usePubmed} /> : <Editor {...props} />}</>;
 }
 
 export function Editor({ initial, draft, existing = [], submitFeed, saved, cancel }: { initial?: Feed; draft?: FeedInput; existing?: Feed[]; submitFeed?: (input: FeedInput) => Promise<{ feed: Feed }>; saved: (id: string) => void; cancel: () => void }) {
@@ -437,7 +447,7 @@ type FeedDetailData = { feed: Feed; items: FeedItem[]; feedUrl: string } & Outpu
 
 // One panel for everything about a feed: the address and status stay on top,
 // content, fetch logs and settings are tabs underneath.
-function FeedPanel({ id, tab, onTab, close, edit, changed, notify }: { id: string; tab: PanelTab; onTab: (tab: PanelTab) => void; close: () => void; edit: (feed: Feed) => void; changed: () => void; notify: Notify }) {
+function FeedPanel({ id, tab, onTab, close, edit, changed, notify }: { id: string; tab: PanelTab; onTab: (tab: PanelTab) => void; close: () => void; edit: (feed: Feed, convert?: boolean) => void; changed: () => void; notify: Notify }) {
   const [revision, setRevision] = useState(0);
   const [detail, setDetail] = useState<FeedDetailData | null>(null);
   const [error, setError] = useState('');
@@ -467,8 +477,9 @@ function FeedPanel({ id, tab, onTab, close, edit, changed, notify }: { id: strin
   return <Modal title={feed?.name ?? t('panel.title')} close={() => guard(close)} wide><div className="modal-body feed-panel">
     <ErrorNote error={error} />{!detail || !feed ? !error && <Busy label={t('panel.loading')} /> : <>
       <div className="feed-panel-head">
-        <div className="feed-panel-source"><div className="detail-source"><Globe2 size={16} /><a href={feed.url} target="_blank" rel="noreferrer">{feed.url}</a>{feed.sourceType === 'rss' && pubmedJournalSource(feed.url) && <span className="badge source-via" title={t('pubmed.eutilsHint')}>{t('pubmed.viaEutils')}</span>}</div><button className="button small" disabled={!!busy} onClick={() => void refresh()}><RefreshCw size={14} className={busy === 'refresh' ? 'spin' : undefined} />{busy === 'refresh' ? t('panel.refreshing') : t('collection.refresh')}</button></div>
+        <div className="feed-panel-source">{feed.sourceType === 'pubmed' ? <div className="detail-source pubmed-source"><Microscope size={16} /><code title={feed.pubmed?.query}>{feed.pubmed?.query}</code><a className="text-link" href={feed.url} target="_blank" rel="noreferrer">{t('pubmedEditor.openInPubmed')}<ExternalLink size={13} /></a></div> : <div className="detail-source"><Globe2 size={16} /><a href={feed.url} target="_blank" rel="noreferrer">{feed.url}</a></div>}<button className="button small" disabled={!!busy} onClick={() => void refresh()}><RefreshCw size={14} className={busy === 'refresh' ? 'spin' : undefined} />{busy === 'refresh' ? t('panel.refreshing') : t('collection.refresh')}</button></div>
         <FeedAddress feedUrl={detail.feedUrl} notify={notify} onError={setError} />
+        {feed.sourceType === 'rss' && <PubmedRssNotice url={feed.url} convert={() => guard(() => edit(feed, true))} />}
         <FeedStatus feed={feed} retry={retryTranslation} busy={busy === 'retryTranslation'} />
         <RuleHealthNotice key={feed.id} feed={feed} notify={notify} updated={() => { void load().catch(e => setError(messageOf(e))); setRevision(v => v + 1); changed(); }} />
       </div>
@@ -481,6 +492,13 @@ function FeedPanel({ id, tab, onTab, close, edit, changed, notify }: { id: strin
       {tab === 'settings' && <FeedSettingsTab feed={feed} busy={busy} setBusy={setBusy} setError={setError} dirty={dirty} reload={load} items={detail.items} saved={result => { setDetail(previous => previous && { ...previous, ...result }); void load().catch(e => setError(messageOf(e))); }} changed={changed} notify={notify} edit={() => guard(() => edit(feed))} removed={close} />}
     </>}
   </div></Modal>;
+}
+
+/** PubMed RSS addresses: journal feeds are blocked by NCBI; both kinds can become a PubMed search (after the user confirms). */
+function PubmedRssNotice({ url, convert }: { url: string; convert: () => void }) {
+  const rss = pubmedRssSource(url);
+  if (!rss) return null;
+  return <div className={`notice pubmed-rss-notice ${rss.kind === 'journal' ? 'is-warning' : ''}`} data-testid="pubmed-rss-notice"><span>{rss.kind === 'journal' ? t('pubmed.journalRssNotice') : t('pubmed.searchRssNotice')}</span><button type="button" className="button small" onClick={convert}><Microscope size={14} />{t('pubmed.convert')}</button></div>;
 }
 
 const filterLines = (value: string) => [...new Set(value.split('\n').map(line => line.trim()).filter(Boolean))];
@@ -517,7 +535,7 @@ function FeedSettingsTab({ feed, items, busy, setBusy, setError, dirty, reload, 
   const retentionNumber = Number(retention);
   const retentionMin = Math.max(RETENTION_LIMIT.min, limitValid ? limitNumber : OUTPUT_LIMIT.min);
   const retentionValid = !retention.trim() || Number.isInteger(retentionNumber) && retentionNumber >= retentionMin && retentionNumber <= RETENTION_LIMIT.max;
-  const retentionAuto = feed.sourceType === 'rss' ? RETENTION_LIMIT.rssAuto : RETENTION_LIMIT.websiteAuto;
+  const retentionAuto = isFeedSource(feed) ? RETENTION_LIMIT.rssAuto : RETENTION_LIMIT.websiteAuto;
   const [networkProfileId, setNetworkProfileId] = useState(feed.networkProfileId ?? '');
   const profiles = useNetworkProfiles(setError);
   const networkDirty = networkProfileId !== (feed.networkProfileId ?? '');
@@ -595,7 +613,7 @@ function FeedSettingsTab({ feed, items, busy, setBusy, setError, dirty, reload, 
         <p className="hint">{t('feedSettings.outputHint')}</p>
         <div className="form-row">
           <Field label={t('output.limit')} hint={t('feedSettings.limitHint', { min: OUTPUT_LIMIT.min, max: OUTPUT_LIMIT.max })}><input type="number" required min={OUTPUT_LIMIT.min} max={OUTPUT_LIMIT.max} step={1} value={limit} onChange={e => setLimit(e.target.value)} /></Field>
-          <Field label={t('output.retention')} hint={t('feedSettings.retentionHint', { kind: feed.sourceType === 'rss' ? t('feedSettings.kindRss') : t('feedSettings.kindWebsite'), auto: retentionAuto, min: retentionMin, max: RETENTION_LIMIT.max })}><input type="number" min={retentionMin} max={RETENTION_LIMIT.max} step={1} placeholder={t('feedSettings.retentionAuto', { count: Math.max(retentionAuto, limitValid ? limitNumber : 0) })} value={retention} onChange={e => setRetention(e.target.value)} /></Field>
+          <Field label={t('output.retention')} hint={t('feedSettings.retentionHint', { kind: feed.sourceType === 'pubmed' ? t('feedSettings.kindPubmed') : feed.sourceType === 'rss' ? t('feedSettings.kindRss') : t('feedSettings.kindWebsite'), auto: retentionAuto, min: retentionMin, max: RETENTION_LIMIT.max })}><input type="number" min={retentionMin} max={RETENTION_LIMIT.max} step={1} placeholder={t('feedSettings.retentionAuto', { count: Math.max(retentionAuto, limitValid ? limitNumber : 0) })} value={retention} onChange={e => setRetention(e.target.value)} /></Field>
         </div>
         <div className="form-row">
           <Field label={t('filter.include')} hint={t('feedSettings.includeHint')}><textarea rows={3} spellCheck={false} value={include} onChange={e => setInclude(e.target.value)} placeholder={t('feedSettings.includePlaceholder')} /></Field>
@@ -608,7 +626,7 @@ function FeedSettingsTab({ feed, items, busy, setBusy, setError, dirty, reload, 
     </form>
     <section className="feed-settings-section" aria-label={t('feedSettings.updates')}>
       <div><h3>{t('feedSettings.updates')}</h3><p className="hint">{t('feedSettings.updatesHint')}</p></div>
-      <div className="detail-actions"><button className="button small" disabled={!!busy} onClick={() => void action('toggle', () => api.feeds.toggle(feed.id), feed.enabled ? t('feedSettings.paused') : t('feedSettings.resumed'))}>{feed.enabled ? t('feedSettings.pause') : t('feedSettings.resume')}</button><button className="button small" disabled={!!busy} onClick={edit}><Pencil size={14} />{feed.sourceType === 'rss' ? t('feedSettings.editRss') : t('editor.editRules')}</button></div>
+      <div className="detail-actions"><button className="button small" disabled={!!busy} onClick={() => void action('toggle', () => api.feeds.toggle(feed.id), feed.enabled ? t('feedSettings.paused') : t('feedSettings.resumed'))}>{feed.enabled ? t('feedSettings.pause') : t('feedSettings.resume')}</button><button className="button small" disabled={!!busy} onClick={edit}><Pencil size={14} />{feed.sourceType === 'pubmed' ? t('feedSettings.editPubmed') : feed.sourceType === 'rss' ? t('feedSettings.editRss') : t('editor.editRules')}</button></div>
     </section>
     <section className="feed-settings-section danger-zone" aria-label={t('feedSettings.addressDelete')}>
       <div><h3>{t('feedSettings.addressDelete')}</h3><p className="hint">{t('feedSettings.addressDeleteHint')}</p></div>
@@ -693,7 +711,7 @@ function ThemeToggle() {
   return <button className="icon-button theme-toggle" title={t('themeToggle.title', { theme: themeLabel(theme) })} aria-label={t('themeToggle.label', { theme: themeLabel(theme), next: themeLabel(next) })} onClick={() => { saveTheme(next); setTheme(next); }}><Icon size={17} /></button>;
 }
 
-type NewSource = 'website' | 'rss';
+type NewSource = 'website' | 'rss' | 'pubmed';
 
 function NewFeedMenu({ create, batch, bundle }: { create: (source: NewSource) => void; batch: () => void; bundle: () => void }) {
   const [open, setOpen] = useState(false);
@@ -721,6 +739,7 @@ function NewFeedMenu({ create, batch, bundle }: { create: (source: NewSource) =>
     {open && <div className="menu" role="menu" aria-label={t('newFeed.menu')}>
       <button role="menuitem" onClick={() => choose(() => create('website'))}><span className="menu-icon"><Globe2 size={17} /></span><span><strong>{t('newFeed.website')}</strong><small>{t('newFeed.websiteHint')}</small></span></button>
       <button role="menuitem" onClick={() => choose(() => create('rss'))}><span className="menu-icon"><Languages size={17} /></span><span><strong>{t('newFeed.rss')}</strong><small>{t('newFeed.rssHint')}</small></span></button>
+      <button role="menuitem" onClick={() => choose(() => create('pubmed'))}><span className="menu-icon"><Microscope size={17} /></span><span><strong>{t('newFeed.pubmed')}</strong><small>{t('newFeed.pubmedHint')}</small></span></button>
       <button role="menuitem" onClick={() => choose(batch)}><span className="menu-icon"><ListPlus size={17} /></span><span><strong>{t('newFeed.batch')}</strong><small>{t('newFeed.batchHint')}</small></span></button>
       <button role="menuitem" onClick={() => choose(bundle)}><span className="menu-icon"><Layers size={17} /></span><span><strong>{t('opml.bundles')}</strong><small>{t('newFeed.bundleHint')}</small></span></button>
     </div>}
@@ -731,7 +750,7 @@ type Page = 'feeds' | 'settings' | 'batch' | 'users';
 type Route = { page: Page; panel: { id: string; tab: PanelTab } | null; create: NewSource | null; workspace: string | null; section?: string | null };
 
 // Hash routes keep the current screen across reloads and make back/forward work:
-// #/ · #/settings[/<group>] · #/users · #/batch · #/new · #/new/rss · #/feed/<id>[/logs|/settings]
+// #/ · #/settings[/<group>] · #/users · #/batch · #/new · #/new/rss · #/new/pubmed · #/feed/<id>[/logs|/settings]
 // An admin working in another account's workspace gets a #/u/<userId> prefix.
 function parseRoute(hash: string): Route {
   let parts = hash.replace(/^#\/?/, '').split('/').filter(Boolean).map(decodeURIComponent);
@@ -740,7 +759,7 @@ function parseRoute(hash: string): Route {
   const empty: Route = { page: 'feeds', panel: null, create: null, workspace };
   if (parts[0] === 'settings') return { ...empty, page: 'settings', section: parts[1] ?? null };
   if (parts[0] === 'users' || parts[0] === 'batch') return { ...empty, page: parts[0] };
-  if (parts[0] === 'new') return { ...empty, create: parts[1] === 'rss' ? 'rss' : 'website' };
+  if (parts[0] === 'new') return { ...empty, create: parts[1] === 'rss' || parts[1] === 'pubmed' ? parts[1] : 'website' };
   if (parts[0] === 'feed' && parts[1]) return { ...empty, panel: { id: parts[1], tab: parts[2] === 'logs' || parts[2] === 'settings' ? parts[2] : 'items' } };
   return empty;
 }
@@ -748,7 +767,7 @@ function parseRoute(hash: string): Route {
 function routeHash(route: Route): string {
   const prefix = route.workspace ? `#/u/${encodeURIComponent(route.workspace)}` : '#';
   if (route.panel) return `${prefix}/feed/${encodeURIComponent(route.panel.id)}${route.panel.tab === 'items' ? '' : `/${route.panel.tab}`}`;
-  if (route.create) return `${prefix}${route.create === 'rss' ? '/new/rss' : '/new'}`;
+  if (route.create) return `${prefix}${route.create === 'website' ? '/new' : `/new/${route.create}`}`;
   if (route.page === 'settings' && route.section) return `${prefix}/settings/${encodeURIComponent(route.section)}`;
   return route.page === 'feeds' ? `${prefix}/` : `${prefix}/${route.page}`;
 }
@@ -771,6 +790,8 @@ export default function App() {
   const [status, setStatus] = useState<StatusFilter>('all');
   const [editor, setEditor] = useState<Feed | null | undefined>(undefined);
   const [editorSource, setEditorSource] = useState<NewSource>('website');
+  // The feed editor opened to convert a PubMed RSS feed into a PubMed search.
+  const [editorConvert, setEditorConvert] = useState(false);
   const [panel, setPanel] = useState<{ id: string; tab: PanelTab } | null>(null);
   const [editorReturnId, setEditorReturnId] = useState<string | null>(null);
   const [toast, setToast] = useState('');
@@ -854,7 +875,7 @@ export default function App() {
     window.addEventListener('popstate', pop);
     return () => window.removeEventListener('popstate', pop);
   }, [authenticated, auth?.role, applyRoute]);
-  const crumb = page === 'feeds' ? editor !== undefined ? editor ? editor.sourceType === 'rss' ? t('rssEditor.editTitle') : t('editor.editRules') : t('newFeed.button') : t('nav.feeds') : page === 'batch' ? t('newFeed.batch') : page === 'users' ? t('users.title') : t('settings.title');
+  const crumb = page === 'feeds' ? editor !== undefined ? editor ? editorConvert ? t('pubmedEditor.convertTitle') : editor.sourceType === 'pubmed' ? t('pubmedEditor.editTitle') : editor.sourceType === 'rss' ? t('rssEditor.editTitle') : t('editor.editRules') : t('newFeed.button') : t('nav.feeds') : page === 'batch' ? t('newFeed.batch') : page === 'users' ? t('users.title') : t('settings.title');
   useEffect(() => { document.title = authenticated ? `${crumb} · FeedLantern` : t('app.documentTitle'); }, [authenticated, crumb, locale]);
   // "/" jumps to the feed search from anywhere on the dashboard.
   const onDashboard = authenticated && page === 'feeds' && editor === undefined && !panel;
@@ -879,14 +900,14 @@ export default function App() {
     if (next !== 'settings') settingsDirty.current = false;
     setPage(next); setEditor(undefined); setPanel(null); setEditorReturnId(null);
   }
-  function create(source: NewSource) { setEditorSource(source); setEditor(null); }
+  function create(source: NewSource) { setEditorSource(source); setEditorConvert(false); setEditor(null); }
   return <div className={`app-layout ${target ? 'managing' : ''}`}><aside className="sidebar"><Brand />{auth.role === 'admin' ? <WorkspaceSwitcher me={{ id: auth.userId!, username: auth.username! }} users={users} target={target} open={user => changeWorkspace(user)} manageUsers={() => navigate('users')} refresh={refreshUsers} /> : <div className="workspace-label">{t('nav.personal')}</div>}<nav aria-label={t('nav.main')}><button className={page === 'feeds' || page === 'batch' ? 'selected' : ''} onClick={() => navigate('feeds')}><Rss size={19} />{t('nav.feeds')}<span>{feeds.length}</span></button><button className={page === 'settings' ? 'selected' : ''} onClick={() => navigate('settings')}><Settings2 size={19} />{t('settings.title')}</button>{auth.role === 'admin' && <button className={page === 'users' ? 'selected' : ''} onClick={() => navigate('users')}><ShieldCheck size={19} />{t('users.title')}</button>}</nav><div className="sidebar-bottom"><div className="local-label"><span /> {t('nav.selfHosted')}</div><div className="account"><span className="avatar">{auth.username?.slice(0, 1).toUpperCase()}</span><div><strong>{auth.username}</strong><small>{auth.role === 'admin' ? t('role.admin') : t('role.user')}</small></div><button className="icon-button" aria-label={t('nav.signOut')} onClick={() => void logout()}><LogOut size={17} /></button></div><span className="version">{auth.version}</span></div></aside><div className="main-shell"><header className="topbar"><span><span className="muted">{t('nav.workspace')}</span><span className="slash">/</span>{crumb}</span><span className="topbar-actions">{target && <span className="managing-chip" title={t('nav.managingTitle')}>{t('nav.managing', { name: target.username })}</span>}<LanguageSelect compact account={auth} onSaved={setAuth} onError={setToast} /><ThemeToggle /><span className="topbar-status"><ShieldCheck size={14} /> <span className="topbar-status-text">{t('nav.signedIn')}</span> <button className="icon-button mobile-logout" aria-label={t('nav.signOut')} onClick={() => void logout()}><LogOut size={15} /></button></span></span></header><main className="main-content" key={target?.id ?? auth.userId}>
     {target && <div className="workspace-banner" role="status"><div><strong>{t('nav.managingBanner', { name: target.username })}</strong><p>{target.enabled ? t('nav.managingHint') : t('nav.managingDisabled')}</p></div><button className="button small" onClick={() => changeWorkspace(null)}>{t('nav.backToMine')}</button></div>}
-    {page === 'users' && auth.role === 'admin' ? <UsersPanel currentUserId={auth.userId!} manage={(user, attention) => { changeWorkspace(user); if (attention) setStatus('attention'); }} changed={refreshUsers} identityChanged={() => void api.auth.status().then(acceptAuth)} /> : page === 'batch' ? <BatchView notify={notify} changed={() => void loadFeeds()} back={() => navigate('feeds')} /> : page === 'settings' ? <SettingsView target={target} auth={auth} authChanged={setAuth} logout={forgetAuth} notify={notify} section={settingsSection} onSection={setSettingsSection} dirty={settingsDirty} /> : editor !== undefined ? <FeedEditor key={editor?.id ?? `new-${editorSource}`} initial={editor ?? undefined} source={editorSource} existing={feeds} cancel={() => { setEditor(undefined); if (editorReturnId) setPanel({ id: editorReturnId, tab: 'settings' }); setEditorReturnId(null); }} saved={id => { setEditor(undefined); setPanel({ id, tab: editorReturnId ? 'settings' : 'items' }); setEditorReturnId(null); notify(t('feed.saved')); void loadFeeds(); }} /> : <>
+    {page === 'users' && auth.role === 'admin' ? <UsersPanel currentUserId={auth.userId!} manage={(user, attention) => { changeWorkspace(user); if (attention) setStatus('attention'); }} changed={refreshUsers} identityChanged={() => void api.auth.status().then(acceptAuth)} /> : page === 'batch' ? <BatchView notify={notify} changed={() => void loadFeeds()} back={() => navigate('feeds')} /> : page === 'settings' ? <SettingsView target={target} auth={auth} authChanged={setAuth} logout={forgetAuth} notify={notify} section={settingsSection} onSection={setSettingsSection} dirty={settingsDirty} /> : editor !== undefined ? <FeedEditor key={editor ? `${editor.id}${editorConvert ? '-convert' : ''}` : `new-${editorSource}`} initial={editor ?? undefined} source={editorSource} convert={!!editor && editorConvert} existing={feeds} cancel={() => { setEditor(undefined); if (editorReturnId) setPanel({ id: editorReturnId, tab: 'settings' }); setEditorReturnId(null); }} saved={id => { setEditor(undefined); setPanel({ id, tab: editorReturnId && !editorConvert ? 'settings' : 'items' }); setEditorReturnId(null); notify(t('feed.saved')); void loadFeeds(); }} /> : <>
       <div className="page-heading"><div><span className="section-kicker">LESS CHECKING. MORE READING.</span><h1>{t('home.title')}</h1><p>{t('home.lead')}</p></div><NewFeedMenu create={create} batch={() => navigate('batch')} bundle={() => setBundleEditor({})} /></div>
       {feeds.length > 0 && <div className="stats-row"><div><span>{t('home.allFeeds')}</span><strong>{feeds.length}<small>{t('users.sourcesUnit', { count: feeds.length })}</small></strong></div><div><span>{t('home.following')}</span><strong>{feeds.filter(feed => feed.enabled).length}<small>{t('home.autoUpdating')}</small></strong></div><div><span>{t('home.collected')}</span><strong>{fmt.number(feeds.reduce((sum, feed) => sum + feed.itemCount, 0))}<small>{t('home.records', { count: feeds.reduce((sum, feed) => sum + feed.itemCount, 0) })}</small></strong></div>{attention ? <button className={`attention ${status === 'attention' ? 'active' : ''}`} aria-pressed={status === 'attention'} title={status === 'attention' ? t('home.clearFilter') : t('collection.attentionOnly')} onClick={() => { const next = status === 'attention' ? 'all' : 'attention'; setStatus(next); if (next === 'attention') requestAnimationFrame(() => document.querySelector('.list-toolbar')?.scrollIntoView({ behavior: 'smooth', block: 'start' })); }}><span>{t('collection.attention')}</span><strong>{attention}<small>{status === 'attention' ? t('users.filtered') : t('users.clickToFilter')}</small><ChevronRight size={15} className="stat-arrow" /></strong></button> : <div><span>{t('collection.attention')}</span><strong>0<small>{t('users.allGood')}</small></strong></div>}</div>}
       {bundles.length > 0 && <BundleSection bundles={bundles} feeds={feeds} create={() => setBundleEditor({})} edit={bundle => setBundleEditor({ initial: bundle })} changed={() => void loadFeeds()} notify={notify} />}
       <div className="list-toolbar"><h2>{t('home.list')} <span>{feeds.length}</span></h2><div className="input-icon search-input"><Search size={16} /><input ref={searchRef} aria-label={t('home.search')} placeholder={t('bundle.searchPlaceholder')} value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === 'Escape' && query) { e.preventDefault(); setQuery(''); } }} /><kbd className="search-key" aria-hidden="true">/</kbd></div></div>
       <ErrorNote error={error} />{loading && !feeds.length ? <Busy label={t('home.loading')} /> : filtered.length ? <FeedCollection auth={target ? { ...auth, userId: target.id, role: 'user' } : auth} feeds={filtered} bundles={bundles} addToBundle={ids => setBundleTarget(ids)} query={query} status={status} onStatus={setStatus} detail={id => setPanel({ id, tab: 'items' })} settings={id => setPanel({ id, tab: 'settings' })} logs={id => setPanel({ id, tab: 'logs' })} changed={() => void loadFeeds()} notify={notify} /> : <div className="empty-state"><span className="large-icon"><Rss size={32} /></span><h2>{query ? t('home.noMatch') : t('home.emptyTitle')}</h2><p>{query ? t('home.noMatchHint') : t('home.emptyBody')}</p>{query ? <button className="button" onClick={() => setQuery('')}>{t('home.clearSearch')}</button> : <button className="button" onClick={() => create('website')}><Plus size={16} />{t('home.createFirst')}</button>}</div>}<div className="dashboard-note"><Sparkles size={17} /><span>{t('home.note')}</span><span className="muted">{t('home.searchHint')}</span></div></>}
-  </main><footer className="page-footer"><span>{t('app.documentTitle')}</span><a href="https://github.com/Jaaayden/feedlantern" target="_blank" rel="noreferrer">GitHub · Jaaayden/feedlantern · {auth.version}</a></footer></div>{panel && <FeedPanel key={panel.id} id={panel.id} tab={panel.tab} onTab={tab => setPanel(previous => previous && { ...previous, tab })} close={closePanel} edit={feed => { setPanel(null); setEditorReturnId(feed.id); setEditor(feed); }} changed={() => void loadFeeds()} notify={notify} />}{bundleEditor && <BundleEditor initial={bundleEditor.initial} feeds={feeds} close={() => setBundleEditor(undefined)} saved={(_result, created) => { setBundleEditor(undefined); notify(created ? t('bundle.created') : t('bundle.saved')); void loadFeeds(); }} />}{bundleTarget && <AddToBundle bundles={bundles} feedIds={bundleTarget} close={() => setBundleTarget(null)} done={message => { setBundleTarget(null); notify(message); void loadFeeds(); }} />}{toast && <div className="toast" role="status"><Check size={16} />{toast}</div>}</div>;
+  </main><footer className="page-footer"><span>{t('app.documentTitle')}</span><a href="https://github.com/Jaaayden/feedlantern" target="_blank" rel="noreferrer">GitHub · Jaaayden/feedlantern · {auth.version}</a></footer></div>{panel && <FeedPanel key={panel.id} id={panel.id} tab={panel.tab} onTab={tab => setPanel(previous => previous && { ...previous, tab })} close={closePanel} edit={(feed, convert) => { setPanel(null); setEditorReturnId(feed.id); setEditorConvert(!!convert); setEditor(feed); }} changed={() => void loadFeeds()} notify={notify} />}{bundleEditor && <BundleEditor initial={bundleEditor.initial} feeds={feeds} close={() => setBundleEditor(undefined)} saved={(_result, created) => { setBundleEditor(undefined); notify(created ? t('bundle.created') : t('bundle.saved')); void loadFeeds(); }} />}{bundleTarget && <AddToBundle bundles={bundles} feedIds={bundleTarget} close={() => setBundleTarget(null)} done={message => { setBundleTarget(null); notify(message); void loadFeeds(); }} />}{toast && <div className="toast" role="status"><Check size={16} />{toast}</div>}</div>;
 }

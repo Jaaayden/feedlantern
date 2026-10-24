@@ -56,7 +56,7 @@ export function RuleHealthNotice({ feed, updated, notify }: { feed: Feed; update
   const [replace, setReplace] = useState<Partial<Record<RuleKey, boolean>>>({});
   const [preview, setPreview] = useState<{ signature: string; value: RulePreview } | null>(null);
   const warning = feed.ruleHealth;
-  if (!warning || feed.sourceType === 'rss') return null;
+  if (!warning || feed.sourceType !== 'website' && feed.sourceType !== undefined) return null;
 
   const choose = (candidate: DetectionCandidate | undefined) => {
     setCandidateId(candidate?.id ?? ''); setPreview(null);

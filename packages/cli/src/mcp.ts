@@ -49,6 +49,17 @@ const confirm = z.boolean().optional().describe(d('confirm'));
 const translationMode = z.enum(['original', 'translated', 'bilingual']).optional().describe(d('translationMode'));
 const targetLanguage = z.enum(['zh-CN', 'zh-TW', 'en', 'ja', 'ko']).optional();
 const translationProvider = z.enum(['google', 'deepl', 'openai']).nullable().optional();
+const pubmedConditions = {
+  query: z.string().min(1).max(4000).optional().describe(d('pubmedQuery')),
+  conditions: z.array(z.object({
+    field: z.enum(['all', 'tiab', 'title', 'author', 'firstAuthor', 'lastAuthor', 'journal', 'affiliation', 'mesh', 'pubType', 'language', 'nlmId']).describe(d('pubmedField')),
+    term: z.string().min(1).max(500), op: z.enum(['AND', 'OR', 'NOT']).optional().describe(d('pubmedOp')),
+  })).max(20).optional().describe(d('pubmedConditions')),
+  filters: z.object({
+    days: z.number().int().min(1).max(36500).optional(), from: z.string().regex(/^\d{4}(\/\d{1,2}(\/\d{1,2})?)?$/).optional(), to: z.string().regex(/^\d{4}(\/\d{1,2}(\/\d{1,2})?)?$/).optional(),
+    hasAbstract: z.boolean().optional(), types: z.array(z.enum(['Review', 'Systematic Review', 'Meta-Analysis', 'Clinical Trial', 'Randomized Controlled Trial', 'Case Reports'])).optional(),
+  }).optional().describe(d('pubmedFilters')),
+};
 const itemFilter = z.object({ include: z.array(z.string()), exclude: z.array(z.string()), regex: z.boolean() }).nullable().optional().describe(d('itemFilter'));
 
 const read: ToolAnnotations = { readOnlyHint: true, openWorldHint: false };
@@ -111,6 +122,18 @@ const tools: ToolDef[] = [
     run: (client, args) => ops.rssPreview(client, s(args.url), args.networkProfileId as string | undefined),
   },
   {
+    name: 'pubmed_preview', scope: 'write', annotations: fetches, input: { ...pubmedConditions, networkProfileId: page.networkProfileId },
+    run: (client, args) => { const { networkProfileId, ...search } = args; return ops.pubmedPreview(client, search as ops.PubmedSearchInput, networkProfileId as string | undefined); },
+  },
+  {
+    name: 'pubmed_create', scope: 'write', annotations: write,
+    input: {
+      ...pubmedConditions, name: z.string().min(1).max(200).optional().describe(d('pubmedName')), limit: z.union([z.literal(10), z.literal(20), z.literal(50), z.literal(100)]).optional().describe(d('pubmedLimit')),
+      intervalMinutes: z.number().int().min(5).max(1440).optional().describe(d('pubmedInterval')), translationMode, targetLanguage, translationProvider, networkProfileId: page.networkProfileId, dryRun,
+    },
+    run: (client, args) => { const { dryRun: _dryRun, ...input } = args; return ops.createPubmedFeed(client, input as ops.PubmedFeedInput); },
+  },
+  {
     name: 'feed_create', scope: 'write', annotations: write,
     input: {
       url: z.string().url().describe(d('feedUrl')), name: z.string().min(1).max(200).optional().describe(d('feedName')),
@@ -135,6 +158,7 @@ const tools: ToolDef[] = [
       id,
       changes: z.object({
         name: z.string().min(1).max(200).optional(), url: z.string().url().optional(), rules: partialRules.optional(),
+        pubmed: z.object({ query: z.string().min(1).max(4000), limit: z.union([z.literal(10), z.literal(20), z.literal(50), z.literal(100)]).optional() }).optional().describe(d('pubmedChange')),
         intervalMinutes: z.number().int().min(5).max(1440).optional(), pagination: pagination.nullable().optional(),
         waitMs: page.waitMs, waitForSelector: page.waitForSelector, credentialId: z.string().nullable().optional(), networkProfileId: z.string().nullable().optional(),
         translationMode, targetLanguage, translationProvider, itemFilter,

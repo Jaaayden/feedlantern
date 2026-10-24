@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { Cookie } from 'playwright';
+import { isFeedSource } from '../shared/types.js';
 import type { DetectionResult, ExtractedItem, Feed, RulePreview, RuleRedetectResult, SelectionRules } from '../shared/types.js';
 import { AppError } from './auth.js';
 import type { Store } from './store.js';
@@ -38,7 +39,7 @@ export function registerRuleHealthRoutes(app: FastifyInstance, context: RuleHeal
     context.guard(request);
     const feed = store.getFeed(String(asRecord(request.params).id));
     if (!feed) throw new AppError(404, 'error.feedNotFound');
-    if (feed.sourceType === 'rss') throw new AppError(400, 'error.rssNoRules');
+    if (isFeedSource(feed)) throw new AppError(400, 'error.rssNoRules');
     return feed;
   };
   // Both captures read page 1 only, also for multi-page feeds: rule health is

@@ -1,3 +1,4 @@
+import { buildPubmedQuery, parsePubmedQuery, pubmedDefaultTerms, pubmedSearchUrl, PUBMED_DEFAULT_LIMIT, type PubmedField, type PubmedFilters, type PubmedOperator } from '../../../src/shared/pubmed.js';
 import { feedFormatUrl, type ApiTokenCallFilter, type BulkFeedSettingsInput, type ExtractedItem, type Feed, type FeedInput, type FeedSettingsInput, type FetchStatus, type ItemOutputStatus, type PaginationRules, type SelectionRules } from '../../../src/shared/types.js';
 import type { BrowserOpenInput, BulkAction, FeedLanternClient, FeedPayload, HttpMethod, ImportJobInput } from './client.js';
 import { FeedLanternError, usageError } from './errors.js';
@@ -104,7 +105,7 @@ export async function createFeed(client: FeedLanternClient, input: FeedInput) {
 }
 
 /** Fields of the feed definition: changing one replaces the feed (PUT) and refetches it. */
-const definitionKeys = ['url', 'rules', 'ruleOrigins', 'credentialId', 'waitMs', 'waitForSelector', 'pagination', 'sourceType'] as const;
+const definitionKeys = ['url', 'rules', 'ruleOrigins', 'credentialId', 'waitMs', 'waitForSelector', 'pagination', 'sourceType', 'pubmed'] as const;
 /** Output settings only PATCH can change. */
 const settingsOnlyKeys = ['channelTitle', 'itemFilter', 'outputLimit', 'retentionLimit'] as const;
 /** Fields both requests accept. */
@@ -130,9 +131,12 @@ export async function updateFeed(client: FeedLanternClient, id: string, changes:
     for (const field of Object.keys(rules)) if (rules[field] === '') delete rules[field];
     const input: FeedInput = {
       sourceType: feed.sourceType, translationMode: feed.translationMode, targetLanguage: feed.targetLanguage, translationProvider: feed.translationProvider,
+      ...(feed.pubmed ? { pubmed: feed.pubmed } : {}),
       name: feed.name, url: feed.url, ruleOrigins: feed.ruleOrigins, credentialId: feed.credentialId, networkProfileId: feed.networkProfileId,
       intervalMinutes: feed.intervalMinutes, waitMs: feed.waitMs, waitForSelector: feed.waitForSelector, pagination: feed.pagination ?? null,
       ...pick([...definitionKeys, ...sharedKeys]), rules,
+      // A new query keeps the saved number of articles unless one is given.
+      ...(changes.pubmed ? { pubmed: { ...feed.pubmed, ...changes.pubmed } as FeedInput['pubmed'] } : {}),
     };
     result = await client.replaceFeed(id, input);
     const settings = pick(settingsOnlyKeys);
@@ -172,6 +176,51 @@ export async function bulk(client: FeedLanternClient, action: BulkAction, ids: s
 
 export function rssPreview(client: FeedLanternClient, url: string, networkProfileId?: string | null) {
   return client.rssPreview(url, networkProfileId);
+}
+
+// PubMed searches
+
+/** A PubMed search given as a ready query, or as builder conditions (AND by default) and filters. */
+export interface PubmedSearchInput {
+  query?: string;
+  conditions?: Array<{ field: PubmedField; term: string; op?: PubmedOperator }>;
+  filters?: PubmedFilters;
+}
+
+/** The query to send: the given one, or the one the conditions build (as the web builder writes it). The server checks its syntax. */
+export function pubmedQueryFrom(input: PubmedSearchInput): string {
+  const filters = input.filters ?? {};
+  const built = !!input.conditions?.length || Object.values(filters).some(value => value !== undefined && value !== false && !(Array.isArray(value) && !value.length));
+  if (input.query?.trim() && built) throw usageError(t('usage.pubmedQueryOrConditions'));
+  const query = input.query?.trim() || buildPubmedQuery({ rows: (input.conditions ?? []).map(condition => ({ op: condition.op ?? 'AND', field: condition.field, term: condition.term })), filters });
+  if (!query) throw usageError(t('usage.pubmedNoQuery'));
+  return query;
+}
+
+/** How many articles match and the newest 5, with the query that was sent. */
+export async function pubmedPreview(client: FeedLanternClient, input: PubmedSearchInput, networkProfileId?: string | null) {
+  const query = pubmedQueryFrom(input);
+  const preview = await client.pubmedPreview(query, networkProfileId);
+  return preview ? { query, ...preview } : { query };
+}
+
+export interface PubmedFeedInput extends PubmedSearchInput, Pick<FeedInput, 'translationMode' | 'targetLanguage' | 'translationProvider' | 'networkProfileId'> {
+  name?: string; limit?: number; intervalMinutes?: number;
+}
+
+/** Creates a PubMed search feed; the first fetch runs in the background (see feeds logs). */
+export async function createPubmedFeed(client: FeedLanternClient, input: PubmedFeedInput) {
+  const query = pubmedQueryFrom(input);
+  const limit = input.limit ?? PUBMED_DEFAULT_LIMIT;
+  const name = (input.name ?? `PubMed: ${pubmedDefaultTerms(parsePubmedQuery(query), query)}`).slice(0, 200);
+  return withUrls(await client.createFeed({
+    sourceType: 'pubmed', pubmed: { query, limit }, url: pubmedSearchUrl({ query, limit }), name,
+    rules: { item: '', title: '', link: '' }, credentialId: null, waitMs: 0, intervalMinutes: input.intervalMinutes ?? 60,
+    translationMode: input.translationMode ?? 'original',
+    ...(input.targetLanguage ? { targetLanguage: input.targetLanguage } : {}),
+    ...(input.translationProvider !== undefined ? { translationProvider: input.translationProvider } : {}),
+    ...(input.networkProfileId ? { networkProfileId: input.networkProfileId } : {}),
+  }));
 }
 
 // Detection and rule previews run in a temporary remote browser session.
