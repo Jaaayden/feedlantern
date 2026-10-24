@@ -207,6 +207,13 @@ export interface ApplicationSettings {
     deepl: TranslationRate & { apiKey: string; apiKeyConfigured?: boolean; plan: 'auto' | 'free' | 'pro' };
     openai: TranslationRate & { baseUrl: string; model: string; apiKey: string; apiKeyConfigured?: boolean; systemPrompt: string };
   };
+  /**
+   * NCBI E-utilities, used for PubMed journal subscriptions. The API key is
+   * optional (it raises NCBI's limit from 3 to 10 requests per second), stored
+   * encrypted and never returned (`apiKeyConfigured` instead). An empty email
+   * sends none.
+   */
+  ncbi: { apiKey: string; apiKeyConfigured?: boolean; email: string };
   feedView: 'list' | 'cards';
   logRetentionDays: number;
   bark: {
@@ -227,6 +234,7 @@ export const defaultApplicationSettings: ApplicationSettings = {
     deepl: { apiKey: '', plan: 'auto', concurrency: 2, requestIntervalMs: 200 },
     openai: { baseUrl: '', model: '', apiKey: '', systemPrompt: '', concurrency: 2, requestIntervalMs: 0 },
   },
+  ncbi: { apiKey: '', email: '' },
   feedView: 'list', logRetentionDays: 30,
   bark: { enabled: false, url: '', failureThreshold: 10, timeoutSeconds: 10, maxAttempts: 3, retryDelaySeconds: 60, laterRetryDelaySeconds: 300, cooldownMinutes: 30, ruleHealthAlerts: true },
   server: { backgroundConcurrency: 1, allowedHosts: [], dnsOverHttps: false, trustedProxies: [], publicOrigin: 'http://127.0.0.1:4321', cookieSecure: false, sessionTtlDays: 30, host: '127.0.0.1', port: 4321 },

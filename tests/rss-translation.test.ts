@@ -26,7 +26,8 @@ test('RSS/Atom parse full content, stable IDs, HTML safety and unsupported XML',
   const xhtml = parseSource('<feed><title>F</title><entry><id>x</id><title>X</title><content type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml"><p>A <strong>B</strong></p></div></content></entry></feed>', input.url);
   assert.match(xhtml.items[0].html, /<p>A <strong>B<\/strong><\/p>/);
   assert.throws(() => parseSource('<!DOCTYPE rss [<!ENTITY x SYSTEM "file:///etc/passwd">]><rss/>', input.url), /实体/);
-  assert.throws(() => parseSource('<html/>', input.url), /未返回/);
+  assert.throws(() => parseSource('<html/>', input.url), /网页而不是 RSS\/Atom/);
+  assert.throws(() => parseSource('<opml version="2.0"/>', input.url), /未返回/);
   assert.equal(parseSource('<rss><channel><title>Empty</title></channel></rss>', input.url).items.length, 0);
   assert.doesNotMatch(safeHtml('<a href="javascript:alert(1)">a</a><iframe src="/x"></iframe>', input.url), /javascript|iframe/);
 });

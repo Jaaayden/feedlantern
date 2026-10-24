@@ -8,7 +8,7 @@ import sanitizeHtml from 'sanitize-html';
 import { NetworkPolicy } from './network.js';
 import { scopedHeaders, type FetchNetworkOptions } from './fetch-options.js';
 import { openTunnelToAny } from './upstream-proxy.js';
-import { hostOf, withFetchTimeout } from './fetch-errors.js';
+import { hostOf, nonFeedReason, NotAFeedError, withFetchTimeout } from './fetch-errors.js';
 
 /** How long one source fetch (all redirects included) may take. */
 export const SOURCE_TIMEOUT_SECONDS = 20;
@@ -44,6 +44,9 @@ const valueText = (value: any): string => typeof value === 'string' || typeof va
 const plain = (text: string) => sanitizeHtml(text, { allowedTags: [], allowedAttributes: {} }).replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
 
 export function parseSource(xml: string, base: string): SourceResult {
+  // An HTML page (a bot check, a login page) is named as such before the XML checks below.
+  const notFeed = nonFeedReason(xml);
+  if (notFeed) throw new NotAFeedError(notFeed);
   if (/<!\s*(DOCTYPE|ENTITY)/i.test(xml) || XMLValidator.validate(xml) !== true) throw Error('RSS XML 无效或包含不支持的实体声明');
   const doc = new XMLParser({ ignoreAttributes: false, parseTagValue: false, trimValues: false, htmlEntities: true, stopNodes: ['*.div'] }).parse(xml);
   const atom = !!doc.feed;
@@ -80,7 +83,7 @@ export function parseSource(xml: string, base: string): SourceResult {
   return { title: plain(valueText(channel.title)).trim() || new URL(base).hostname, items: items.slice(0, 100) };
 }
 
-interface RawResponse { status: number; location?: string; body: string; etag?: string; modified?: string }
+export interface RawResponse { status: number; location?: string; body: string; etag?: string; modified?: string; contentType?: string; retryAfter?: string }
 
 /**
  * One HTTP request to the checked address, directly or through the feed's
@@ -111,8 +114,8 @@ async function requestOnce(url: URL, addresses: readonly string[], policy: Netwo
     }, res => {
       const chunks: Buffer[] = []; let size = 0;
       res.on('error', reject);
-      res.on('data', chunk => { size += chunk.length; if (size > maxBytes) { res.destroy(Error('订阅源超过 5 MB 限制')); return; } chunks.push(chunk); });
-      res.on('end', () => resolve({ status: res.statusCode ?? 0, location: res.headers.location, body: Buffer.concat(chunks).toString('utf8'), etag: res.headers.etag, modified: res.headers['last-modified'] }));
+      res.on('data', chunk => { size += chunk.length; if (size > maxBytes) { res.destroy(Error(`订阅源超过 ${Math.round(maxBytes / 1_000_000)} MB 限制`)); return; } chunks.push(chunk); });
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, location: res.headers.location, body: Buffer.concat(chunks).toString('utf8'), etag: res.headers.etag, modified: res.headers['last-modified'], contentType: res.headers['content-type'], retryAfter: res.headers['retry-after'] }));
     });
     request.on('error', error => { tunnel?.destroy(); reject(error); });
     request.end();
@@ -138,11 +141,21 @@ function requestHeaders(target: string, raw: string, network: FetchNetworkOption
   };
 }
 
+export interface RawFetchOptions extends SourceOptions {
+  accept: string;
+  /** The subscribed address that profile headers are scoped to; defaults to the requested address. */
+  scope?: string;
+  /** Response size limit; 5 MB by default. */
+  maxBytes?: number;
+}
+
 /**
- * Pin each connection to the policy-checked IP, including every redirect.
- * A timeout names the host that did not answer; a caller abort is passed on.
+ * One GET through the network policy, the feed's proxy and DNS settings,
+ * following up to five redirects. Every connection is pinned to the
+ * policy-checked IP. A timeout names the host that did not answer; a caller
+ * abort is passed on. Returns the final address with the response.
  */
-export async function fetchSource(raw: string, base: NetworkPolicy, options: SourceOptions = {}): Promise<SourceResult> {
+export async function fetchRaw(raw: string, base: NetworkPolicy, options: RawFetchOptions): Promise<RawResponse & { url: string }> {
   // Through a profile proxy, DNS over HTTPS goes through that proxy too.
   const policy = base.forProxy(options.network?.proxy);
   let target = raw;
@@ -150,15 +163,27 @@ export async function fetchSource(raw: string, base: NetworkPolicy, options: Sou
     for (let redirects = 0; redirects <= 5; redirects++) {
       const { url, address, addresses = [address] } = await abortable(policy.resolveForConnection(target), signal);
       signal.throwIfAborted();
-      const headers = { ...requestHeaders(target, raw, options.network, 'application/rss+xml, application/atom+xml, application/xml, text/xml'), ...(options.etag ? { 'if-none-match': options.etag } : {}), ...(options.modified ? { 'if-modified-since': options.modified } : {}) };
-      const response = await requestOnce(url, addresses, policy, headers, signal, options.network);
+      const headers = { ...requestHeaders(target, options.scope ?? raw, options.network, options.accept), ...(options.etag ? { 'if-none-match': options.etag } : {}), ...(options.modified ? { 'if-modified-since': options.modified } : {}) };
+      const response = await requestOnce(url, addresses, policy, headers, signal, options.network, options.maxBytes);
       if ([301, 302, 303, 307, 308].includes(response.status) && response.location) { target = new URL(response.location, target).href; continue; }
-      if (response.status === 304) return { title: '', items: [], unchanged: true };
-      if (response.status !== 200) throw Error(`RSS 获取失败（HTTP ${response.status}）`);
-      return { ...parseSource(response.body, target), etag: response.etag, modified: response.modified };
+      return { ...response, url: target };
     }
     throw Error('RSS 重定向次数过多');
   });
+}
+
+/**
+ * Fetch and parse an RSS or Atom source. An HTML page, a bot check or an
+ * unusual 2xx status is reported as such before any XML parsing; XML with
+ * entity declarations is still refused by parseSource.
+ */
+export async function fetchSource(raw: string, base: NetworkPolicy, options: SourceOptions = {}): Promise<SourceResult> {
+  const response = await fetchRaw(raw, base, { ...options, accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml' });
+  if (response.status === 304) return { title: '', items: [], unchanged: true };
+  const notFeed = nonFeedReason(response.body, response.status, response.contentType);
+  if (notFeed) throw new NotAFeedError(notFeed);
+  if (response.status !== 200) throw Error(`RSS 获取失败（HTTP ${response.status}）`);
+  return { ...parseSource(response.body, response.url), etag: response.etag, modified: response.modified };
 }
 
 /** One GET with a network profile applied, for the profile's connection test. Redirects are not followed. */
@@ -167,7 +192,7 @@ export async function probeTarget(raw: string, base: NetworkPolicy, network: Fet
   return withFetchTimeout(SOURCE_TIMEOUT_SECONDS, signal, () => hostOf(raw), !!network?.proxy, async combined => {
     const { url, address, addresses = [address] } = await abortable(policy.resolveForConnection(raw), combined);
     const response = await requestOnce(url, addresses, policy, requestHeaders(raw, raw, network, 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'), combined, network, 1_000_000).catch(error => {
-      if (error instanceof Error && /超过 5 MB/.test(error.message)) return { status: 200, body: '' } as RawResponse;
+      if (error instanceof Error && /订阅源超过 \d+ MB 限制/.test(error.message)) return { status: 200, body: '' } as RawResponse;
       throw error;
     });
     return { status: response.status };
