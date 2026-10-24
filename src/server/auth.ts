@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import type { ApiTokenScope, AuthState } from '../shared/types.js';
+import { errorCodeForStatus, type ApiErrorCode, type ApiTokenScope, type AuthState } from '../shared/types.js';
 import type { ServerConfig } from './config.js';
 import { Store, verifyPassword } from './store.js';
 
@@ -8,10 +8,13 @@ export const SESSION_COOKIE = 'feedlantern_session';
 
 export class AppError extends Error {
   readonly statusCode: number;
-  constructor(statusCode: number, message: string) {
+  /** Machine-readable reason sent beside the message; derived from the status unless given. */
+  readonly code: ApiErrorCode;
+  constructor(statusCode: number, message: string, code?: ApiErrorCode) {
     super(message);
     this.name = 'AppError';
     this.statusCode = statusCode;
+    this.code = code ?? errorCodeForStatus(statusCode);
   }
 }
 
@@ -107,7 +110,7 @@ export function requireCsrf(request: FastifyRequest, store: Store, context: Auth
   // A cross-site page cannot attach a bearer token, so token requests need no CSRF token,
   // but a write still needs a write token.
   if (context.token) {
-    if (context.token.scope !== 'write') throw new AppError(403, '只读令牌不能执行写操作');
+    if (context.token.scope !== 'write') throw new AppError(403, '只读令牌不能执行写操作', 'token_read_only');
     return;
   }
   const csrf = request.headers['x-csrf-token'];

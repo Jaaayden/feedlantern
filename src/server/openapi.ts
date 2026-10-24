@@ -1,5 +1,5 @@
 import { API_TOKEN_MAX_DAYS, tokenAllowedRoute } from './api-tokens.js';
-import { BUNDLE_ITEM_LIMIT, BUNDLE_MAX_FEEDS } from '../shared/types.js';
+import { API_ERROR_CODES, BUNDLE_ITEM_LIMIT, BUNDLE_MAX_FEEDS } from '../shared/types.js';
 import { NETWORK_LIMITS } from '../shared/network-rules.js';
 
 /**
@@ -44,7 +44,10 @@ const providerId = str({ enum: ['google', 'deepl', 'openai'] });
 const networkProfileId = nullable(str({ description: '网络配置 ID；null 表示默认网络（直连，无额外请求头）' }));
 
 const schemas: Record<string, Schema> = {
-  Error: object({ error: str({ description: '面向用户的中文错误说明' }) }, ['error']),
+  Error: object({
+    error: str({ description: '面向用户的错误说明（可能随界面语言变化，脚本请判断 code）' }),
+    code: str({ enum: [...API_ERROR_CODES], description: '机器可读的错误代码：token_read_only 为只读令牌执行写操作，token_not_allowed 为令牌调用了仅限网页会话的接口；其余按 HTTP 状态归类' }),
+  }, ['error', 'code']),
   Ok: object({ ok: { const: true } }, ['ok']),
   AuthState: object({
     setupRequired: bool, authenticated: bool, version: str(), userId: str(), username: str(), role: str({ enum: ['admin', 'user'] }),
@@ -196,6 +199,12 @@ const operations: Operation[] = [
       { name: 'cursor', schema: str(), description: '上一页的 nextCursor' },
       { name: 'limit', schema: int({ minimum: 1, maximum: 100, default: 20 }) },
     ], response: ref('ApiTokenCallPage') },
+  { method: 'GET', path: '/api/tokens/current', tag: 'tokens', summary: '当前访问令牌', description: '只能用访问令牌调用（网页会话返回 400）：返回调用所用令牌的名称、权限、有效期和最近 24 小时调用次数。', response: ref('ApiToken') },
+  { method: 'GET', path: '/api/tokens/current/logs', tag: 'tokens', summary: '当前访问令牌的调用记录', description: '只能用访问令牌调用（网页会话返回 400），只返回这个令牌自己的记录。', query: [
+    { name: 'status', schema: str({ enum: ['success', 'denied', 'error'] }), description: 'success：状态码 < 400；denied：401/403/429；error：其他 ≥ 400' },
+    { name: 'cursor', schema: str(), description: '上一页的 nextCursor' },
+    { name: 'limit', schema: int({ minimum: 1, maximum: 100, default: 20 }) },
+  ], response: ref('ApiTokenCallPage') },
   { method: 'POST', path: '/api/tokens', tag: 'tokens', summary: '创建访问令牌', description: '完整令牌只在响应中出现一次；每个账号最多 50 个。只能为自己创建。', body: ref('ApiTokenInput'), response: ref('ApiTokenCreated') },
   { method: 'DELETE', path: '/api/tokens/:id', tag: 'tokens', summary: '吊销访问令牌', description: '只能吊销自己的令牌；令牌的调用记录随之删除。', response: ok },
   // Users
@@ -347,7 +356,7 @@ export function buildOpenApi(origin: string, version: string): Record<string, un
       title: 'FeedLantern API',
       version,
       description: [
-        '自托管网页转 RSS 服务的管理接口。错误统一返回 `{"error": string}`，响应不缓存。',
+        '自托管网页转 RSS 服务的管理接口。错误统一返回 `{"error": string, "code": string}`（code 见 Error schema），响应不缓存。',
         '**访问令牌**：在“设置 → 访问令牌”创建，以 `Authorization: Bearer fl_…` 调用。令牌与所属账号的权限、工作台隔离完全一致；read 令牌只能调用 GET；令牌请求不需要 Cookie、`X-FeedLantern` 或 `X-CSRF-Token`。',
         '**网页会话**：Cookie 会话的写操作必须带 `X-FeedLantern: 1` 和 `X-CSRF-Token`，并校验 Host/Origin。',
         '`x-feedlantern-access` 标出每个接口的登录要求：public（无需登录）、session（仅网页会话）、read / write（网页会话或对应权限的令牌）。`x-feedlantern-token` 标出令牌所需权限，forbidden 表示令牌不能调用。',

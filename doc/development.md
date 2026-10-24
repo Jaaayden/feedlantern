@@ -155,6 +155,7 @@ curl -s "$FEEDLANTERN/api/openapi.json" -o feedlantern-openapi.json
 - 令牌请求按令牌所属账号鉴权，权限与工作台隔离和该账号的网页会话完全相同：普通用户只能访问自己的数据；管理员令牌默认作用于管理员自己的工作台，和网页一样，只有带 `X-FeedLantern-User: 用户ID` 才在其他账号的工作台中操作。
 - `read` 令牌只能调用 GET；任何写操作返回 403。`write` 令牌可调用所有开放给令牌的接口。
 - 带 `Authorization: Bearer` 的请求只看令牌，忽略 Cookie；不需要 `X-FeedLantern`、`X-CSRF-Token`，也不校验 Host/Origin（这些检查只用来保护浏览器自动携带的 Cookie，跨站页面无法替用户附上令牌）。其他认证方案（例如反向代理的 `Authorization: Basic`）不受影响，仍按 Cookie 会话处理。网页会话的防护保持不变。
+- 错误响应统一为 `{"error": "说明", "code": "代码"}`。`error` 面向人，可能随界面语言变化；脚本应判断 `code`：`token_read_only`（只读令牌执行写操作）、`token_not_allowed`（令牌调用了仅限网页会话的接口）、`unauthorized`、`forbidden`、`validation`、`not_found`、`conflict`、`too_large`、`rate_limited`、`server_error`、`upstream_error`、`unavailable`。代码表在 `src/shared/types.ts` 的 `ApiErrorCode`；`new AppError(status, message)` 默认按状态码归类，需要更具体的代码时传第三个参数。
 - 令牌无效、过期或已吊销返回 401（带 `WWW-Authenticate: Bearer`）；同一来源地址 15 分钟内失败 20 次后，该地址的令牌请求一律返回 429，直到窗口结束。与登录限速一样，部署在反向代理后要设置 `TRUSTED_PROXIES`。
 - 账号停用、删除、修改密码（包括管理员重置）、改名或角色变化时，与登录会话一样立即吊销该账号的全部令牌；重新启用账号不会恢复旧令牌。完整恢复备份会吊销全部令牌。
 - 每个账号最多 50 个令牌；有效期 1–3650 天或永不过期。过期令牌保留在列表中 30 天后自动清除。
@@ -164,13 +165,17 @@ curl -s "$FEEDLANTERN/api/openapi.json" -o feedlantern-openapi.json
 - 登录相关：`POST /api/auth/setup`、`/api/auth/login`、`/api/auth/logout`、`/api/auth/password`
 - 备份：`POST /api/backups/export`、`/api/backups/preview`、`/api/backups/restore`，`GET/POST /api/backups/config`
 - 账号管理中的危险操作：`POST /api/users`、`PATCH /api/users/:id`、`POST /api/users/:id/password`、`DELETE /api/users/:id`
-- 令牌本身：`GET/POST /api/tokens`、`DELETE /api/tokens/:id`
+- 令牌本身：`GET/POST /api/tokens`、`DELETE /api/tokens/:id`、`GET /api/tokens/:id/logs`
+
+令牌可以用 `GET /api/tokens/current` 查看自己的名称、权限、有效期和最近 24 小时调用次数，用 `GET /api/tokens/current/logs`（参数同 `/api/tokens/:id/logs`）查看自己的调用记录；只返回发起请求的这个令牌，网页会话调用返回 400。
 
 清单定义在 `src/server/api-tokens.ts` 的 `SESSION_ONLY_ROUTES`，OpenAPI 文档中这些接口的 `x-feedlantern-token` 为 `forbidden`。
 
 `GET /api/openapi.json` 公开提供：文档只描述接口形状，与开源代码中的信息相同，不含任何用户数据；公开后脚本、Agent 和代码生成工具无需先拿到令牌就能读取。`servers` 使用当前请求的公开地址。每个操作带 `x-feedlantern-access`（public / session / read / write）和 `x-feedlantern-token`（read / write / forbidden）。
 
 新增或删除 `/api/*` 路由时同步修改 `src/server/openapi.ts`；`tests/openapi.test.ts` 会比对服务器路由表和文档，缺少或多出接口都会失败。
+
+Agent CLI 与 MCP server 位于 workspace 包 `packages/cli`（用法见 [Agent CLI 与 MCP](agent.md)）：`client.ts` 是类型化 API 客户端（类型来自 `src/shared/types.ts`），`operations.ts` 是 CLI 与 MCP 共用的操作，`messages.ts` 集中所有输出文案。`pnpm build` 会用 esbuild 把它打包到 `packages/cli/dist/feedlantern.js`；`tests/agent-cli.test.ts` 和 `tests/e2e/10-agent-cli.spec.ts` 覆盖主要命令和 MCP 工具。新增开放给令牌的接口时，考虑同步加到 CLI 命令和 MCP 工具。
 
 ## 发布
 
