@@ -11,3 +11,7 @@ coverage/
 .DS_Store
 
 *.tgz
+website/.content/
+website/.sources.json
+website/.vitepress/cache/
+website/.vitepress/.temp/

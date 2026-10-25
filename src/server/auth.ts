@@ -10,6 +10,8 @@ import type { MessageKey } from '../shared/i18n.js';
 const specificCodes: Partial<Record<MessageKey, ApiErrorCode>> = {
   'error.readOnlyToken': 'token_read_only',
   'error.tokenRouteForbidden': 'token_not_allowed',
+  'error.pubmedQueryInvalid': 'pubmed_query_invalid',
+  'error.pubmedQueryRequired': 'pubmed_query_invalid',
 };
 export const specificErrorCode = (key: MessageKey): ApiErrorCode | undefined => specificCodes[key];
 

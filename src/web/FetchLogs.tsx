@@ -66,14 +66,14 @@ export function FetchLogs({ id, revision }: { id: string; revision: number }) {
     {loading && <p role="status">{t('fetchLog.loading')}</p>}
     {!loading && !error && logs.length === 0 && <p className="muted">{t('fetchLog.empty')}</p>}
     <div className="fetch-log-list">{logs.map(log => <article className="fetch-log" key={log.id}>
-      <div className="fetch-log-heading"><time dateTime={log.startedAt}>{new Date(log.startedAt).toLocaleString('zh-CN', { hour12: false })}</time>
-        <span>{fetchSourceName(t, log.source)}</span><span className={`badge ${log.status === 'success' ? 'good' : log.status === 'failure' || log.status === 'interrupted' ? 'bad' : ''}`}>{statusLabel(log.status)}</span>{log.warning && <span className="badge warn">{t('health.badge')}</span>}
+      <div className="fetch-log-heading"><div className="fetch-log-meta"><time dateTime={log.startedAt}>{new Date(log.startedAt).toLocaleString('zh-CN', { hour12: false })}</time><span>{fetchSourceName(t, log.source)}</span></div>
+        <div className="fetch-log-statuses"><span className={`badge ${log.status === 'success' ? 'good' : log.status === 'failure' || log.status === 'interrupted' ? 'bad' : ''}`}>{statusLabel(log.status)}</span>{log.warning && <span className={`badge ${log.warningSeverity === 'warning' ? 'warn' : ''}`}>{t(log.warningSeverity === 'notice' ? 'health.noticeBadge' : log.warningSeverity === 'warning' ? 'health.badge' : 'health.checkRecord')}</span>}</div>
       </div>
       <p className="muted">{t('fetchLog.duration', { value: log.durationMs === null ? log.status === 'running' ? statusLabel('running') : t('fetchLog.unknown') : t('fetchLog.seconds', { value: fmt.number(log.durationMs / 1000, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }) })}
         {log.itemCount !== null && ` · ${t('fetchLog.counts', { valid: log.itemCount, added: log.newItemCount ?? 0 })}`}</p>
       {log.note && <p className="fetch-log-note muted">{t('fetchLog.pages', { note: log.note })}</p>}
       {log.error && <p className="card-error">{log.error}</p>}
-      {log.warning && <p className="card-warning">{log.warning}</p>}
+      {log.warning && <p className={log.warningSeverity === 'warning' ? 'card-warning' : 'card-notice'}>{log.warning}</p>}
       {log.notification && <p className="fetch-log-notification">{t('fetchLog.notification', { text: notificationText(log.notification) })}</p>}
     </article>)}</div>
     {cursor && <button className="button small" disabled={loading} onClick={() => {

@@ -130,9 +130,9 @@ test('non-feed and NCBI errors are translatable and keep English logs', () => {
   assert.deepEqual(reason, { key: 'source.challengeStatus', params: { status: '403', marker: 'reCAPTCHA' } });
   const english = withLocale('en', () => new NotAFeedError(reason!));
   assert.match(english.message, /^Couldn't fetch RSS \(HTTP 403\): the source returned a bot check/);
-  const chinese = withLocale('zh-CN', () => new NcbiError(sourceMessages.pubmed.journalNotFound('101238921'), 200));
-  assert.equal(chinese.message, 'PubMed 中没有找到 NLM ID 为 101238921 的期刊，请检查订阅地址。');
-  assert.equal(chinese.englishMessage, 'PubMed has no journal with NLM ID 101238921. Check the feed address.');
+  const chinese = withLocale('zh-CN', () => new NcbiError(sourceMessages.pubmed.httpError(502), 502));
+  assert.equal(chinese.message, 'NCBI E-utilities 请求失败（HTTP 502），请稍后重试。');
+  assert.equal(chinese.englishMessage, 'The NCBI E-utilities request failed (HTTP 502). Try again later.');
 });
 
 test('migration 21 keeps existing accounts in Chinese; new accounts and old backups are handled explicitly', () => {

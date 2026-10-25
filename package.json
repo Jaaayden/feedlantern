@@ -1,6 +1,6 @@
 {
   "name": "feedlantern",
-  "version": "0.7.0",
+  "version": "0.8.1",
   "private": true,
   "type": "module",
   "description": "A self-hosted visual website-to-RSS builder with private cookie storage.",
@@ -31,7 +31,7 @@
     "playwright": "^1.55.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
-    "sanitize-html": "^2.18.0",
+    "sanitize-html": "^2.18.1",
     "tsx": "^4.23.15",
     "zod": "^4.6.7"
   },

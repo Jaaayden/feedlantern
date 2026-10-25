@@ -4,6 +4,8 @@
 
 [English](README.md) · **简体中文**
 
+[网站与文档](https://jaaayden.github.io/feedlantern/) · [下载版本](https://github.com/Jaaayden/feedlantern/releases)
+
 [![CI](https://github.com/Jaaayden/feedlantern/actions/workflows/ci.yml/badge.svg)](https://github.com/Jaaayden/feedlantern/actions/workflows/ci.yml)
 
 **把任意网页变成你的 RSS 订阅。** 自托管、可视化，数据留在自己的服务器上。
@@ -17,6 +19,7 @@
 - **RSS 翻译**：把已有的 RSS/Atom 订阅翻译成简体中文、繁体中文、英语、日语或韩语，输出仅译文或双语订阅；可选 Google 免费通道（实验性）、DeepL 或 OpenAI 兼容接口（含本机 Ollama 等模型），带缓存、限流退避与失败重试。
 - **批量管理**：一次添加最多 100 个网址；批量暂停、恢复、刷新、删除，统一修改刷新间隔和输出模式；导出 OPML，一次导入任意阅读器，也可从 OPML 批量添加翻译订阅。
 - **标准又好读的 RSS**：阅读器拿到规范的 RSS 2.0（含刷新间隔与缩略图）；在浏览器里直接打开订阅地址时，看到的是带复制按钮和最近内容的可读页面，而不是一屏 XML。
+- **PubMed 检索订阅**：用仿照 PubMed 高级检索的构建器，按关键词、期刊、作者、机构订阅新文献；通过 NCBI 官方 E-utilities 获取并遵守其限流规则，可选翻译。
 - **聚合订阅**：把多个订阅合并成一个订阅地址（RSS / Atom / JSON Feed），按时间合并、注明来源、相同链接只出现一次，不额外抓取。
 - **多用户**：管理员创建账号，每人独立管理自己的订阅、Cookie 和个人通知；管理员可进入任意账号的工作台。
 - **可观测**：每个订阅有抓取日志（默认保留 30 天），连续失败可通过 Bark、Webhook、ntfy 或 Telegram 告警（可同时启用多个）并自动去重；网站改版导致条目骤降、字段缺失时提示“规则可能失效”，可一键重新识别并对比后替换。

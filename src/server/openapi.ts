@@ -1,6 +1,7 @@
 import { API_TOKEN_MAX_DAYS, tokenAllowedRoute } from './api-tokens.js';
 import { API_ERROR_CODES, BUNDLE_ITEM_LIMIT, BUNDLE_MAX_FEEDS } from '../shared/types.js';
 import { NETWORK_LIMITS } from '../shared/network-rules.js';
+import { PUBMED_DEFAULT_LIMIT, PUBMED_LIMITS, PUBMED_QUERY_MAX } from '../shared/pubmed.js';
 import { locales } from '../shared/i18n.js';
 
 /**
@@ -46,7 +47,7 @@ const networkProfileId = nullable(str({ description: 'Network profile ID; null m
 
 const schemas: Record<string, Schema> = {
   Error: object({
-    code: str({ enum: [...API_ERROR_CODES], description: 'Stable, machine-readable error code; scripts should branch on it. token_read_only: a read token tried to write; token_not_allowed: a token called an endpoint reserved for browser sessions; source_not_feed: the source returned a web page (often a bot check) or an unusual status instead of RSS/Atom; the rest follow the HTTP status' }),
+    code: str({ enum: [...API_ERROR_CODES], description: 'Stable, machine-readable error code; scripts should branch on it. token_read_only: a read token tried to write; token_not_allowed: a token called an endpoint reserved for browser sessions; source_not_feed: the source returned a web page (often a bot check) or an unusual status instead of RSS/Atom; pubmed_query_invalid: a PubMed query that cannot be sent; the rest follow the HTTP status' }),
     message: str({ description: 'Error message for people, in the reader\'s language; may change between versions' }),
     error: str({ description: 'Same as message (kept for older clients)' }),
     messageKey: str({ description: 'Message catalog key of the text, e.g. error.feedNotFound; with params, lets a client show the message in its own language', examples: ['error.feedNotFound'] }),
@@ -85,13 +86,41 @@ const schemas: Record<string, Schema> = {
   }, ['id', 'username', 'role', 'enabled', 'createdAt', 'updatedAt']),
   SelectionRules: object({ item: str(), title: str(), link: str(), description: str(), image: str(), date: str() }, ['item', 'title', 'link'], { description: 'CSS selectors; title, link and the rest are relative to item' }),
   FeedInput: object({
-    sourceType: str({ enum: ['website', 'rss'], default: 'website' }), translationMode, targetLanguage, translationProvider,
-    name: str({ minLength: 1 }), url: str({ format: 'uri' }), rules: ref('SelectionRules'),
+    sourceType: str({ enum: ['website', 'rss', 'pubmed'], default: 'website', description: 'website: extract a page with rules; rss: read an RSS/Atom address; pubmed: a PubMed search read through NCBI E-utilities (give `pubmed`; `url`, `rules` and `credentialId` are then ignored)' }), translationMode, targetLanguage, translationProvider,
+    pubmed: ref('PubmedSearch'),
+    name: str({ minLength: 1 }), url: str({ format: 'uri', description: 'For PubMed searches the server sets it to the PubMed search page of the query' }), rules: ref('SelectionRules'),
     ruleOrigins: { type: 'object', additionalProperties: str({ enum: ['auto', 'manual'] }) },
     credentialId: nullable(str()), intervalMinutes: int({ minimum: 5, maximum: 1440 }), waitMs: int({ minimum: 0, maximum: 10000 }), waitForSelector: str(),
     pagination: nullable(ref('PaginationRules')),
     networkProfileId: { ...networkProfileId, description: 'Network profile ID (proxy, User-Agent, Referer, extra headers). Omitted on update keeps it; null switches back to the default network' },
   }, ['name', 'url', 'rules', 'credentialId', 'intervalMinutes', 'waitMs']),
+  PubmedSearch: object({
+    query: str({ minLength: 1, maxLength: PUBMED_QUERY_MAX, description: 'A PubMed query with field tags, as in PubMed\'s Advanced Search Builder', examples: ['("cryo-EM"[Title/Abstract]) AND ("ShanghaiTech"[Affiliation])'] }),
+    limit: int({ enum: [...PUBMED_LIMITS], default: PUBMED_DEFAULT_LIMIT, description: 'How many of the newest matches (newest added to PubMed first) each fetch reads' }),
+  }, ['query'], { description: 'Only for sourceType pubmed. Items are keyed by PMID, like PubMed\'s own RSS, so changing the query (or converting a PubMed RSS feed) keeps stored articles' }),
+  PubmedPreview: object({
+    count: int({ description: 'How many articles match' }),
+    queryTranslation: str({ description: 'The query as PubMed read it' }),
+    warnings: array(object({ kind: str({ enum: ['phraseNotFound', 'fieldNotFound', 'quotedPhraseNotFound', 'phraseIgnored', 'message'] }), text: str({ description: 'NCBI\'s own wording' }) }, ['kind', 'text'])),
+    items: array(object({ pmid: str(), title: str(), link: str({ format: 'uri' }), journal: str(), pubDate: str({ description: 'Citation date, for example 2026 Oct 6' }), authors: array(str()), addedAt: dateTime }, ['pmid', 'title', 'link', 'journal', 'pubDate', 'authors']), { maxItems: 5 }),
+    pubmedUrl: str({ format: 'uri', description: 'The same search on pubmed.ncbi.nlm.nih.gov' }),
+  }, ['count', 'warnings', 'items', 'pubmedUrl']),
+  PubmedCheckJob: object({
+    id: str(), createdAt: dateTime, finishedAt: dateTime, state: str({ enum: ['running', 'done', 'canceled'] }), ncbiKeyConfigured: bool,
+    entries: array(object({ feedId: str(), name: str(), state: str({ enum: ['queued', 'checking', 'done', 'failed', 'canceled', 'converted'] }), check: ref('PubmedRssCheck'), error: str(), cached: bool, startedAt: dateTime, finishedAt: dateTime }, ['feedId', 'name', 'state'])),
+    progress: object({ total: int(), done: int(), verified: int(), review: int(), failed: int(), converted: int(), etaSeconds: int({ description: 'Estimated seconds left, from the feeds checked so far' }) }, ['total', 'done', 'verified', 'review', 'failed', 'converted']),
+  }, ['id', 'createdAt', 'state', 'entries']),
+  NcbiKeyTest: object({
+    result: str({ enum: ['valid', 'noKey', 'invalidKey', 'badFormat', 'rateLimited', 'network', 'error'] }), rateLimit: int({ description: 'NCBI\'s X-RateLimit-Limit' }),
+    detail: str({ description: 'NCBI\'s own message, or why it could not be reached' }), testedAt: dateTime, email: str({ enum: ['ok', 'missing', 'invalid'] }),
+  }, ['result', 'testedAt', 'email']),
+  PubmedRssCheck: object({
+    feedId: str(), name: str(), kind: str({ enum: ['journal', 'search'] }), status: str({ enum: ['verified', 'review'] }),
+    reason: str({ enum: ['truncated', 'invalidQuery', 'ncbiFailed', 'fetchFailed', 'noItems', 'lowCoverage'] }),
+    query: str({ description: 'Recovered query (may be empty)' }), repaired: bool, truncated: bool, sourceTitle: str({ description: 'The RSS channel title the query was read from' }),
+    coverage: object({ matched: int(), total: int(), ratio: { type: 'number' }, source: str({ enum: ['rss', 'stored'] }) }, ['matched', 'total', 'ratio', 'source']),
+    count: int(), limit: int({ enum: [...PUBMED_LIMITS] }), error: str(), ncbiKeyConfigured: bool,
+  }, ['feedId', 'name', 'kind', 'status', 'query', 'repaired', 'truncated', 'limit', 'ncbiKeyConfigured']),
   PaginationRules: object({
     mode: str({ enum: ['next', 'template', 'loadMore'], description: 'next: click a “Next page” link or button; template: put page numbers into a URL template; loadMore: click a “Load more” button' }),
     maxPages: int({ minimum: 1, maximum: 10, default: 3, description: 'Includes page 1 (the source URL)' }), delayMs: int({ minimum: 2000, maximum: 30000, default: 3000, description: 'Pause between pages, plus up to 20% random jitter' }),
@@ -117,12 +146,13 @@ const schemas: Record<string, Schema> = {
     translatedTitle: str({ description: 'When translated: the translated title' }), sourceTitle: str({ description: 'When translated: the original title' }),
   }, ['title', 'link']),
   RuleHealthWarning: object({
+    severity: str({ enum: ['warning', 'notice'], description: 'warning: article count, titles or links; notice: only optional dates, images or summaries are missing (no push notification)' }),
     detectedAt: dateTime, checkedAt: dateTime, itemCount: int(), baselineSamples: int({ description: 'Recent healthy fetches compared' }),
     reasons: array(object({
       code: str({ enum: ['item-count', 'field-rate', 'duplicate-links', 'same-link'] }), field: str({ enum: ['title', 'link', 'date', 'image', 'description'] }),
       baseline: { type: 'number' }, current: { type: 'number' }, message: str({ description: 'Explanation for the user, in the feed owner\'s language' }),
     }, ['code', 'baseline', 'current', 'message'])),
-  }, ['detectedAt', 'checkedAt', 'itemCount', 'baselineSamples', 'reasons'], { description: 'Only present when the rules may have stopped working; the fetch itself still counts as successful' }),
+  }, ['severity', 'detectedAt', 'checkedAt', 'itemCount', 'baselineSamples', 'reasons'], { description: 'Rule-health warning or optional-field notice; the fetch itself still counts as successful' }),
   RulePreview: object({ count: int(), items: array(ref('ExtractedItem'), { maxItems: 5 }), error: str({ description: 'Why nothing was extracted' }) }, ['count', 'items']),
   RuleRedetectResult: object({ current: ref('RulePreview'), detection: ref('DetectionResult') }, ['current', 'detection']),
   FeedPayload: object({ feed: ref('Feed'), feedUrl: str({ format: 'uri', description: 'RSS address including its secret key' }) }, ['feed', 'feedUrl']),
@@ -267,6 +297,17 @@ const operations: Operation[] = [
     response: object({ defaultProvider: providerId, providers: array(object({ id: providerId, label: str(), configured: bool }, ['id', 'label', 'configured'])) }, ['defaultProvider', 'providers']) },
   { method: 'POST', path: '/api/feeds/:id/translation/retry', tag: 'feeds', summary: 'Retry failed translations', workspace: true, response: ref('FeedPayload') },
   { method: 'POST', path: '/api/feeds/:id/output-preview', tag: 'feeds', summary: 'Preview the output with an unsaved filter and limit', description: 'Doesn\'t change the feed; it is still a POST, so it needs a write token.', workspace: true, body: object({ itemFilter: nullable(ref('ItemFilter')), outputLimit: int({ minimum: 10, maximum: 500 }) }), response: ref('OutputStatus') },
+  { method: 'POST', path: '/api/feeds/:id/pubmed-check', tag: 'feeds', summary: 'Check whether a PubMed RSS feed can become a PubMed search', description: 'Reads the feed\'s RSS address once (through the shared NCBI queue), recovers the query from a search RSS channel title (or the journal of a journal RSS), runs it through esearch and compares the feed\'s newest items with the newest matches. status verified when at least 80% of the newest 20 items are among the newest 200 matches; otherwise review with a reason. Changes nothing.', workspace: true, response: ref('PubmedRssCheck') },
+  { method: 'POST', path: '/api/feeds/:id/pubmed-convert', tag: 'feeds', summary: 'Convert a PubMed RSS feed into a PubMed search', description: 'Only for PubMed RSS feeds. The feed keeps its ID, RSS address, items, translations, translation settings, filter, output and retention limits, bundles and refresh interval; items are keyed by PMID like PubMed\'s RSS, so stored articles are not sent again. The first E-utilities fetch runs in the background.', workspace: true, body: object({ query: str({ minLength: 1, maxLength: PUBMED_QUERY_MAX }), limit: int({ enum: [...PUBMED_LIMITS], description: 'Defaults to the RSS address\'s limit rounded up to 10/20/50/100' }) }, ['query']), response: ref('FeedPayload') },
+  { method: 'POST', path: '/api/pubmed-checks', tag: 'feeds', summary: 'Start checking PubMed RSS feeds for conversion', description: 'Creates a background job (it keeps running without the client and after a restart) for the given PubMed RSS feeds, or all of the workspace\'s. Up to 5 feeds are checked at a time; all NCBI requests still share the instance\'s rate limit. A feed checked before and unchanged since (same address and name) reuses its result unless recheck is true. While a job covering these feeds runs, it is returned instead of a new one.', workspace: true, body: object({ feedIds: array(str(), { maxItems: 1000 }), recheck: bool }), response: ref('PubmedCheckJob') },
+  { method: 'GET', path: '/api/pubmed-checks/latest', tag: 'feeds', summary: 'The latest PubMed check job', workspace: true, response: object({ job: nullable(ref('PubmedCheckJob')) }, ['job']) },
+  { method: 'GET', path: '/api/pubmed-checks/:jobId', tag: 'feeds', summary: 'A PubMed check job with its progress and results', workspace: true, response: ref('PubmedCheckJob') },
+  { method: 'POST', path: '/api/pubmed-checks/:jobId/cancel', tag: 'feeds', summary: 'Stop a PubMed check job', workspace: true, response: ref('PubmedCheckJob') },
+  { method: 'POST', path: '/api/pubmed-checks/:jobId/retry', tag: 'feeds', summary: 'Check failed and canceled feeds of a job again', workspace: true, response: ref('PubmedCheckJob') },
+  { method: 'POST', path: '/api/pubmed-checks/:jobId/convert', tag: 'feeds', summary: 'Convert the verified feeds of a check job', description: 'Converts the job\'s verified feeds (or the listed ones among them) one after another, like POST /api/feeds/:id/pubmed-convert. Feeds already converted succeed again; feeds that need review are left alone.', workspace: true, body: object({ feedIds: array(str()) }), response: object({ results: array(object({ feedId: str(), ok: bool, error: str() }, ['feedId', 'ok'])), job: ref('PubmedCheckJob') }, ['results', 'job']) },
+  { method: 'POST', path: '/api/settings/ncbi/test', tag: 'settings', summary: 'Test NCBI settings', description: 'Sends one esearch with retmax=0 with the given (unsaved) API key and email. apiKey omitted or empty tests the saved key, null tests without a key. The key is never returned. result: valid, noKey, invalidKey (NCBI answered type "invalid"), badFormat ("api-key-fake" or not letters and digits), rateLimited, network, or error with NCBI\'s message.', admin: true, body: object({ apiKey: nullable(str({ maxLength: 200 })), email: str({ maxLength: 254 }) }), response: ref('NcbiKeyTest') },
+  { method: 'GET', path: '/api/settings/ncbi/status', tag: 'settings', summary: 'Whether an NCBI API key is saved and its last test', admin: true, response: object({ apiKeyConfigured: bool, lastTest: ref('NcbiKeyTest') }, ['apiKeyConfigured']) },
+  { method: 'POST', path: '/api/pubmed/preview', tag: 'feeds', summary: 'Preview a PubMed search', description: 'How many articles match a PubMed query and the newest 5, through NCBI E-utilities. All NCBI requests of the instance share one queue (3 per second, 10 with an NCBI API key); identical previews within a minute are answered from memory, and a preview that would wait more than 10 s is refused with rate_limited. An invalid query returns pubmed_query_invalid.', workspace: true, body: object({ query: str({ minLength: 1, maxLength: PUBMED_QUERY_MAX }), networkProfileId }, ['query']), response: ref('PubmedPreview') },
   { method: 'POST', path: '/api/rss/preview', tag: 'feeds', summary: 'Preview the first 3 items of an RSS source', workspace: true, body: object({ url: str({ format: 'uri' }), networkProfileId }, ['url']), response: object({ title: str(), items: array(ref('ExtractedItem')) }) },
   // Bundles
   { method: 'GET', path: '/api/bundles', tag: 'bundles', summary: 'List bundles', workspace: true, response: array(ref('BundlePayload')) },

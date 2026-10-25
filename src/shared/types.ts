@@ -54,10 +54,20 @@ export function translationLabel(feed: Pick<FeedInput, 'translationMode' | 'targ
   if (feed.translationMode === 'translated') return t('translationLabel.translated', { language });
   return feed.targetLanguage && feed.targetLanguage !== 'zh-CN' ? t('translationLabel.bilingualTo', { language }) : t('translationLabel.bilingual');
 }
+/** `website` extracts a page with rules, `rss` reads an RSS/Atom feed, `pubmed` runs a PubMed search through NCBI E-utilities. */
+export type SourceType = 'website' | 'rss' | 'pubmed';
+export const SOURCE_TYPES: readonly SourceType[] = ['website', 'rss', 'pubmed'];
+/** Sources read as a list of articles (RSS and PubMed): translated by article, never by page rules. */
+export const isFeedSource = (feed: Pick<FeedInput, 'sourceType'>) => feed.sourceType === 'rss' || feed.sourceType === 'pubmed';
 export interface FeedInput {
   /** Omitted: keep the saved setting; null: single page. */
   pagination?: PaginationRules | null;
-  sourceType?: 'website' | 'rss';
+  sourceType?: SourceType;
+  /**
+   * PubMed searches: the query and how many of the newest articles each fetch
+   * reads. The feed's `url` is then the PubMed search page of that query.
+   */
+  pubmed?: { query: string; limit: number };
   translationMode?: TranslationMode;
   /** Defaults to simplified Chinese. */
   targetLanguage?: TargetLanguage;
@@ -125,13 +135,14 @@ export interface Feed extends FeedInput {
   lastError: string | null;
   itemCount: number;
   translation?: { pending: number; success: number; failed: number };
-  /** Present while the latest successful fetches look like the rules stopped matching the page. */
+  /** A warning about article extraction, or a quiet notice about optional metadata. */
   ruleHealth?: RuleHealthWarning;
 }
 export type RuleHealthField = 'title' | 'link' | 'date' | 'image' | 'description';
+export type RuleHealthSeverity = 'warning' | 'notice';
 /** One reason a successful fetch looks broken, compared with the feed's recent median. */
 export interface RuleHealthReason { code: 'item-count' | 'field-rate' | 'duplicate-links' | 'same-link'; field?: RuleHealthField; baseline: number; current: number; message: string }
-export interface RuleHealthWarning { detectedAt: string; checkedAt: string; itemCount: number; baselineSamples: number; reasons: RuleHealthReason[] }
+export interface RuleHealthWarning { severity: RuleHealthSeverity; detectedAt: string; checkedAt: string; itemCount: number; baselineSamples: number; reasons: RuleHealthReason[] }
 /** Re-detection on the feed's page: what the saved rules extract now, beside fresh candidates. */
 export interface RuleRedetectResult { current: RulePreview; detection: DetectionResult }
 export interface RulePreview { count: number; items: ExtractedItem[]; error?: string }
@@ -164,6 +175,8 @@ export interface FetchLog {
   notification: { status: AlertStatus; error: string | null; channels?: ChannelDelivery[] } | null;
   /** Rules-health warning recorded on an otherwise successful fetch. */
   warning?: string | null;
+  /** Missing on older log entries whose severity was not recorded. */
+  warningSeverity?: RuleHealthSeverity;
 }
 export type NotificationChannel = 'bark' | 'webhook' | 'ntfy' | 'telegram';
 export const notificationChannels: NotificationChannel[] = ['bark', 'webhook', 'ntfy', 'telegram'];
@@ -329,8 +342,10 @@ export type ApiErrorCode =
   | 'validation' | 'unauthorized' | 'forbidden' | 'token_read_only' | 'token_not_allowed' | 'not_found' | 'conflict'
   | 'too_large' | 'rate_limited' | 'server_error' | 'upstream_error' | 'unavailable'
   /** The source answered with a web page (often a bot check) or an unusual status instead of RSS/Atom. */
-  | 'source_not_feed';
-export const API_ERROR_CODES: readonly ApiErrorCode[] = ['validation', 'unauthorized', 'forbidden', 'token_read_only', 'token_not_allowed', 'not_found', 'conflict', 'too_large', 'rate_limited', 'server_error', 'upstream_error', 'unavailable', 'source_not_feed'];
+  | 'source_not_feed'
+  /** A PubMed query that cannot be sent (unbalanced quotes or parentheses, a dangling operator, too long). */
+  | 'pubmed_query_invalid';
+export const API_ERROR_CODES: readonly ApiErrorCode[] = ['validation', 'unauthorized', 'forbidden', 'token_read_only', 'token_not_allowed', 'not_found', 'conflict', 'too_large', 'rate_limited', 'server_error', 'upstream_error', 'unavailable', 'source_not_feed', 'pubmed_query_invalid'];
 /** The code an error with this HTTP status gets unless the server names a more specific one. */
 export function errorCodeForStatus(status: number): ApiErrorCode {
   if (status === 401) return 'unauthorized';
@@ -354,6 +369,7 @@ export interface ApiTokenCallPage { calls: ApiTokenCall[]; nextCursor: string | 
 // GET /api/network-profiles -> NetworkProfileSummary[]; POST NetworkProfileInput -> NetworkProfileSummary
 // PUT /api/network-profiles/:id NetworkProfileInput; DELETE (409 if referenced); POST /api/network-profiles/:id/test {url} -> {ok,status}
 // GET /api/feeds -> Feed[]; POST /api/feeds FeedInput -> {feed,feedUrl}
+// POST /api/pubmed/preview {query,networkProfileId?} -> PubmedPreview (NCBI E-utilities, shared rate limit)
 // GET /api/feeds/:id/logs?status=&cursor=&limit= -> FetchLogPage (owner only, default 20, max 100)
 // GET /api/notifications -> NotificationSummary; PUT NotificationUpdate -> NotificationSummary
 // POST /api/notifications/test {channel, ...unsaved channel fields} -> {ok:true} (nothing is saved)
@@ -403,6 +419,56 @@ export function feedFormatUrl(rssUrl: string, format: FeedFormat): string {
 export function translationEnabled(feed: Pick<FeedInput, 'sourceType' | 'translationMode'>): boolean {
   return feed.translationMode === 'translated' || feed.translationMode === 'bilingual' || feed.sourceType === 'rss' && feed.translationMode !== 'original';
 }
+
+/** One article of a PubMed search preview. `pubDate` is the citation date ("2026 Oct 6"); `addedAt` when PubMed added it. */
+export interface PubmedArticle { pmid: string; title: string; link: string; journal: string; pubDate: string; authors: string[]; addedAt?: string }
+/** Something NCBI noted about a query; `text` is NCBI's own wording (a phrase, a field or a message). */
+export interface PubmedWarning { kind: 'phraseNotFound' | 'fieldNotFound' | 'quotedPhraseNotFound' | 'phraseIgnored' | 'message'; text: string }
+/**
+ * POST /api/feeds/:id/pubmed-check: whether a PubMed RSS feed can become a
+ * PubMed search. `verified` when the newest items the feed holds are found
+ * among the query's newest matches (`coverage.ratio` ≥ 0.8); otherwise
+ * `review`, and the query only prefills the search builder. Nothing is changed.
+ */
+export type PubmedCheckReason = 'truncated' | 'invalidQuery' | 'ncbiFailed' | 'fetchFailed' | 'noItems' | 'lowCoverage';
+export interface PubmedRssCheck {
+  feedId: string; name: string; kind: 'journal' | 'search';
+  status: 'verified' | 'review'; reason?: PubmedCheckReason;
+  /** The query recovered from the RSS title (or the journal), possibly repaired; may be empty. */
+  query: string; repaired: boolean; truncated: boolean;
+  /** The RSS channel title the query was read from. */
+  sourceTitle?: string;
+  /** `rss`: the items the RSS address lists now; `stored`: items already saved (when the address could not be read). */
+  coverage?: { matched: number; total: number; ratio: number; source: 'rss' | 'stored' };
+  /** How many articles the query matches. */
+  count?: number;
+  /** Suggested newest articles per fetch, from the address's `limit`. */
+  limit: number;
+  /** Why the RSS address or NCBI failed. */
+  error?: string;
+  /** Without an NCBI API key, checks and fetches share 3 requests per second instead of 10. */
+  ncbiKeyConfigured: boolean;
+}
+/** One feed in a PubMed conversion check job. `cached`: an earlier result for the unchanged feed was reused. */
+export interface PubmedCheckEntry {
+  feedId: string; name: string;
+  state: 'queued' | 'checking' | 'done' | 'failed' | 'canceled' | 'converted';
+  check?: Omit<PubmedRssCheck, 'ncbiKeyConfigured'>; error?: string; cached?: boolean; startedAt?: string; finishedAt?: string;
+}
+/** A background check of many PubMed RSS feeds (`/api/pubmed-checks`); it keeps running without the page. */
+export interface PubmedCheckJob {
+  id: string; createdAt: string; finishedAt?: string; state: 'running' | 'done' | 'canceled';
+  entries: PubmedCheckEntry[]; ncbiKeyConfigured?: boolean;
+  progress?: { total: number; done: number; verified: number; review: number; failed: number; converted: number; etaSeconds?: number };
+}
+/** The result of testing NCBI settings with a tiny esearch request. `rateLimit` is NCBI's `X-RateLimit-Limit`. */
+export interface NcbiKeyTest {
+  result: 'valid' | 'noKey' | 'invalidKey' | 'badFormat' | 'rateLimited' | 'network' | 'error';
+  rateLimit?: number; detail?: string; testedAt: string;
+  email: 'ok' | 'missing' | 'invalid';
+}
+/** POST /api/pubmed/preview: how many articles match and the newest few. */
+export interface PubmedPreview { count: number; queryTranslation?: string; warnings: PubmedWarning[]; items: PubmedArticle[]; pubmedUrl: string }
 
 export interface UserStats { feeds: number; failingFeeds: number; pausedFeeds: number; credentials: number; lastSeenAt: string | null }
 export interface UserSummary { id: string; username: string; role: "admin" | "user"; enabled: boolean; createdAt: string; updatedAt: string; stats?: UserStats }

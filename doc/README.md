@@ -1,5 +1,7 @@
 # FeedLantern 文档
 
+[在线阅读文档](https://jaaayden.github.io/feedlantern/guide/) · [项目介绍](https://jaaayden.github.io/feedlantern/)
+
 英文版（English）：[User guide](en/user-guide.md) · [Deployment](en/deployment.md) · [Configuration](en/configuration.md)。其他文档目前只有中文。
 
 ## 安装与部署

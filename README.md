@@ -4,6 +4,8 @@
 
 **English** · [简体中文](README.zh-CN.md)
 
+[Website & documentation](https://jaaayden.github.io/feedlantern/en/) · [Releases](https://github.com/Jaaayden/feedlantern/releases)
+
 [![CI](https://github.com/Jaaayden/feedlantern/actions/workflows/ci.yml/badge.svg)](https://github.com/Jaaayden/feedlantern/actions/workflows/ci.yml)
 
 **Turn any web page into an RSS feed.** Self-hosted and visual, with your data on your own server.
@@ -17,6 +19,7 @@ Enter a URL and FeedLantern finds the list of articles; if it guesses wrong, cli
 - **RSS translation**: translate existing RSS/Atom feeds into Simplified Chinese, Traditional Chinese, English, Japanese or Korean, as a translation-only or bilingual feed. Use the free Google channel (experimental), DeepL or any OpenAI-compatible API (including local models such as Ollama), with caching, rate-limit backoff and retries.
 - **Bulk management**: add up to 100 URLs at once; pause, resume, refresh, delete or change settings for many feeds together; export OPML for any reader, or import OPML to create translated feeds.
 - **Standard, readable RSS**: readers get clean RSS 2.0 (with refresh interval and thumbnails). Open a feed address in a browser and you see a readable page with a copy button and recent items instead of raw XML.
+- **PubMed searches**: follow new papers by keyword, journal, author or affiliation with a builder modelled on PubMed's Advanced Search, read through NCBI's official E-utilities within NCBI's rate limits, optionally translated.
 - **Bundles**: combine several feeds into one address (RSS, Atom or JSON Feed), merged by time, with sources noted and each link once — no extra fetching.
 - **Multiple users**: administrators create accounts; everyone manages their own feeds, cookies and notifications, and administrators can step into any workspace.
 - **Observability**: every feed has a fetch log (30 days by default). Repeated failures alert you through Bark, webhooks, ntfy or Telegram (several at once), deduplicated. When a site redesign makes items drop or fields disappear, FeedLantern flags that the rules may have stopped working, and you can re-detect and compare in one click.

@@ -1,5 +1,6 @@
 import type { UserSummary } from '../shared/types.js';
-import { isTargetLanguage, isTranslationProvider, translationEnabled } from '../shared/types.js';
+import { isFeedSource, isTargetLanguage, isTranslationProvider, translationEnabled } from '../shared/types.js';
+import { pubmedRssSource, pubmedSearchFromUrl } from '../shared/pubmed.js';
 import { RssTranslations } from './rss-translation.js';
 import { TRANSLATION_CACHE_LIMIT, type Tables } from './backups.js';
 import { FetchHistory } from './fetch-history.js';
@@ -8,6 +9,7 @@ import { RuleHealth } from './rule-health.js';
 import { BUNDLE_SCHEMA, BundleStore } from './bundle-store.js';
 import { ApiTokens } from './api-tokens.js';
 import { ApiTokenLog, API_TOKEN_LOG_SCHEMA } from './api-token-log.js';
+import { PUBMED_CHECK_SCHEMA, PubmedCheckStore } from './pubmed-checks.js';
 import { AppError } from './auth.js';
 import { applicationSettingsSchema } from './settings.js';
 import { clampOutputLimit, clampRetentionLimit, parseItemFilter, retentionProblem, storedItemLimit } from './feed-output.js';
@@ -130,10 +132,13 @@ function storedItemFilter(value: unknown): ItemFilter | undefined {
 
 function rowToFeed(row: Record<string, unknown>): Feed {
   const itemFilter = storedItemFilter(row.item_filter_json);
+  // A PubMed search keeps its query in the stored address (the PubMed search page).
+  const pubmed = row.source_type === 'pubmed' ? pubmedSearchFromUrl(String(row.url)) : null;
   return {
     id: String(row.id),
     ownerId: String(row.owner_id),
-    sourceType: row.source_type === 'rss' ? 'rss' : 'website',
+    sourceType: row.source_type === 'rss' || row.source_type === 'pubmed' ? row.source_type : 'website',
+    ...(pubmed ? { pubmed } : {}),
     translationMode: row.translation_mode === 'original' ? 'original' : row.translation_mode === 'translated' || row.translation_mode === 'chinese' ? 'translated' : 'bilingual',
     targetLanguage: isTargetLanguage(row.target_language) ? row.target_language : 'zh-CN',
     translationProvider: isTranslationProvider(row.translation_provider) ? row.translation_provider : null,
@@ -181,6 +186,8 @@ export class Store {
   readonly bundles: BundleStore;
   readonly tokens: ApiTokens;
   readonly tokenLog: ApiTokenLog;
+  /** Saved PubMed conversion checks, check jobs and the last NCBI key test. */
+  readonly pubmedChecks: PubmedCheckStore;
   readonly dataDir: string;
   readonly dbPath: string;
   readonly masterKeyPath: string;
@@ -408,6 +415,7 @@ export class Store {
       this.db.exec(`BEGIN; ${API_TOKEN_LOG_SCHEMA} PRAGMA user_version=${Math.max(19, current)}; COMMIT;`);
     }
     this.tokenLog = new ApiTokenLog(this.db, () => this.getSettings().logRetentionDays);
+    this.pubmedChecks = new PubmedCheckStore(this.db);
     this.ruleHealth = new RuleHealth(this.db, () => this.getSettings(), this.history);
     // Interface language of each account: `locale` is the user's own choice,
     // `detected_locale` the language their browser last asked for. 21 is
@@ -421,6 +429,11 @@ export class Store {
         ${userColumns.has('locale') ? '' : "ALTER TABLE users ADD COLUMN locale TEXT; UPDATE users SET locale='zh-CN';"}
         ${userColumns.has('detected_locale') ? '' : 'ALTER TABLE users ADD COLUMN detected_locale TEXT;'}
         PRAGMA user_version=${Math.max(21, current)}; COMMIT;`);
+    }
+    // 22: PubMed conversion checks (results per feed, background check jobs) and the last NCBI key test.
+    if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pubmed_check_jobs'").get()) {
+      const current = Number((this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
+      this.db.exec(`BEGIN; ${PUBMED_CHECK_SCHEMA} PRAGMA user_version=${Math.max(22, current)}; COMMIT;`);
     }
     this.migrateBark();
     this.ensureSetupToken();
@@ -552,7 +565,7 @@ export class Store {
       if (confirmation !== user.username) throw new AppError(400, 'error.confirmUsername');
       if (user.role === 'admin' && user.enabled && !this.listUsers().some(u => u.id !== id && u.role === 'admin' && u.enabled)) throw new AppError(409, 'error.lastAdmin');
       this.revokeUser(id);
-      for (const table of ['import_jobs', 'bundles', 'feeds', 'credentials', 'network_profiles']) this.db.prepare(`DELETE FROM ${table} WHERE owner_id=?`).run(id);
+      for (const table of ['pubmed_check_jobs', 'import_jobs', 'bundles', 'feeds', 'credentials', 'network_profiles']) this.db.prepare(`DELETE FROM ${table} WHERE owner_id=?`).run(id);
       // The shared translation cache can contain this user's source fragments.
       this.db.prepare('DELETE FROM translation_cache').run();
       this.db.prepare('DELETE FROM user_notifications WHERE user_id=?').run(id);
@@ -893,16 +906,20 @@ export class Store {
     if (input.networkProfileId && !this.owns('network_profiles', input.networkProfileId, existing.ownerId!)) throw new AppError(400, 'error.networkProfileNotFound');
     this.translations.invalidate(id);
     if (input.networkProfileId !== undefined) this.db.prepare('UPDATE feeds SET network_profile_id=? WHERE id=?').run(input.networkProfileId, id);
-    if ((existing.sourceType === 'rss' || input.sourceType === 'rss') && (existing.url !== input.url || existing.sourceType !== (input.sourceType ?? 'website'))) {
+    const nextType = input.sourceType ?? 'website';
+    // PubMed items are keyed by PMID: a changed query, or a PubMed RSS address
+    // converted to a search, keeps the stored articles and their translations.
+    const keepsItems = nextType === 'pubmed' && (existing.sourceType === 'pubmed' || existing.sourceType === 'rss' && !!pubmedRssSource(existing.url));
+    if ((isFeedSource(existing) || isFeedSource(input)) && (existing.url !== input.url || existing.sourceType !== nextType) && !keepsItems) {
       this.db.prepare('DELETE FROM feed_items WHERE feed_id=?').run(id);
       this.translations.resetSource(id);
     }
-    this.db.prepare('UPDATE feeds SET source_type=?,translation_mode=? WHERE id=?').run(input.sourceType ?? 'website', input.translationMode ?? existing.translationMode ?? 'bilingual', id);
+    this.db.prepare('UPDATE feeds SET source_type=?,translation_mode=? WHERE id=?').run(nextType, input.translationMode ?? existing.translationMode ?? 'bilingual', id);
     this.setTranslationTarget(existing, input);
     const origins = mergeRuleOrigins(existing.ruleOrigins, input.ruleOrigins);
     // An input without the field (older client) keeps the saved pagination.
-    if (input.pagination !== undefined) this.db.prepare('UPDATE feeds SET pagination_json=? WHERE id=?').run(input.pagination && input.sourceType !== 'rss' ? JSON.stringify(input.pagination) : null, id);
-    else if (input.sourceType === 'rss') this.db.prepare('UPDATE feeds SET pagination_json=NULL WHERE id=?').run(id);
+    if (input.pagination !== undefined) this.db.prepare('UPDATE feeds SET pagination_json=? WHERE id=?').run(input.pagination && !isFeedSource(input) ? JSON.stringify(input.pagination) : null, id);
+    else if (isFeedSource(input)) this.db.prepare('UPDATE feeds SET pagination_json=NULL WHERE id=?').run(id);
     const nextFetchAt = new Date(Date.now() + input.intervalMinutes * 60_000).toISOString();
     this.db.prepare(`UPDATE feeds SET name = ?, channel_title = ?, url = ?, rules_json = ?, rule_origins_json = ?, credential_id = ?, interval_minutes = ?, wait_ms = ?, wait_for_selector = ?, next_fetch_at = ?, last_error = NULL WHERE id = ?`)
       .run(input.name, input.name, input.url, JSON.stringify(input.rules), origins ? JSON.stringify(origins) : null, input.credentialId, input.intervalMinutes, input.waitMs, input.waitForSelector ?? null, nextFetchAt, id);
@@ -987,7 +1004,7 @@ export class Store {
     this.userControllers.clear();
     this.transaction(() => {
       // Like sessions, access tokens are not part of a backup; a restore revokes them all.
-      for (const table of ['sessions', 'api_token_logs', 'api_tokens', 'import_jobs', 'bundle_feeds', 'bundles', 'translations', 'rss_sources', 'translation_cache', 'feed_items', 'feeds', 'credentials', 'network_profiles', 'user_notifications', 'users', 'settings']) this.db.exec(`DELETE FROM ${table}`);
+      for (const table of ['pubmed_check_jobs', 'pubmed_checks', 'ncbi_key_tests', 'sessions', 'api_token_logs', 'api_tokens', 'import_jobs', 'bundle_feeds', 'bundles', 'translations', 'rss_sources', 'translation_cache', 'feed_items', 'feeds', 'credentials', 'network_profiles', 'user_notifications', 'users', 'settings']) this.db.exec(`DELETE FROM ${table}`);
       for (const table of ['users', 'user_notifications', 'credentials', 'network_profiles', 'feeds', 'feed_items', 'settings', 'rss_sources', 'translations', 'translation_cache', 'bundles', 'bundle_feeds'] as const) {
         for (const value of tables[table] ?? []) {
           const row: Record<string, string | number | null> = { ...value };

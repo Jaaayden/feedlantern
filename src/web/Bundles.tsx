@@ -9,7 +9,7 @@ import { Modal } from './Modal';
 import { fmt, t } from './i18n';
 
 const messageOf = (error: unknown) => error instanceof Error ? error.message : t('common.notDone');
-const feedKind = (feed: Feed) => `${feed.sourceType === 'rss' ? t('feedKind.rss') : t('feedKind.website')}${translationEnabled(feed) ? ` · ${t('bundle.translated')}` : ''}`;
+const feedKind = (feed: Feed) => `${feed.sourceType === 'pubmed' ? t('feedKind.pubmed') : feed.sourceType === 'rss' ? t('feedKind.rss') : t('feedKind.website')}${translationEnabled(feed) ? ` · ${t('bundle.translated')}` : ''}`;
 
 function memberNames(feedIds: string[], feeds: Feed[]): string {
   const names = feedIds.flatMap(id => feeds.find(feed => feed.id === id)?.name ?? []);

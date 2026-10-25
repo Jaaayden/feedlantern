@@ -72,7 +72,7 @@ export function exitCodeFor(code: ClientErrorCode): number {
   switch (code) {
     case 'usage': case 'not_configured': return EXIT.usage;
     case 'unauthorized': case 'forbidden': case 'token_read_only': case 'token_not_allowed': return EXIT.auth;
-    case 'validation': case 'not_found': case 'conflict': case 'too_large': case 'rate_limited': case 'source_not_feed': return EXIT.rejected;
+    case 'validation': case 'not_found': case 'conflict': case 'too_large': case 'rate_limited': case 'source_not_feed': case 'pubmed_query_invalid': return EXIT.rejected;
     case 'server_error': case 'upstream_error': case 'unavailable': case 'bad_response': return EXIT.server;
     case 'network': case 'timeout': return EXIT.network;
     case 'partial_failure': return EXIT.partial;

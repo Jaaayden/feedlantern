@@ -14,25 +14,28 @@ test('订阅内容按阅读器样式展示：折叠摘要、缩略图、展开�
   const dialog = page.getByRole('dialog');
   const items = dialog.locator('article.preview-item');
   await expect(items).toHaveCount(4);
-  const first = items.first();
-  await expect(first.getByRole('link', { name: 'Night trains are back across Europe' })).toHaveAttribute('target', '_blank');
-  await expect(first.locator('.item-host')).toHaveText('127.0.0.1');
-  await expect(first.locator('.item-thumb')).toBeVisible();
-  await expect(first.locator('.item-summary')).toContainText('Sleeper services');
+  // RSS entries are ordered by first-seen time, which can differ within one fetch.
+  // This test checks article presentation, independently of the article's position.
+  const article = items.filter({ has: page.getByRole('link', { name: 'Night trains are back across Europe', exact: true }) });
+  await expect(article).toHaveCount(1);
+  await expect(article.getByRole('link', { name: 'Night trains are back across Europe' })).toHaveAttribute('target', '_blank');
+  await expect(article.locator('.item-host')).toHaveText('127.0.0.1');
+  await expect(article.locator('.item-thumb')).toBeVisible();
+  await expect(article.locator('.item-summary')).toContainText('Sleeper services');
   // No translation UI anywhere for a feed that is not translated.
   await expect(dialog.getByText('重试未完成翻译')).toHaveCount(0);
   await expect(dialog.locator('.item-tag.pending, .item-tag.failed')).toHaveCount(0);
   await page.screenshot({ path: testInfo.outputPath('reader-items-light.png') });
 
-  await first.getByRole('button', { name: '展开全文' }).click();
-  const frame = dialog.locator('iframe[title="订阅正文 1"]');
-  await expect(dialog.frameLocator('iframe[title="订阅正文 1"]').getByText('Bookings opened on Monday', { exact: false })).toBeVisible();
+  await article.getByRole('button', { name: '展开全文' }).click();
+  const frame = article.locator('iframe');
+  await expect(article.frameLocator('iframe').getByText('Bookings opened on Monday', { exact: false })).toBeVisible();
   // The frame sizes itself to the article instead of scrolling inside a box.
   await expect.poll(async () => (await frame.boundingBox())?.height ?? 0).toBeGreaterThan(250);
   const sandbox = await frame.getAttribute('sandbox');
   expect(sandbox).not.toContain('allow-scripts');
   expect(sandbox).not.toContain('allow-top-navigation');
-  await first.getByRole('button', { name: '收起' }).click();
+  await article.getByRole('button', { name: '收起' }).click();
   await expect(frame).toHaveCount(0);
 
   await dialog.getByRole('button', { name: '运行日志', exact: true }).click();

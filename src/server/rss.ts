@@ -1,4 +1,4 @@
-import { targetLanguages, translationEnabled } from '../shared/types.js';
+import { isFeedSource, targetLanguages, translationEnabled } from '../shared/types.js';
 import { safeHtml } from './rss-source.js';
 import { createHash } from 'node:crypto';
 import { classifyItems } from './feed-output.js';
@@ -65,7 +65,7 @@ export function isoDate(value: string | undefined, fallback: string): string {
 
 /** The HTML body every format publishes for an item. */
 function itemHtml(feed: Feed, item: FeedItem): string {
-  return translationEnabled(feed) && item.contentHtml !== undefined ? safeHtml(item.contentHtml, item.link) : feed.sourceType === 'rss' ? safeHtml(item.description ?? '', item.link) : sanitizeDescription(item.description, feed.url, item.image);
+  return translationEnabled(feed) && item.contentHtml !== undefined ? safeHtml(item.contentHtml, item.link) : isFeedSource(feed) ? safeHtml(item.description ?? '', item.link) : sanitizeDescription(item.description, feed.url, item.image);
 }
 
 function feedHost(feed: Feed): string {
@@ -76,6 +76,7 @@ function channelDescription(feed: Feed): string {
   let host = feed.url;
   try { host = new URL(feed.url).host; } catch { /* keep the raw value */ }
   // A translated feed describes itself in its target language; others in the owner's.
+  if (feed.sourceType === 'pubmed') return translate(translationEnabled(feed) ? targetLocale(feed.targetLanguage) : currentLocale(), 'output.pubmedDescription', { query: (feed.pubmed?.query ?? '').slice(0, 300) });
   if (feed.sourceType !== 'rss') return translate(currentLocale(), 'output.websiteDescription', { host });
   return translationEnabled(feed) ? translate(targetLocale(feed.targetLanguage), 'output.translatedDescription', { host }) : translate(currentLocale(), 'output.forwardedDescription', { host });
 }
