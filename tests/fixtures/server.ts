@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 
 /** Recorded NCBI E-utilities answers and a PubMed-style bot check (tests/fixtures/pubmed). */
 const pubmedFixture = (name: string) => readFileSync(new URL(`./pubmed/${name}`, import.meta.url), 'utf8');
+const pubmedSearches: string[] = [];
 
 const host = process.env.FIXTURE_HOST ?? '127.0.0.1';
 const port = Number(process.env.FIXTURE_PORT ?? 8766);
@@ -13,9 +14,12 @@ type FixtureState = {
   version: number;
   /** /redesign: false serves the original list, true a redesigned page where the old rules match only two leftovers. */
   redesigned: boolean;
+  /** /optional-fields: the six articles stay unchanged, only their date selector moves. */
+  movedDate: boolean;
+  absentDate: boolean;
 };
 
-const state: FixtureState = { failure: false, version: 1, redesigned: false };
+const state: FixtureState = { failure: false, version: 1, redesigned: false, movedDate: false, absentDate: false };
 
 type Article = {
   title: string;
@@ -189,6 +193,16 @@ function versionedPage(): string {
   );
 }
 
+function optionalFieldsPage(): string {
+  let cards = Array.from({ length: 6 }, (_, i) => articleCard({
+    title: `Optional fields story ${i + 1}`, slug: `optional-${i + 1}`,
+    description: `Summary of optional fields story ${i + 1}.`, image: '/assets/fixture-one.svg',
+    date: `2026-02-${String(10 - i).padStart(2, '0')}T08:00:00.000Z`,
+  }, 'optional-')).join('');
+  if (state.absentDate) cards = cards.replaceAll(/<time\b[^>]*>[^<]*<\/time>/g, '');
+  return page('Optional fields fixture', `<h1>Optional fields fixture</h1><section class="article-list">${state.movedDate ? cards.replaceAll('class="article-date"', 'class="release-date"') : cards}</section>`);
+}
+
 function redesignPage(): string {
   const articles = Array.from({ length: 10 }, (_, i) => ({
     title: `Redesign fixture story ${i + 1}`,
@@ -248,6 +262,8 @@ const server = createServer(async (request, response) => {
       if (typeof payload.failure === 'boolean') state.failure = payload.failure;
       if (typeof payload.version === 'number' && Number.isInteger(payload.version)) state.version = payload.version;
       if (typeof payload.redesigned === 'boolean') state.redesigned = payload.redesigned;
+      if (typeof payload.movedDate === 'boolean') state.movedDate = payload.movedDate;
+      if (typeof payload.absentDate === 'boolean') state.absentDate = payload.absentDate;
       sendJson(response, 200, { ...state });
     } catch {
       sendJson(response, 400, { error: 'invalid JSON' });
@@ -290,6 +306,11 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (requestUrl.pathname === '/optional-fields') {
+    sendHtml(response, 200, optionalFieldsPage());
+    return;
+  }
+
   if (requestUrl.pathname === '/versioned' && state.failure) {
     sendHtml(response, 503, page('Fixture failure', '<p class="failure">Fixture failure requested by the test.</p>'));
     return;
@@ -328,10 +349,33 @@ const server = createServer(async (request, response) => {
     ].join('')}</channel></rss>`);
     return;
   }
-  // Stand-in for eutils.ncbi.nlm.nih.gov; the e2e backend points PubMed journal subscriptions here.
+  // Stand-in for eutils.ncbi.nlm.nih.gov; the e2e backend sends every PubMed search here.
+  // A term containing "zzqx" matches nothing; every other search lists the same three articles.
   if (requestUrl.pathname === '/entrez/eutils/esearch.fcgi') {
+    pubmedSearches.push(requestUrl.searchParams.get('term') ?? '');
+    // Like NCBI: the limit header says 10 with an API key, 3 without.
+    response.writeHead(200, { 'Content-Type': 'application/json', 'X-RateLimit-Limit': requestUrl.searchParams.get('api_key') ? '10' : '3' });
+    response.end(pubmedFixture((requestUrl.searchParams.get('term') ?? '').includes('zzqx') ? 'esearch-empty.json' : 'esearch-journal.json'));
+    return;
+  }
+  // PubMed search RSS feeds for the conversion check: the channel title is the query.
+  const pubmedRss = /^\/pubmed-rss\/rss\/search\/(\w+)\/?$/.exec(requestUrl.pathname);
+  if (pubmedRss) {
+    const feeds: Record<string, [string, string[]]> = {
+      e2eok: ['("PLoS Pathog"[Journal]) AND (Wolbachia[tiab])', ['42883926', '41714066']],
+      e2elow: ['(lantern[ti]) AND (fungi[ti]', ['40000001', '40000002']],
+    };
+    const entry = feeds[pubmedRss[1]];
+    if (!entry) { response.writeHead(404); response.end(); return; }
+    const escape = (text: string) => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+    response.writeHead(200, { 'Content-Type': 'application/rss+xml' });
+    response.end(`<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>${escape(entry[0])}</title><description>${escape(entry[0])}: Latest results from PubMed</description>${entry[1].map(pmid => `<item><title>Article ${pmid}</title><link>https://pubmed.ncbi.nlm.nih.gov/${pmid}/?utm_source=Other</link><guid isPermaLink="false">pubmed:${pmid}</guid><pubDate>Thu, 22 Oct 2026 10:00:00 GMT</pubDate></item>`).join('')}</channel></rss>`);
+    return;
+  }
+  // The terms esearch received, for tests that check what reached NCBI.
+  if (requestUrl.pathname === '/entrez/searches') {
     response.writeHead(200, { 'Content-Type': 'application/json' });
-    response.end(pubmedFixture('esearch-journal.json'));
+    response.end(JSON.stringify(pubmedSearches));
     return;
   }
   if (requestUrl.pathname === '/entrez/eutils/efetch.fcgi') {

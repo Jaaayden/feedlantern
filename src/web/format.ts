@@ -1,40 +1,25 @@
-// Small display and file helpers shared by the web UI.
-
-const absoluteFormat = new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+// Small display and file helpers shared by the web UI. Dates follow the interface language.
+import { fmt, t } from './i18n';
 
 export function absoluteTime(value?: string | null): string {
-  if (!value) return '';
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? '' : absoluteFormat.format(date);
+  return fmt.date(value, { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
-/** "刚刚 / 3 分钟前 / 2 小时后 / 昨天 / 10月3日" style labels. */
+/** "just now / 3 minutes ago / in 2 hours / yesterday / Oct 3" style labels. */
 export function relativeTime(value?: string | null, now = Date.now()): string {
-  if (!value) return '';
-  const time = new Date(value).getTime();
-  if (Number.isNaN(time)) return '';
-  const diff = time - now, future = diff > 0, abs = Math.abs(diff);
-  const minute = 60_000, hour = 60 * minute, day = 24 * hour;
-  const suffix = future ? '后' : '前';
-  if (abs < 45_000) return future ? '即将' : '刚刚';
-  if (abs < hour) return `${Math.round(abs / minute)} 分钟${suffix}`;
-  if (abs < day) return `${Math.round(abs / hour)} 小时${suffix}`;
-  if (abs < 2 * day && !future) return '昨天';
-  if (abs < 7 * day) return `${Math.round(abs / day)} 天${suffix}`;
-  const date = new Date(time), current = new Date(now);
-  return date.getFullYear() === current.getFullYear() ? `${date.getMonth() + 1}月${date.getDate()}日` : `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`;
+  return fmt.relative(value, now);
 }
 
 function escapeXml(value: string): string {
   return value.replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[char]!);
 }
 
-/** Bundles go into their own "聚合订阅" folder; they have no web page of their own. */
+/** Bundles go into their own "Bundles" folder; they have no web page of their own. */
 export function buildOpml(title: string, feeds: Array<{ name: string; feedUrl: string; siteUrl: string }>, bundles: Array<{ name: string; feedUrl: string }> = []): string {
   const outline = (feed: { name: string; feedUrl: string; siteUrl?: string }, indent: string) => `${indent}<outline type="rss" text="${escapeXml(feed.name)}" title="${escapeXml(feed.name)}" xmlUrl="${escapeXml(feed.feedUrl)}"${feed.siteUrl ? ` htmlUrl="${escapeXml(feed.siteUrl)}"` : ''}/>`;
   const outlines = [
     ...feeds.map(feed => outline(feed, '    ')),
-    ...(bundles.length ? [`    <outline text="聚合订阅" title="聚合订阅">`, ...bundles.map(bundle => outline(bundle, '      ')), '    </outline>'] : []),
+    ...(bundles.length ? [`    <outline text="${escapeXml(t('opml.bundles'))}" title="${escapeXml(t('opml.bundles'))}">`, ...bundles.map(bundle => outline(bundle, '      ')), '    </outline>'] : []),
   ].join('\n');
   return `<?xml version="1.0" encoding="UTF-8"?>\n<opml version="2.0">\n  <head>\n    <title>${escapeXml(title)}</title>\n    <dateCreated>${new Date().toUTCString()}</dateCreated>\n  </head>\n  <body>\n${outlines}\n  </body>\n</opml>\n`;
 }
@@ -42,7 +27,7 @@ export function buildOpml(title: string, feeds: Array<{ name: string; feedUrl: s
 /** Pull every feed URL out of an OPML document (nested folders included). */
 export function parseOpmlUrls(text: string): string[] {
   const doc = new DOMParser().parseFromString(text, 'application/xml');
-  if (doc.querySelector('parsererror')) throw new Error('不是有效的 OPML 文件');
+  if (doc.querySelector('parsererror')) throw new Error(t('opml.invalid'));
   const urls = Array.from(doc.querySelectorAll('outline[xmlUrl], outline[xmlurl]'))
     .map(node => (node.getAttribute('xmlUrl') ?? node.getAttribute('xmlurl') ?? '').trim())
     .filter(Boolean);
@@ -88,7 +73,7 @@ export async function copyText(text: string): Promise<void> {
   area.setSelectionRange(0, text.length);
   let copied = false;
   try { copied = document.execCommand('copy'); } finally { area.remove(); previous?.focus(); }
-  if (!copied) throw new Error('无法访问剪贴板');
+  if (!copied) throw new Error(t('common.clipboardFailed'));
 }
 
 /** Readable text for summaries that may contain HTML (RSS descriptions). DOMParser never runs scripts. */

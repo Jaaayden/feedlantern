@@ -22,6 +22,8 @@ import { extractPage } from './extraction';
 import { collectPages, PAGINATION_BUDGET_MS, type CollectResult } from './pagination';
 import { prepareScrollContent } from './page-preparation';
 import { FetchTimeoutError, hostOf } from './fetch-errors';
+import { LocalizedError, lt, msg, rawText, type LocalizedText } from './i18n.js';
+import { isMessageKey, type MessageKey } from '../shared/i18n.js';
 import type { FetchNetworkOptions } from './fetch-options';
 import {
   allowedHostListFromEnv,
@@ -81,16 +83,16 @@ export interface BrowserServiceOptions {
   executablePath?: string;
 }
 
-export class BrowserServiceError extends Error {
-  constructor(message: string) {
-    super(message);
+export class BrowserServiceError extends LocalizedError {
+  constructor(text: LocalizedText) {
+    super(text);
     this.name = 'BrowserServiceError';
   }
 }
 
 export class BrowserBusyError extends BrowserServiceError {
-  constructor(message = '浏览器会话正在处理上一条操作，请稍后重试') {
-    super(message);
+  constructor(text = msg('error.browserBusy')) {
+    super(text);
     this.name = 'BrowserBusyError';
   }
 }
@@ -223,12 +225,12 @@ const PICK_SCRIPT = String.raw`(request, mapKey) => {
   let atPoint;
   if (request.node !== undefined && request.node !== null) {
     atPoint = mapped[request.node];
-    if (!atPoint || !atPoint.isConnected) return { selector: '', rects: [], count: 0, sampleText: '', warning: '网页内容已经变化，请点击“更新网页画面”后重试' };
+    if (!atPoint || !atPoint.isConnected) return { selector: '', rects: [], count: 0, sampleText: '', warning: 'error.pageChanged' };
   } else atPoint = document.elementFromPoint(request.x, request.y);
-  if (!atPoint) return { selector: '', rects: [], count: 0, sampleText: '', warning: '坐标处没有可选的 DOM 元素' };
-  if (atPoint instanceof HTMLIFrameElement) return { selector: '', rects: [], count: 0, sampleText: '', warning: '暂不支持跨域 iframe 内选取' };
-  if (atPoint instanceof HTMLCanvasElement) return { selector: '', rects: [], count: 0, sampleText: '', warning: 'canvas 内没有可持久化的 DOM selector' };
-  if (atPoint.getRootNode() instanceof ShadowRoot) return { selector: '', rects: [], count: 0, sampleText: '', warning: '暂不支持 Shadow DOM 内选取' };
+  if (!atPoint) return { selector: '', rects: [], count: 0, sampleText: '', warning: 'error.noElementAtPoint' };
+  if (atPoint instanceof HTMLIFrameElement) return { selector: '', rects: [], count: 0, sampleText: '', warning: 'pick.iframe' };
+  if (atPoint instanceof HTMLCanvasElement) return { selector: '', rects: [], count: 0, sampleText: '', warning: 'pick.canvas' };
+  if (atPoint.getRootNode() instanceof ShadowRoot) return { selector: '', rects: [], count: 0, sampleText: '', warning: 'pick.shadowDom' };
   let target = atPoint;
   // exact: the user widened or narrowed the choice by hand; keep it as-is.
   if (request.target !== 'item' && !request.exact) {
@@ -256,7 +258,7 @@ const PICK_SCRIPT = String.raw`(request, mapKey) => {
   // A rel="next" link is the most stable way to find the next page again.
   const relNext = request.target === 'next' && target.matches('a[rel~="next"]') && queryAll(document, 'a[rel~="next"]').length === 1;
   const selector = request.target === 'item' ? item.selector : relNext ? 'a[rel~="next"]' : root ? pathSelector(target, root) : globalSelector(target);
-  if (!selector) return { selector: '', rects: [], count: 0, sampleText: '', warning: '无法生成稳定 selector' };
+  if (!selector) return { selector: '', rects: [], count: 0, sampleText: '', warning: 'pick.noSelector' };
   const roots = root ? queryAll(document, request.itemSelector || item.selector) : [document.documentElement];
   const matches = [];
   if (request.target === 'item') matches.push.apply(matches, queryAll(document, selector));
@@ -274,7 +276,7 @@ const PICK_SCRIPT = String.raw`(request, mapKey) => {
     rects: rects,
     count: matches.length,
     sampleText: clean((matches[0] || target).textContent).slice(0, 500),
-    ...(!root && request.target !== 'item' && request.target !== 'next' ? { warning: '未提供 itemSelector，字段 selector 按整页生成' } : {}),
+    ...(!root && request.target !== 'item' && request.target !== 'next' ? { warning: 'pick.noItemSelector' } : {}),
   };
 }`;
 
@@ -351,14 +353,13 @@ function jpegSize(image: Buffer): { width: number; height: number } | undefined 
  * A one-line, actionable message for a Chromium launch failure. Playwright's own
  * message is a multi-line banner, which the API would replace with a generic hint.
  */
-export function launchFailureMessage(message: string, executablePath?: string): string | undefined {
+export function launchFailureMessage(message: string, executablePath?: string): LocalizedText | undefined {
   if (!/executable doesn't exist|playwright install/i.test(message)) return undefined;
-  if (executablePath) return '找不到 BROWSER_EXECUTABLE_PATH 指定的 Chromium，请检查该路径，或删除这项设置并运行 pnpm browser:install。';
-  return '未找到 Chromium 浏览器。请在服务主机的项目目录运行 pnpm browser:install；如果 .env 设置了 PLAYWRIGHT_BROWSERS_PATH，安装时也要使用同样的值。';
+  return msg(executablePath ? 'error.chromiumPathMissing' : 'error.chromiumMissing');
 }
 
 function finiteNumber(value: unknown, field: string): number {
-  if (typeof value !== 'number' || !Number.isFinite(value)) throw new BrowserServiceError(`${field} 必须是有限数字`);
+  if (typeof value !== 'number' || !Number.isFinite(value)) throw new BrowserServiceError(msg('error.notFiniteNumber', { field }));
   return value;
 }
 
@@ -375,20 +376,24 @@ function isNavigationTimeout(error: unknown): boolean {
   return error.name === 'TimeoutError' || /Timeout \d+ms exceeded|ERR_TIMED_OUT|ERR_CONNECTION_TIMED_OUT/.test(error.message);
 }
 
-function cleanError(error: unknown, fallback: string): BrowserServiceError | FetchTimeoutError {
-  if (error instanceof BrowserServiceError || error instanceof FetchTimeoutError) return error;
-  const message = error instanceof Error ? error.message : String(error);
-  return new BrowserServiceError(`${fallback}：${message}`);
+/** "<what failed>: <detail>" with the original message as detail. */
+function failed(action: MessageKey, error: unknown): LocalizedText {
+  return msg('error.failedWithDetail', { action: { key: action }, detail: error instanceof Error ? error.message : String(error) });
 }
 
-function normalizeSelectorError(error: unknown, fallback: string): BrowserServiceError {
+function cleanError(error: unknown, fallback: MessageKey): BrowserServiceError | FetchTimeoutError {
+  if (error instanceof BrowserServiceError || error instanceof FetchTimeoutError) return error;
+  return new BrowserServiceError(failed(fallback, error));
+}
+
+function normalizeSelectorError(error: unknown, fallback: MessageKey): BrowserServiceError {
   const message = error instanceof Error ? error.message : String(error);
-  if (/ERR_TUNNEL_CONNECTION_FAILED|ERR_PROXY_CONNECTION_FAILED|ERR_PROXY_AUTH|ERR_NO_SUPPORTED_PROXIES/.test(message)) return new BrowserServiceError('无法通过网络配置中的代理建立连接，请检查代理地址、端口和认证信息');
-  if (/ERR_BLOCKED_BY_CLIENT/.test(message)) return new BrowserServiceError('网页或重定向被网络安全策略阻止，请检查目标 DNS 是否解析到私网或保留地址');
-  if (/Timeout|timed out/i.test(message)) return new BrowserServiceError('网页加载超时，请检查网络连接或调整等待条件');
-  if (/ERR_CERT/.test(message)) return new BrowserServiceError('目标网站的 HTTPS 证书无效，无法安全加载');
-  if (/selector|queryselector|syntaxerror|strict mode/i.test(message)) return new BrowserServiceError(`CSS selector 无效：${message}`);
-  return new BrowserServiceError(`${fallback}：${message}`);
+  if (/ERR_TUNNEL_CONNECTION_FAILED|ERR_PROXY_CONNECTION_FAILED|ERR_PROXY_AUTH|ERR_NO_SUPPORTED_PROXIES/.test(message)) return new BrowserServiceError(msg('error.proxyConnectFailed'));
+  if (/ERR_BLOCKED_BY_CLIENT/.test(message)) return new BrowserServiceError(msg('error.pageBlocked'));
+  if (/Timeout|timed out/i.test(message)) return new BrowserServiceError(msg('error.pageLoadTimeout'));
+  if (/ERR_CERT/.test(message)) return new BrowserServiceError(msg('error.certInvalid'));
+  if (/selector|queryselector|syntaxerror|strict mode/i.test(message)) return new BrowserServiceError(msg('error.selectorInvalid', { detail: message }));
+  return new BrowserServiceError(failed(fallback, error));
 }
 
 export class BrowserService {
@@ -410,7 +415,7 @@ export class BrowserService {
 
   constructor(options: BrowserServiceOptions = {}) {
     this.backgroundConcurrency = options.backgroundConcurrency ?? 1;
-    if (!Number.isInteger(this.backgroundConcurrency) || this.backgroundConcurrency < 1 || this.backgroundConcurrency > 4) throw new BrowserServiceError('后台并发必须是 1–4 的整数');
+    if (!Number.isInteger(this.backgroundConcurrency) || this.backgroundConcurrency < 1 || this.backgroundConcurrency > 4) throw new BrowserServiceError(msg('error.backgroundConcurrency'));
     this.networkOptions = {
       allowedHosts: options.allowedHosts ?? allowedHostListFromEnv(),
       dnsOverHttps: options.dnsOverHttps,
@@ -419,7 +424,7 @@ export class BrowserService {
   }
 
   private async ensureBrowser(): Promise<Browser> {
-    if (this.disposing) throw new BrowserServiceError('浏览器服务正在关闭');
+    if (this.disposing) throw new BrowserServiceError(msg('error.browserClosing'));
     if (this.browser) return this.browser;
     if (this.browserPromise) return this.browserPromise;
     this.browserPromise = (async () => {
@@ -446,11 +451,11 @@ export class BrowserService {
         const message = error instanceof Error ? error.message : String(error);
         if (message !== this.lastLaunchError) {
           this.lastLaunchError = message;
-          console.error(`启动 Chromium 失败：${redactForLog(message)}`);
+          console.error(`Failed to start Chromium: ${redactForLog(message)}`);
         }
         const hint = launchFailureMessage(message, this.executablePath);
         if (hint) throw new BrowserServiceError(hint);
-        throw cleanError(error, '启动 Chromium 失败');
+        throw cleanError(error, 'action.startChromium');
       }
     })();
     try {
@@ -493,7 +498,7 @@ export class BrowserService {
       context = await browser.newContext(this.contextOptions(contextProxy ?? this.proxy, network));
     } catch (error) {
       await contextProxy?.close().catch(() => undefined);
-      throw cleanError(error, '创建浏览器上下文失败');
+      throw cleanError(error, 'action.createContext');
     }
     if (contextProxy) {
       this.contextProxies.set(context, contextProxy);
@@ -510,14 +515,14 @@ export class BrowserService {
     } catch (error) {
       this.activeContexts.delete(context);
       await context.close().catch(() => undefined);
-      throw cleanError(error, '创建浏览器上下文失败');
+      throw cleanError(error, 'action.createContext');
     }
   }
 
   /** The upstream proxy failure behind a navigation error, if any. */
   private proxyFailure(page: Page): BrowserServiceError | undefined {
     const message = this.contextProxies.get(page.context())?.lastError;
-    return message ? new BrowserServiceError(`通过代理访问失败：${message}`) : undefined;
+    return message ? new BrowserServiceError(msg('error.proxyFailed', { detail: message })) : undefined;
   }
 
   /**
@@ -539,13 +544,13 @@ export class BrowserService {
       // A plain-HTTP page whose proxy failed arrives as our proxy's 502 page.
       if (!response || response.status() >= 500) { const failure = this.proxyFailure(page); if (failure) throw failure; }
       if (rejectHttpErrors && response && response.status() >= 400) {
-        const hint = response.status() === 401 || response.status() === 403 ? '，请检查 Cookie 或访问权限' : '';
-        throw new BrowserServiceError(`目标网页返回 HTTP ${response.status()}${hint}`);
+        const status = String(response.status());
+        throw new BrowserServiceError(response.status() === 401 || response.status() === 403 ? msg('error.httpStatusAuth', { status }) : msg('error.httpStatus', { status }));
       }
       if (options.waitForSelector) {
         try { await page.waitForSelector(options.waitForSelector, { state: 'attached', timeout: SELECTOR_TIMEOUT_MS }); }
         catch (error) {
-          if (isNavigationTimeout(error)) throw new WaitTimeoutError(`页面已打开，但等待的元素 ${SELECTOR_TIMEOUT_MS / 1000} 秒内没有出现，请检查“等待元素”设置、Cookie 或页面是否需要登录`);
+          if (isNavigationTimeout(error)) throw new WaitTimeoutError(msg('error.waitSelectorTimeout', { seconds: SELECTOR_TIMEOUT_MS / 1000 }));
           throw error;
         }
       }
@@ -555,7 +560,7 @@ export class BrowserService {
       const failure = this.proxyFailure(page);
       if (failure) throw failure;
       if (error instanceof FetchTimeoutError || error instanceof WaitTimeoutError) throw error;
-      throw normalizeSelectorError(error, '打开页面失败');
+      throw normalizeSelectorError(error, 'action.openPage');
     }
   }
 
@@ -585,10 +590,10 @@ export class BrowserService {
 
   private getSession(id: string): BrowserSession {
     const session = this.sessions.get(id);
-    if (!session) throw new BrowserServiceError('浏览器会话不存在或已过期');
+    if (!session) throw new BrowserServiceError(msg('error.browserSessionExpired'));
     if (session.page.isClosed() || session.context.pages().length === 0) {
       this.sessions.delete(id);
-      throw new BrowserServiceError('浏览器页面已经关闭，请重新打开');
+      throw new BrowserServiceError(msg('error.browserPageClosed'));
     }
     return session;
   }
@@ -604,7 +609,7 @@ export class BrowserService {
       timeout = setTimeout(() => {
         timedOut = true;
         this.invalidateSession(session);
-        reject(new BrowserServiceError('浏览器操作超时，页面会话已关闭，请重新打开'));
+        reject(new BrowserServiceError(msg('error.browserOperationTimeout')));
       }, timeoutMs);
       timeout.unref?.();
     });
@@ -612,7 +617,7 @@ export class BrowserService {
       return await Promise.race([operation(session), deadline]);
     } catch (error) {
       if (error instanceof BrowserServiceError) throw error;
-      throw cleanError(error, '浏览器操作失败');
+      throw cleanError(error, 'action.browserOperation');
     } finally {
       if (timeout) clearTimeout(timeout);
       session.busy = false;
@@ -632,7 +637,7 @@ export class BrowserService {
     await page.evaluate("window.scrollTo({ left: 0, top: 0, behavior: 'instant' })");
     const measured = Number(await page.evaluate(DOCUMENT_HEIGHT_SCRIPT)) || viewport.height;
     const documentHeight = Math.max(viewport.height, Math.min(MAX_DOCUMENT_HEIGHT, Math.ceil(measured)));
-    if (top >= documentHeight) throw new BrowserServiceError('已经显示到网页底部');
+    if (top >= documentHeight) throw new BrowserServiceError(msg('error.pageBottom'));
     const wanted = Math.min(SEGMENT_HEIGHT, documentHeight - top);
     const tall = top > 0 || wanted > viewport.height;
     const image = await page.screenshot({
@@ -675,7 +680,7 @@ export class BrowserService {
         ...(captured.truncated ? { truncated: true } : {}),
       };
     } catch (error) {
-      throw error instanceof BrowserServiceError ? error : cleanError(error, '生成页面截图失败');
+      throw error instanceof BrowserServiceError ? error : cleanError(error, 'action.screenshot');
     }
   }
 
@@ -684,21 +689,21 @@ export class BrowserService {
    * height captured so far, so a repeated or stale request cannot skip a part.
    */
   async segment(id: string, top: number): Promise<SegmentResult> {
-    if (!Number.isInteger(top) || top <= 0) throw new BrowserServiceError('画面分段位置无效');
+    if (!Number.isInteger(top) || top <= 0) throw new BrowserServiceError(msg('error.segmentInvalid'));
     return this.withSession(id, async session => {
-      if (top !== session.frameHeight) throw new BrowserServiceError('网页画面已经变化，请点击“更新网页画面”后重试');
+      if (top !== session.frameHeight) throw new BrowserServiceError(msg('error.frameChanged'));
       try {
         const captured = await this.capture(session, top, false);
         return { top, image: captured.image, height: captured.height, documentHeight: captured.documentHeight, map: captured.map, ...(captured.truncated ? { truncated: true } : {}) };
       } catch (error) {
-        throw error instanceof BrowserServiceError ? error : cleanError(error, '生成页面截图失败');
+        throw error instanceof BrowserServiceError ? error : cleanError(error, 'action.screenshot');
       }
     });
   }
 
   async open(options: BrowserOpenOptions): Promise<ScreenFrame> {
-    if (!options || typeof options.url !== 'string' || !options.url.trim()) throw new BrowserServiceError('目标 URL 不能为空');
-    if (this.sessions.size + this.openingSessions >= MAX_EDITOR_SESSIONS) throw new BrowserBusyError('已达到最多 2 个浏览器编辑会话');
+    if (!options || typeof options.url !== 'string' || !options.url.trim()) throw new BrowserServiceError(msg('error.targetUrlRequired'));
+    if (this.sessions.size + this.openingSessions >= MAX_EDITOR_SESSIONS) throw new BrowserBusyError(msg('error.editorSessionLimit', { count: 2 }));
     this.openingSessions += 1;
     const id = randomUUID();
     let context: BrowserContext | undefined;
@@ -734,7 +739,7 @@ export class BrowserService {
       this.sessions.delete(id);
       if (context) this.activeContexts.delete(context);
       await context?.close().catch(() => undefined);
-      throw error instanceof BrowserServiceError ? error : cleanError(error, '打开页面失败');
+      throw error instanceof BrowserServiceError ? error : cleanError(error, 'action.openPage');
     } finally {
       options.signal?.removeEventListener('abort', abort);
       this.openingSessions -= 1;
@@ -752,7 +757,7 @@ export class BrowserService {
       const viewport = session.page.viewportSize() ?? VIEWPORT;
       const x = finiteNumber(point?.x ?? viewport.width / 2, 'x');
       const y = finiteNumber(point?.y ?? viewport.height / 2, 'y');
-      if (x < 0 || y < 0 || x > viewport.width || y > viewport.height) throw new BrowserServiceError('滚动坐标超出页面视口');
+      if (x < 0 || y < 0 || x > viewport.width || y > viewport.height) throw new BrowserServiceError(msg('error.scrollOutside'));
       if (session.pointer?.x !== x || session.pointer?.y !== y) {
         await session.page.mouse.move(x, y);
         session.pointer = { x, y };
@@ -768,7 +773,7 @@ export class BrowserService {
     finiteNumber(y, 'y');
     return this.withSession(id, async session => {
       const viewport = session.page.viewportSize() ?? VIEWPORT;
-      if (x < 0 || y < 0 || x > viewport.width || y > viewport.height) throw new BrowserServiceError('点击坐标超出页面视口');
+      if (x < 0 || y < 0 || x > viewport.width || y > viewport.height) throw new BrowserServiceError(msg('error.clickOutside'));
       await session.page.mouse.click(x, y);
       session.pointer = { x, y };
       // A click can synchronously start a navigation. Wait briefly for the
@@ -785,7 +790,7 @@ export class BrowserService {
    */
   async pick(id: string, request: PickRequest): Promise<PickResult> {
     if (request.node !== undefined) {
-      if (!Number.isInteger(request.node) || request.node < 0) throw new BrowserServiceError('选择的元素无效');
+      if (!Number.isInteger(request.node) || request.node < 0) throw new BrowserServiceError(msg('error.nodeInvalid'));
     } else {
       finiteNumber(request.x, 'x');
       finiteNumber(request.y, 'y');
@@ -796,10 +801,10 @@ export class BrowserService {
       let node = request.node;
       if (node === undefined) {
         const x = request.x!, y = request.y!;
-        if (x < 0 || y < 0 || x > viewport.width || y > frameHeight) throw new BrowserServiceError('选择坐标超出页面视口');
+        if (x < 0 || y < 0 || x > viewport.width || y > frameHeight) throw new BrowserServiceError(msg('error.pickOutside'));
         if (session.map) {
           node = hitTest(session.map, x, y);
-          if (node < 0) throw new BrowserServiceError('坐标处没有可选的 DOM 元素');
+          if (node < 0) throw new BrowserServiceError(msg('error.noElementAtPoint'));
         }
       }
       const { rules, ...rest } = request;
@@ -808,15 +813,15 @@ export class BrowserService {
       try {
         const expression = `(${PICK_SCRIPT})(${JSON.stringify(pageRequest)}, ${JSON.stringify(session.mapKey)})`;
         result = await session.page.evaluate(expression) as RawPickResult;
-        if (!result.selector && result.warning) throw new BrowserServiceError(result.warning);
+        if (!result.selector && result.warning) throw new BrowserServiceError(isMessageKey(result.warning) ? { key: result.warning } : rawText(result.warning));
         if (request.target === 'date') {
           const datePreview = await previewDateSelection(session.page, request.itemSelector, result.selector);
           const dateRects = datePreview ? await dateSelectionRects(session.page, request.itemSelector, result.selector, frameHeight) : [];
-          result = { ...result, ...(datePreview ? { datePreview, sampleText: datePreview.dateText, ...(dateRects.length ? { rects: dateRects } : {}) } : {}), warning: [result.warning, datePreview ? '已从选中区域提取时间；保存的规则仍使用日期所在容器。' : '未找到唯一可解析的日期，请调整选中区域。'].filter(Boolean).join(' ') };
+          result = { ...result, ...(datePreview ? { datePreview, sampleText: datePreview.dateText, ...(dateRects.length ? { rects: dateRects } : {}) } : {}), warning: [result.warning, datePreview ? 'pick.dateExtracted' : 'pick.dateMissing'].filter(Boolean).join(' ') };
         }
       } catch (error) {
         if (error instanceof BrowserServiceError) throw error;
-        throw normalizeSelectorError(error, '分析选取元素失败');
+        throw normalizeSelectorError(error, 'action.analyzePick');
       }
       if (rules && request.target !== 'next') {
         const next = { ...rules, [request.target]: result.selector };
@@ -824,20 +829,22 @@ export class BrowserService {
           try {
             result.items = await extractPage(session.page, next as SelectionRules);
           } catch (error) {
-            result.previewError = (error instanceof BrowserServiceError ? error : cleanError(error, '抽取页面内容失败')).message;
+            result.previewError = lt((error instanceof BrowserServiceError ? error : cleanError(error, 'action.extract')).text);
           }
         }
       }
+      // The page script and the date preview report message keys.
+      if (result.warning) result.warning = result.warning.split(' ').map(key => isMessageKey(key) ? lt({ key }) : key).join(' ');
       return result;
     });
   }
 
   /** Open the link at a mapped element in this session, then recapture. */
   async follow(id: string, node: number): Promise<ScreenFrame> {
-    if (!Number.isInteger(node) || node < 0) throw new BrowserServiceError('链接位置无效');
+    if (!Number.isInteger(node) || node < 0) throw new BrowserServiceError(msg('error.linkNodeInvalid'));
     return this.withSession(id, async session => {
       const href = session.map ? linkFor(session.map, node) : undefined;
-      if (!href) throw new BrowserServiceError('这里不是可以打开的链接');
+      if (!href) throw new BrowserServiceError(msg('error.notALink'));
       await new NetworkPolicy(policyOptionsFor(this.networkOptions, session.network?.proxy)).assertAllowed(href);
       await this.preparePage(session.page, { url: href, waitMs: session.waitMs, network: session.network && { ...session.network, referer: undefined } });
       return this.frame(session);
@@ -849,7 +856,7 @@ export class BrowserService {
       try {
         return await extractPage(session.page, rules);
       } catch (error) {
-        throw error instanceof BrowserServiceError ? error : cleanError(error, '抽取页面内容失败');
+        throw error instanceof BrowserServiceError ? error : cleanError(error, 'action.extract');
       }
     });
   }
@@ -871,7 +878,7 @@ export class BrowserService {
         await this.preparePage(tab, options, true);
         return await this.collect(tab, { ...options, rules, pagination });
       } catch (error) {
-        throw error instanceof BrowserServiceError ? error : cleanError(error, '预览翻页失败');
+        throw error instanceof BrowserServiceError ? error : cleanError(error, 'action.previewPagination');
       } finally {
         session.openingTab = false;
         await tab?.close().catch(() => undefined);
@@ -909,7 +916,7 @@ export class BrowserService {
   }
 
   private async background<T>(options: BrowserOpenOptions, extract: (page: Page) => Promise<T>, timeoutMs = BROWSER_OPERATION_TIMEOUT_MS): Promise<T> {
-    if (this.scrapeSessions >= this.backgroundConcurrency) throw new BrowserBusyError('已有抓取任务正在运行');
+    if (this.scrapeSessions >= this.backgroundConcurrency) throw new BrowserBusyError(msg('error.scrapeBusy'));
     this.scrapeSessions += 1;
     let context: BrowserContext | undefined;
     const abort = () => { void context?.close().catch(() => undefined); };
@@ -923,7 +930,7 @@ export class BrowserService {
       const deadline = new Promise<never>((_, reject) => {
         timeout = setTimeout(() => {
           void context?.close().catch(() => undefined);
-          reject(new BrowserServiceError(`抓取 ${hostOf(options.url)} 超时（${Math.round(timeoutMs / 1000)} 秒内未完成），浏览器会话已关闭；请缩短等待时间或减少翻页页数`));
+          reject(new BrowserServiceError(msg('error.scrapeTimeout', { host: hostOf(options.url), seconds: Math.round(timeoutMs / 1000) })));
         }, timeoutMs);
         timeout.unref?.();
       });
@@ -937,7 +944,7 @@ export class BrowserService {
       }
     } catch (error) {
       if (error instanceof BrowserServiceError || error instanceof FetchTimeoutError) throw error;
-      throw cleanError(error, '抓取页面失败');
+      throw cleanError(error, 'action.scrape');
     } finally {
       options.signal?.removeEventListener('abort', abort);
       if (context) this.activeContexts.delete(context);
@@ -952,7 +959,7 @@ export class BrowserService {
         const module = await import('./detection.js');
         return await module.detectPage(session.page);
       } catch (error) {
-        throw cleanError(error, '自动识别页面失败');
+        throw cleanError(error, 'action.detect');
       }
     });
   }

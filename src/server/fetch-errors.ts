@@ -3,21 +3,20 @@
  * time, never the full address, so query parameters stay hidden in fetch
  * logs, the feed list and alerts.
  */
+import { LocalizedError, msg, type LocalizedText } from './i18n.js';
+import type { Param } from '../shared/i18n.js';
 
-/** Shown with a timeout on a direct connection; the most common cause is a local proxy app. */
-const DIRECT_HINT = '如果本机开启了代理软件的增强模式或 Fake-IP，FeedLantern 不读取系统代理：请开启 TUN/增强模式并打开 DNS-over-HTTPS，或为该订阅配置网络代理。';
-const PROXY_HINT = '请检查该订阅网络配置中的代理是否可用。';
-
-export class FetchTimeoutError extends Error {
+export class FetchTimeoutError extends LocalizedError {
   override name = 'FetchTimeoutError';
-  constructor(readonly host: string, readonly seconds: number, viaProxy = false) {
-    super(`连接 ${host} 超时（${seconds} 秒未响应）。${viaProxy ? PROXY_HINT : DIRECT_HINT}`);
+  constructor(readonly host: Param, readonly seconds: number, viaProxy = false) {
+    // On a direct connection the most common cause is a local proxy app.
+    super(msg('error.fetchTimeout', { host, seconds, hint: msg(viaProxy ? 'error.fetchTimeoutProxyHint' : 'error.fetchTimeoutDirectHint') }));
   }
 }
 
 /** The host of an address for a message, without port, path or query. */
-export function hostOf(raw: string): string {
-  try { return new URL(raw).hostname.replace(/^\[|\]$/g, '') || '目标网站'; } catch { return '目标网站'; }
+export function hostOf(raw: string): Param {
+  try { return new URL(raw).hostname.replace(/^\[|\]$/g, '') || msg('label.targetSite'); } catch { return msg('label.targetSite'); }
 }
 
 /**
@@ -34,7 +33,7 @@ export function isAbortError(error: unknown): boolean {
  * the service stopping) is rethrown unchanged so it is never reported as a
  * timeout.
  */
-export async function withFetchTimeout<T>(seconds: number, signal: AbortSignal | undefined, host: () => string, viaProxy: boolean, operation: (combined: AbortSignal) => Promise<T>): Promise<T> {
+export async function withFetchTimeout<T>(seconds: number, signal: AbortSignal | undefined, host: () => Param, viaProxy: boolean, operation: (combined: AbortSignal) => Promise<T>): Promise<T> {
   const timer = AbortSignal.timeout(seconds * 1000);
   const combined = signal ? AbortSignal.any([timer, signal]) : timer;
   try {
@@ -47,39 +46,37 @@ export async function withFetchTimeout<T>(seconds: number, signal: AbortSignal |
 
 /**
  * User-visible messages for sources that do not answer with a feed, and for
- * PubMed sources fetched through NCBI E-utilities. Kept together here so
- * they can move to the language files in one place. None of them contains
- * an address, so they are safe in fetch logs, the feed list and alerts.
+ * PubMed searches fetched through NCBI E-utilities. None of them contains an
+ * address, so they are safe in fetch logs, the feed list and alerts.
  */
 export const sourceMessages = {
   /** An HTML page where a feed was expected. */
-  htmlPage: (status?: number) => `来源返回的是网页而不是 RSS/Atom${status ? `（HTTP ${status}）` : ''}。可能是对方的反爬验证页或登录页，FeedLantern 不会尝试绕过；请确认地址是订阅源地址。`,
+  htmlPage: (status?: number): LocalizedText => status ? msg('source.htmlPageStatus', { status: String(status) }) : msg('source.htmlPage'),
   /** An HTML page that looks like a bot or cookie check. `marker` is the recognised keyword. */
-  challengePage: (status: number | undefined, marker: string) => `来源返回的是反爬验证页而不是 RSS/Atom（${status ? `HTTP ${status}，` : ''}页面含 ${marker} 标记）。FeedLantern 不会尝试绕过对方的验证，请改用对方提供的官方接口或稍后重试。`,
+  challengePage: (status: number | undefined, marker: string): LocalizedText => status ? msg('source.challengePageStatus', { status: String(status), marker }) : msg('source.challengePage', { marker }),
   /** A 2xx answer other than 200 that is not an HTML page. */
-  unexpectedStatus: (status: number) => `来源返回 HTTP ${status}，不是正常的订阅响应（应为 HTTP 200）${status === 203 ? '：内容可能被中间代理或对方的验证机制替换' : ''}。`,
+  unexpectedStatus: (status: number): LocalizedText => status === 203 ? msg('source.status203') : msg('source.unexpectedStatus', { status: String(status) }),
   /** A non-2xx answer whose body is a bot check. */
-  challengeStatus: (status: number, marker: string) => `RSS 获取失败（HTTP ${status}）：来源返回了反爬验证页（页面含 ${marker} 标记），FeedLantern 不会尝试绕过。`,
+  challengeStatus: (status: number, marker: string): LocalizedText => msg('source.challengeStatus', { status: String(status), marker }),
   pubmed: {
-    rateLimited: 'NCBI E-utilities 请求过于频繁（HTTP 429），请稍后重试；管理员可以在“设置 → PubMed（NCBI）”中填写 NCBI API Key 提高限额。',
-    invalidKey: 'NCBI 拒绝了 API Key，请管理员在“设置 → PubMed（NCBI）”中检查或删除它。',
-    httpError: (status: number) => `NCBI E-utilities 请求失败（HTTP ${status}），请稍后重试。`,
-    htmlPage: (status: number) => `NCBI E-utilities 返回的是网页而不是数据（HTTP ${status}），请稍后重试。`,
-    serviceError: (detail: string) => `NCBI E-utilities 返回错误：${detail}`,
-    unreadable: 'NCBI E-utilities 返回的数据无法解析，请稍后重试。',
-    journalNotFound: (nlmId: string) => `PubMed 中没有找到 NLM ID 为 ${nlmId} 的期刊，请检查订阅地址。`,
+    rateLimited: msg('ncbi.rateLimited'),
+    invalidKey: msg('ncbi.invalidKey'),
+    httpError: (status: number): LocalizedText => msg('ncbi.httpError', { status: String(status) }),
+    htmlPage: (status: number): LocalizedText => msg('ncbi.htmlPage', { status: String(status) }),
+    serviceError: (detail: string): LocalizedText => msg('ncbi.serviceError', { detail }),
+    unreadable: msg('ncbi.unreadable'),
   },
 } as const;
 
 /** The source answered, but not with a feed (an HTML page, a bot check, an unusual status). */
-export class NotAFeedError extends Error {
+export class NotAFeedError extends LocalizedError {
   override name = 'NotAFeedError';
 }
 
 /** A readable failure from NCBI E-utilities; the message never contains the request address or the API key. */
-export class NcbiError extends Error {
+export class NcbiError extends LocalizedError {
   override name = 'NcbiError';
-  constructor(message: string, readonly status?: number) { super(message); }
+  constructor(text: LocalizedText, readonly status?: number) { super(text); }
 }
 
 /**
@@ -121,7 +118,7 @@ function looksLikeXml(body: string): boolean {
  * `contentType` are unknown when only the body is checked. A non-2xx status
  * is reported here only when the page is a recognisable bot check.
  */
-export function nonFeedReason(body: string, status?: number, contentType?: string): string | undefined {
+export function nonFeedReason(body: string, status?: number, contentType?: string): LocalizedText | undefined {
   // Some servers label a valid feed text/html: the label counts only when the body does not start like XML.
   const html = looksLikeHtml(body) || /^\s*(?:text\/html|application\/xhtml\+xml)\b/i.test(contentType ?? '') && !looksLikeXml(body);
   const marker = html ? challengeMarker(body) : undefined;

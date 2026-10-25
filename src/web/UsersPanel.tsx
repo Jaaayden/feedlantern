@@ -5,6 +5,7 @@ import { Modal } from './Modal';
 import { Ban, ChevronRight, CircleCheck, MoreHorizontal, Pencil, Plus, Search, Trash2 } from 'lucide-react';
 import { ActionMenu } from './Menu';
 import { absoluteTime, relativeTime } from './format';
+import { fmt, t } from './i18n';
 
 type Preview = Awaited<ReturnType<typeof api.users.deletionPreview>>;
 export function UsersPanel({ currentUserId, manage, changed, identityChanged }: { currentUserId: string; manage: (user: UserSummary | null, attention?: boolean) => void; changed?: () => void; identityChanged: () => void }) {
@@ -25,7 +26,7 @@ export function UsersPanel({ currentUserId, manage, changed, identityChanged }: 
   async function run(action: () => Promise<unknown>, message: string) {
     setBusy(true); setError(''); setNotice('');
     try { await action(); setUsers(await api.users.list()); changed?.(); setNotice(message); return true; }
-    catch (e) { setError(e instanceof Error ? e.message : '操作失败'); return false; }
+    catch (e) { setError(e instanceof Error ? e.message : t('error.actionFailed')); return false; }
     finally { setBusy(false); }
   }
   function reset() { setEditing(null); setUsername(''); setPassword(''); setRole('user'); setFormOpen(false); }
@@ -37,56 +38,56 @@ export function UsersPanel({ currentUserId, manage, changed, identityChanged }: 
       if (password) await api.users.password(editing.id, password);
       await api.users.update(editing.id, { username, role });
       if (editing.id === currentUserId && (username !== editing.username || role !== editing.role)) identityChanged();
-    }, editing ? '账号已更新；身份或密码变化后需要重新登录。' : '用户已创建。');
+    }, editing ? t('users.updated') : t('users.created'));
     if (ok) reset();
   }
   const shown = users.filter(user => user.username.toLowerCase().includes(query.trim().toLowerCase()) && (!onlyFailing || !!user.stats?.failingFeeds));
   const totals = users.reduce((sum, user) => ({ feeds: sum.feeds + (user.stats?.feeds ?? 0), failing: sum.failing + (user.stats?.failingFeeds ?? 0) }), { feeds: 0, failing: 0 });
   return <>
-    <div className="page-heading"><div><span className="section-kicker">ACCOUNTS</span><h1>用户管理</h1><p>管理账号权限，或进入用户的独立工作台。管理员拥有相同管理权限。</p></div><button className="button primary" disabled={busy} onClick={() => { reset(); setError(''); setFormOpen(true); }}><Plus size={17} />创建用户</button></div>
+    <div className="page-heading"><div><span className="section-kicker">ACCOUNTS</span><h1>{t('users.title')}</h1><p>{t('users.lead')}</p></div><button className="button primary" disabled={busy} onClick={() => { reset(); setError(''); setFormOpen(true); }}><Plus size={17} />{t('users.create')}</button></div>
     {error && !formOpen && !deletion && <p className="error-note" role="alert">{error}</p>}
     {notice && <p className="notice" role="status">{notice}</p>}
-    {formOpen && <Modal title={editing ? `编辑 ${editing.username}` : '创建用户'} close={() => { if (!busy) reset(); }}><form className="modal-body" onSubmit={submit}>
-      <label className="field"><span>用户名</span><input required maxLength={100} pattern="[^\s]+" value={username} onChange={e => setUsername(e.target.value)} autoComplete="off" /></label>
-      {editing && <label className="field"><span>角色</span><select aria-label="角色" value={role} onChange={e => setRole(e.target.value as 'admin' | 'user')}><option value="user">普通用户</option><option value="admin">管理员</option></select><small>始终需要至少一名启用的管理员。修改自己的身份后需要重新登录。</small></label>}
-      {editing?.id !== currentUserId && <label className="field"><span>{editing ? '新密码（留空保留）' : '初始密码'}</span><input required={!editing} type="password" minLength={8} maxLength={1024} value={password} onChange={e => setPassword(e.target.value)} autoComplete="new-password" /></label>}
+    {formOpen && <Modal title={editing ? t('users.editTitle', { name: editing.username }) : t('users.create')} close={() => { if (!busy) reset(); }}><form className="modal-body" onSubmit={submit}>
+      <label className="field"><span>{t('auth.username')}</span><input required maxLength={100} pattern="[^\s]+" value={username} onChange={e => setUsername(e.target.value)} autoComplete="off" /></label>
+      {editing && <label className="field"><span>{t('users.role')}</span><select aria-label={t('users.role')} value={role} onChange={e => setRole(e.target.value as 'admin' | 'user')}><option value="user">{t('role.user')}</option><option value="admin">{t('role.admin')}</option></select><small>{t('users.roleHint')}</small></label>}
+      {editing?.id !== currentUserId && <label className="field"><span>{editing ? t('users.newPassword') : t('users.initialPassword')}</span><input required={!editing} type="password" minLength={8} maxLength={1024} value={password} onChange={e => setPassword(e.target.value)} autoComplete="new-password" /></label>}
       {error && <p className="error-note" role="alert">{error}</p>}
-      <div className="modal-actions"><button type="button" className="button" disabled={busy} onClick={reset}>{editing ? '取消编辑' : '取消'}</button><button className="button primary" disabled={busy}>{busy ? '正在保存…' : editing ? '保存账号' : '创建用户'}</button></div>
+      <div className="modal-actions"><button type="button" className="button" disabled={busy} onClick={reset}>{editing ? t('users.cancelEdit') : t('common.cancel')}</button><button className="button primary" disabled={busy}>{busy ? t('common.saving') : editing ? t('users.save') : t('users.create')}</button></div>
     </form></Modal>}
     {users.length > 0 && <div className="stats-row users-summary">
-      <div><span>账号</span><strong>{users.length}<small>{users.filter(user => user.role === 'admin').length} 位管理员</small></strong></div>
-      <div><span>已停用</span><strong>{users.filter(user => !user.enabled).length}<small>个账号</small></strong></div>
-      <div><span>订阅总数</span><strong>{totals.feeds}<small>个来源</small></strong></div>
-      {totals.failing ? <button className={`attention ${onlyFailing ? 'active' : ''}`} aria-pressed={onlyFailing} title={onlyFailing ? '显示全部账号' : '只看有出错订阅的账号'} onClick={() => setOnlyFailing(!onlyFailing)}><span>出错订阅</span><strong>{totals.failing}<small>{onlyFailing ? '已筛选' : '点击筛选'}</small><ChevronRight size={15} className="stat-arrow" /></strong></button> : <div><span>出错订阅</span><strong>0<small>一切正常</small></strong></div>}
+      <div><span>{t('users.accounts')}</span><strong>{users.length}<small>{t('users.adminCount', { count: users.filter(user => user.role === 'admin').length })}</small></strong></div>
+      <div><span>{t('users.disabled')}</span><strong>{users.filter(user => !user.enabled).length}<small>{t('users.accountsUnit', { count: users.filter(user => !user.enabled).length })}</small></strong></div>
+      <div><span>{t('users.totalFeeds')}</span><strong>{totals.feeds}<small>{t('users.sourcesUnit', { count: totals.feeds })}</small></strong></div>
+      {totals.failing ? <button className={`attention ${onlyFailing ? 'active' : ''}`} aria-pressed={onlyFailing} title={onlyFailing ? t('users.showAll') : t('users.onlyFailing')} onClick={() => setOnlyFailing(!onlyFailing)}><span>{t('users.failingFeeds')}</span><strong>{totals.failing}<small>{onlyFailing ? t('users.filtered') : t('users.clickToFilter')}</small><ChevronRight size={15} className="stat-arrow" /></strong></button> : <div><span>{t('users.failingFeeds')}</span><strong>0<small>{t('users.allGood')}</small></strong></div>}
     </div>}
-    <section className="panel settings-form users-list" aria-label="用户列表"><div className="panel-heading"><h2>全部账号 <span>{users.length}</span></h2>{users.length > 5 && <div className="input-icon users-search"><Search size={15} /><input aria-label="搜索用户" placeholder="搜索用户名" value={query} onChange={e => setQuery(e.target.value)} /></div>}</div>
-      <div className="user-row user-head" aria-hidden="true"><span>账号</span><span>订阅</span><span>凭据</span><span>最近活跃</span><span /></div>
+    <section className="panel settings-form users-list" aria-label={t('users.list')}><div className="panel-heading"><h2>{t('users.allAccounts')} <span>{users.length}</span></h2>{users.length > 5 && <div className="input-icon users-search"><Search size={15} /><input aria-label={t('workspace.searchUsers')} placeholder={t('users.searchPlaceholder')} value={query} onChange={e => setQuery(e.target.value)} /></div>}</div>
+      <div className="user-row user-head" aria-hidden="true"><span>{t('users.accounts')}</span><span>{t('users.feeds')}</span><span>{t('users.credentials')}</span><span>{t('users.lastActive')}</span><span /></div>
       {shown.map(user => <div className={`user-row ${user.enabled ? '' : 'is-disabled'}`} key={user.id}>
-        <div className="user-identity"><span className={`avatar ${user.enabled ? '' : 'off'}`}>{user.username.slice(0, 1).toUpperCase()}</span><div><strong>{user.username}{user.id === currentUserId ? '（自己）' : ''}</strong><p className="inline user-badges"><span className={`badge ${user.role === 'admin' ? 'good' : ''}`}>{user.role === 'admin' ? '管理员' : '普通用户'}</span><span className={`badge ${user.enabled ? '' : 'bad'}`}>{user.enabled ? '已启用' : '已停用'}</span></p></div></div>
-        <div className="user-cell user-feeds" data-label="订阅"><strong>{user.stats?.feeds ?? '—'}</strong>{!!user.stats?.failingFeeds && <button type="button" className="user-failing" title={user.id === currentUserId ? '查看我的出错订阅' : `进入 ${user.username} 的工作台并只看出错订阅`} onClick={() => manage(user.id === currentUserId ? null : user, true)}>{user.stats.failingFeeds} 出错</button>}{!!user.stats?.pausedFeeds && <span className="user-paused">{user.stats.pausedFeeds} 暂停</span>}</div>
-        <div className="user-cell" data-label="凭据">{user.stats ? `${user.stats.credentials} 组` : '—'}</div>
-        <div className="user-cell user-seen" data-label="最近活跃"><span title={absoluteTime(user.stats?.lastSeenAt)}>{user.stats?.lastSeenAt ? relativeTime(user.stats.lastSeenAt) : '暂无会话'}</span><small title={absoluteTime(user.createdAt)}>创建于 {new Date(user.createdAt).toLocaleDateString('zh-CN')}</small></div>
+        <div className="user-identity"><span className={`avatar ${user.enabled ? '' : 'off'}`}>{user.username.slice(0, 1).toUpperCase()}</span><div><strong>{user.username}{user.id === currentUserId ? t('users.you') : ''}</strong><p className="inline user-badges"><span className={`badge ${user.role === 'admin' ? 'good' : ''}`}>{user.role === 'admin' ? t('role.admin') : t('role.user')}</span><span className={`badge ${user.enabled ? '' : 'bad'}`}>{user.enabled ? t('users.enabled') : t('users.disabled')}</span></p></div></div>
+        <div className="user-cell user-feeds" data-label={t('users.feeds')}><strong>{user.stats?.feeds ?? '—'}</strong>{!!user.stats?.failingFeeds && <button type="button" className="user-failing" title={user.id === currentUserId ? t('users.myFailing') : t('users.theirFailing', { name: user.username })} onClick={() => manage(user.id === currentUserId ? null : user, true)}>{t('users.failingCount', { count: user.stats.failingFeeds })}</button>}{!!user.stats?.pausedFeeds && <span className="user-paused">{t('users.pausedCount', { count: user.stats.pausedFeeds })}</span>}</div>
+        <div className="user-cell" data-label={t('users.credentials')}>{user.stats ? t('users.credentialCount', { count: user.stats.credentials }) : '—'}</div>
+        <div className="user-cell user-seen" data-label={t('users.lastActive')}><span title={absoluteTime(user.stats?.lastSeenAt)}>{user.stats?.lastSeenAt ? relativeTime(user.stats.lastSeenAt) : t('users.noSession')}</span><small title={absoluteTime(user.createdAt)}>{t('users.createdOn', { date: fmt.date(user.createdAt, { dateStyle: 'medium' }) })}</small></div>
         <div className="inline user-actions">
-          {user.id !== currentUserId && <button className="button small" disabled={busy} onClick={() => manage(user)}>管理工作台</button>}
-          <ActionMenu label={`更多操作 ${user.username}`} trigger={<MoreHorizontal size={18} />} actions={[
-            { label: '编辑账号', icon: <Pencil size={15} />, disabled: busy, onSelect: () => { setEditing(user); setUsername(user.username); setRole(user.role); setPassword(''); setError(''); setFormOpen(true); } },
+          {user.id !== currentUserId && <button className="button small" disabled={busy} onClick={() => manage(user)}>{t('users.manageWorkspace')}</button>}
+          <ActionMenu label={t('users.more', { name: user.username })} trigger={<MoreHorizontal size={18} />} actions={[
+            { label: t('users.edit'), icon: <Pencil size={15} />, disabled: busy, onSelect: () => { setEditing(user); setUsername(user.username); setRole(user.role); setPassword(''); setError(''); setFormOpen(true); } },
             ...(user.id !== currentUserId ? [
-              { label: user.enabled ? '停用' : '启用', icon: user.enabled ? <Ban size={15} /> : <CircleCheck size={15} />, disabled: busy, onSelect: () => {
-                if (user.enabled && !confirm(`停用 ${user.username}？登录、自动任务和 RSS 访问将暂停。`)) return;
-                void run(() => api.users.enabled(user.id, !user.enabled), user.enabled ? '账号已停用。' : '账号已启用。');
+              { label: user.enabled ? t('users.disable') : t('users.enable'), icon: user.enabled ? <Ban size={15} /> : <CircleCheck size={15} />, disabled: busy, onSelect: () => {
+                if (user.enabled && !confirm(t('users.confirmDisable', { name: user.username }))) return;
+                void run(() => api.users.enabled(user.id, !user.enabled), user.enabled ? t('users.disabledDone') : t('users.enabledDone'));
               } },
-              { label: '删除用户', icon: <Trash2 size={15} />, danger: true, disabled: busy, onSelect: () => { void run(async () => { setDeletion(await api.users.deletionPreview(user.id)); setConfirmation(''); }, '请核对删除范围。'); } },
+              { label: t('users.delete'), icon: <Trash2 size={15} />, danger: true, disabled: busy, onSelect: () => { void run(async () => { setDeletion(await api.users.deletionPreview(user.id)); setConfirmation(''); }, t('users.checkScope')); } },
             ] : []),
           ]} />
         </div>
       </div>)}
-      {users.length > 0 && !shown.length && <p className="muted users-empty">没有匹配的用户{onlyFailing && <> · <button type="button" className="link-button" onClick={() => setOnlyFailing(false)}>显示全部账号</button></>}</p>}
+      {users.length > 0 && !shown.length && <p className="muted users-empty">{t('workspace.noMatch')}{onlyFailing && <> · <button type="button" className="link-button" onClick={() => setOnlyFailing(false)}>{t('users.showAll')}</button></>}</p>}
     </section>
-    {deletion && <div className="modal-backdrop"><section className="panel settings-form delete-user-dialog" role="dialog" aria-modal="true" aria-label="永久删除用户">
-      <h2>永久删除 {deletion.user.username}</h2><p>将删除 {deletion.feeds} 个订阅、{deletion.bundles ? `${deletion.bundles} 个聚合订阅、` : ''}{deletion.credentials} 个凭据、{deletion.jobs} 个批量任务，以及全部历史、个人设置和通知记录。原 RSS 地址将失效，此操作不可撤销。</p>
-      <label className="field"><span>输入目标用户名确认</span><input autoFocus value={confirmation} onChange={e => setConfirmation(e.target.value)} /></label>
+    {deletion && <div className="modal-backdrop"><section className="panel settings-form delete-user-dialog" role="dialog" aria-modal="true" aria-label={t('users.deleteTitleLabel')}>
+      <h2>{t('users.deleteTitle', { name: deletion.user.username })}</h2><p>{t('users.deleteScope', { list: fmt.list([t('users.feedCount', { count: deletion.feeds }), ...(deletion.bundles ? [t('backup.bundleCount', { count: deletion.bundles })] : []), t('users.credentialItems', { count: deletion.credentials }), t('users.jobCount', { count: deletion.jobs })], 'unit') })}</p>
+      <label className="field"><span>{t('users.typeToConfirm')}</span><input autoFocus value={confirmation} onChange={e => setConfirmation(e.target.value)} /></label>
       {error && <p role="alert" className="error-note">{error}</p>}
-      <div className="inline"><button className="button danger" disabled={busy || confirmation !== deletion.user.username} onClick={() => { void run(() => api.users.delete(deletion.user.id, confirmation), '用户及其数据已永久删除。').then(ok => { if (ok) { setDeletion(null); reset(); } }); }}>永久删除</button><button className="button" disabled={busy} onClick={() => setDeletion(null)}>取消</button></div>
+      <div className="inline"><button className="button danger" disabled={busy || confirmation !== deletion.user.username} onClick={() => { void run(() => api.users.delete(deletion.user.id, confirmation), t('users.deleted')).then(ok => { if (ok) { setDeletion(null); reset(); } }); }}>{t('users.deleteForever')}</button><button className="button" disabled={busy} onClick={() => setDeletion(null)}>{t('common.cancel')}</button></div>
     </section></div>}
   </>;
 }

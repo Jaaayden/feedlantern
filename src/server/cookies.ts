@@ -1,4 +1,5 @@
 import type { Cookie } from 'playwright';
+import { LocalizedError, msg, type LocalizedText } from './i18n.js';
 
 export type CookieFormat = 'header' | 'json';
 
@@ -35,9 +36,9 @@ interface RawCookie {
 const COOKIE_NAME = /^[^\s;,=]+$/;
 const COOKIE_DOMAIN = /^[a-z0-9._:-]+$/i;
 
-export class CookieParseError extends Error {
-  constructor(message: string) {
-    super(message);
+export class CookieParseError extends LocalizedError {
+  constructor(text: LocalizedText) {
+    super(text);
     this.name = 'CookieParseError';
   }
 }
@@ -47,17 +48,17 @@ function targetUrl(url: string): URL {
   try {
     parsed = new URL(url);
   } catch {
-    throw new CookieParseError('Cookie 绑定目标 URL 无效');
+    throw new CookieParseError(msg('cookie.targetInvalid'));
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new CookieParseError('Cookie 绑定目标只能使用 HTTP 或 HTTPS');
+    throw new CookieParseError(msg('cookie.targetScheme'));
   }
   return parsed;
 }
 
 function asString(value: unknown, field: string): string | undefined {
   if (value === undefined || value === null) return undefined;
-  if (typeof value !== 'string') throw new CookieParseError(`Cookie 字段 ${field} 必须是字符串`);
+  if (typeof value !== 'string') throw new CookieParseError(msg('cookie.fieldString', { field }));
   return value;
 }
 
@@ -66,7 +67,7 @@ function asBoolean(value: unknown, field: string): boolean | undefined {
   if (typeof value === 'boolean') return value;
   if (value === 'true' || value === '1') return true;
   if (value === 'false' || value === '0') return false;
-  throw new CookieParseError(`Cookie 字段 ${field} 必须是布尔值`);
+  throw new CookieParseError(msg('cookie.fieldBoolean', { field }));
 }
 
 function parseExpires(value: unknown, field: string): number | undefined {
@@ -76,7 +77,7 @@ function parseExpires(value: unknown, field: string): number | undefined {
     if (Number.isFinite(numeric)) value = numeric;
   }
   if (typeof value !== 'number' || !Number.isFinite(value)) {
-    throw new CookieParseError(`Cookie 字段 ${field} 必须是 Unix 秒数`);
+    throw new CookieParseError(msg('cookie.fieldSeconds', { field }));
   }
   // A few exporters write milliseconds despite calling the field expires.
   // Treat values above 10^11 as milliseconds, while retaining seconds in the
@@ -88,7 +89,7 @@ function parseExpires(value: unknown, field: string): number | undefined {
 
 function normalizeSameSite(value: unknown): Cookie['sameSite'] | undefined {
   if (value === undefined || value === null || value === '' || value === 'unspecified') return undefined;
-  if (typeof value !== 'string') throw new CookieParseError('Cookie 字段 sameSite 必须是字符串');
+  if (typeof value !== 'string') throw new CookieParseError(msg('cookie.fieldString', { field: 'sameSite' }));
   switch (value.toLowerCase()) {
     case 'strict':
       return 'Strict';
@@ -99,7 +100,7 @@ function normalizeSameSite(value: unknown): Cookie['sameSite'] | undefined {
     case 'no-restriction':
       return 'None';
     default:
-      throw new CookieParseError(`不支持的 Cookie sameSite 值：${value}`);
+      throw new CookieParseError(msg('cookie.sameSite', { value }));
   }
 }
 
@@ -111,12 +112,12 @@ function hostFromCookie(raw: RawCookie): { domain?: string; hostOnly: boolean; u
     try {
       const parsed = new URL(url);
       if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-        throw new CookieParseError('Cookie url 只能使用 HTTP 或 HTTPS');
+        throw new CookieParseError(msg('cookie.urlScheme'));
       }
       if (!domain) domain = parsed.hostname;
     } catch (error) {
       if (error instanceof CookieParseError) throw error;
-      throw new CookieParseError('Cookie url 无效');
+      throw new CookieParseError(msg('cookie.urlInvalid'));
     }
   }
   if (domain) {
@@ -125,11 +126,11 @@ function hostFromCookie(raw: RawCookie): { domain?: string; hostOnly: boolean; u
       try {
         domain = new URL(domain).hostname;
       } catch {
-        throw new CookieParseError('Cookie domain 无效');
+        throw new CookieParseError(msg('cookie.domainInvalid'));
       }
     }
     if (domain.startsWith('[') && domain.endsWith(']')) domain = domain.slice(1, -1);
-    if (!COOKIE_DOMAIN.test(domain) || domain === '.') throw new CookieParseError('Cookie domain 无效');
+    if (!COOKIE_DOMAIN.test(domain) || domain === '.') throw new CookieParseError(msg('cookie.domainInvalid'));
   }
   const explicitHostOnly = asBoolean(raw.hostOnly, 'hostOnly');
   const hostOnly = explicitHostOnly ?? !domain?.startsWith('.');
@@ -158,17 +159,17 @@ function pathMatches(pathname: string, cookiePath: string): boolean {
 function normalizeCookie(raw: RawCookie, target: URL): FeedLanternCookie | undefined {
   const partitioned = asBoolean(raw.partitioned, 'partitioned') ?? false;
   if (raw.partitionKey !== undefined || partitioned) {
-    throw new CookieParseError('暂不支持 partitioned/CHIPS Cookie，请导出普通 Cookie');
+    throw new CookieParseError(msg('cookie.partitioned'));
   }
   const name = asString(raw.name, 'name');
   const value = asString(raw.value, 'value');
-  if (!name || !COOKIE_NAME.test(name)) throw new CookieParseError('Cookie name 无效');
-  if (value === undefined) throw new CookieParseError(`Cookie ${name} 缺少 value`);
+  if (!name || !COOKIE_NAME.test(name)) throw new CookieParseError(msg('cookie.nameInvalid'));
+  if (value === undefined) throw new CookieParseError(msg('cookie.valueMissing', { name }));
 
   const host = hostFromCookie(raw);
   const domain = host.domain ?? target.hostname;
   const path = asString(raw.path, 'path') ?? '/';
-  if (!path.startsWith('/')) throw new CookieParseError(`Cookie ${name} 的 path 必须以 / 开头`);
+  if (!path.startsWith('/')) throw new CookieParseError(msg('cookie.pathInvalid', { name }));
   if (!domainMatches(target.hostname, domain, host.hostOnly)) return undefined;
   // Keep cookies for other paths on the same host: a page at /feed often
   // obtains its data from /api, and the browser must be able to send that
@@ -200,7 +201,7 @@ function normalizeCookie(raw: RawCookie, target: URL): FeedLanternCookie | undef
       if (!domainMatches(cookieUrl.hostname, domain, host.hostOnly)) return undefined;
       result.domain = domain;
     } catch {
-      throw new CookieParseError(`Cookie ${name} 的 url 无效`);
+      throw new CookieParseError(msg('cookie.namedUrlInvalid', { name }));
     }
   }
   return result;
@@ -212,7 +213,7 @@ function parseHeader(header: string, target: URL): FeedLanternCookie[] {
   const result: FeedLanternCookie[] = [];
   for (const part of normalized.split(';').map(item => item.trim()).filter(Boolean)) {
     const separator = part.indexOf('=');
-    if (separator <= 0) throw new CookieParseError('Cookie header 中存在缺少 name 或 value 的片段');
+    if (separator <= 0) throw new CookieParseError(msg('cookie.headerPart'));
     const name = part.slice(0, separator).trim();
     const value = part.slice(separator + 1).trim();
     const cookie = normalizeCookie({ name, value, domain: target.hostname, path: '/' }, target);
@@ -233,17 +234,17 @@ function parseJson(value: string, target: URL): FeedLanternCookie[] {
   try {
     parsed = JSON.parse(value);
   } catch {
-    throw new CookieParseError('OpenCookie JSON 无法解析');
+    throw new CookieParseError(msg('cookie.jsonInvalid'));
   }
   const records = Array.isArray(parsed)
     ? parsed
     : parsed && typeof parsed === 'object' && Array.isArray((parsed as { cookies?: unknown }).cookies)
       ? (parsed as { cookies: unknown[] }).cookies
       : null;
-  if (!records) throw new CookieParseError('OpenCookie JSON 必须是 Cookie 数组或 { cookies: [...] }');
+  if (!records) throw new CookieParseError(msg('cookie.jsonShape'));
   const result: FeedLanternCookie[] = [];
   for (const entry of records) {
-    if (!entry || typeof entry !== 'object') throw new CookieParseError('OpenCookie JSON 中存在无效 Cookie');
+    if (!entry || typeof entry !== 'object') throw new CookieParseError(msg('cookie.jsonEntry'));
     const cookie = normalizeCookie(entry as RawCookie, target);
     if (cookie) result.push(cookie);
   }

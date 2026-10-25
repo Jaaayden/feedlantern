@@ -94,7 +94,7 @@ test('压缩脚本：旧库切换为增量回收并缩小文件，--dry-run 不�
 
     const result = run();
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /完整性检查：ok/);
+    assert.match(result.stdout, /integrity check: ok/);
     assert.equal(pragma(dbPath, 'auto_vacuum'), 2);
     const check = new DatabaseSync(dbPath, { readOnly: true });
     assert.equal((check.prepare('SELECT COUNT(*) AS c FROM translation_events').get() as { c: number }).c, TRANSLATION_EVENTS_PER_FEED * 2);

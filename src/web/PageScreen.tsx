@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type React from 'react';
 import { LoaderCircle } from 'lucide-react';
+import { t } from './i18n';
 import type { Rect, ScreenFrame } from '../shared/types';
 import { hitTest, liftNode, linkFor, nodeRect } from '../shared/element-map';
 
@@ -135,13 +136,13 @@ export function PageScreen({ frame, rects, disabled, navigated, revealKey, segme
   const hovered = map && hover ? liftNode(map, hover.base, hover.lift) : -1;
   const hoveredRect = map && hovered >= 0 ? nodeRect(map, hovered) : null;
   const hoveredLink = map && hovered >= 0 ? linkFor(map, hovered) : undefined;
-  const hint = linkMode ? (hoveredLink ? '点击打开此链接' : '这里不是链接') : hover && hover.lift > 0 ? `已扩大 ${hover.lift} 层` : '';
+  const hint = linkMode ? (hoveredLink ? t('screen.openLink') : t('screen.notLink')) : hover && hover.lift > 0 ? t('screen.widened', { count: hover.lift }) : '';
   const images = [{ top: 0, height: frame.height, image: frame.image }, ...(frame.segments ?? [])];
 
   return <div className="browser-viewport" ref={viewportRef} onScroll={event => { if (canLoad && nearBottom(event.currentTarget)) loadMore(); }}>
     <div className={`browser-screen${linkMode ? ' link-mode' : ''}${navigated ? ' navigated' : ''}${disabled ? ' waiting' : ''}`}
       onMouseMove={move} onMouseLeave={() => { cancelAnimationFrame(frameRequest.current); setHover(null); setLinkMode(false); }} onClick={click}>
-      {images.map((segment, index) => <img key={segment.top} src={segment.image} alt={index ? '' : '目标网页预览'} draggable={false} style={{ aspectRatio: `${frame.width} / ${segment.height}` }} />)}
+      {images.map((segment, index) => <img key={segment.top} src={segment.image} alt={index ? '' : t('screen.alt')} draggable={false} style={{ aspectRatio: `${frame.width} / ${segment.height}` }} />)}
       {rects.map((rect, index) => <span className="selection-rect" key={index} style={percent(rect)} />)}
       {hoveredRect && map && <span className={`hover-rect${linkMode && hoveredLink ? ' link' : ''}`} style={percent(hoveredRect)}>
         <span className={`hover-label${hoveredRect.y < 40 ? ' below' : ''}${hoveredRect.x + hoveredRect.width / 2 > frame.width * 0.6 ? ' right' : ''}`}>{map.labels[hovered]}{hint && <em>{hint}</em>}</span>
@@ -149,10 +150,10 @@ export function PageScreen({ frame, rects, disabled, navigated, revealKey, segme
     </div>
     {!complete ? <div className="segment-status">
       {segmentState === 'error'
-        ? <button type="button" className="button small" onClick={loadMore}>下面的画面加载失败，点击重试</button>
+        ? <button type="button" className="button small" onClick={loadMore}>{t('screen.loadFailed')}</button>
         : segmentState === 'loading'
-          ? <span className="inline"><LoaderCircle size={14} className="spin" />正在加载下面的网页画面…</span>
-          : <button type="button" className="button small" disabled={disabled} onClick={loadMore}>加载下面的网页画面</button>}
-    </div> : frame.truncated ? <div className="segment-status">网页超过 {Math.round(frame.documentHeight / 1000)} 千像素，后面的部分不显示</div> : null}
+          ? <span className="inline"><LoaderCircle size={14} className="spin" />{t('screen.loading')}</span>
+          : <button type="button" className="button small" disabled={disabled} onClick={loadMore}>{t('screen.loadMore')}</button>}
+    </div> : frame.truncated ? <div className="segment-status">{t('screen.truncated', { count: Math.round(frame.documentHeight / 1000) })}</div> : null}
   </div>;
 }
