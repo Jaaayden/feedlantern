@@ -1,10 +1,12 @@
 import { randomBytes } from 'node:crypto';
 import { DomUtils, parseDocument } from 'htmlparser2';
-import { translationEnabled, translationLabel } from '../shared/types.js';
+import { isFeedSource, translationEnabled, translationLabel } from '../shared/types.js';
 import type { Bundle, Feed, FeedItem } from '../shared/types.js';
 import type { BundleMember } from './bundles.js';
 import { mergeBundleItems } from './bundles.js';
 import { escapeXml, publishedItems } from './rss.js';
+import { currentLocale, tl, translator } from './i18n.js';
+import { formatDateTime, formatList, intlTag } from '../shared/i18n.js';
 
 type HeaderValue = string | string[] | undefined;
 const first = (value: HeaderValue) => (Array.isArray(value) ? value[0] : value) ?? '';
@@ -36,7 +38,7 @@ const escape = (value: string) => escapeXml(value);
 
 function plainText(item: FeedItem, feed: Feed): string {
   const html = translationEnabled(feed) && item.contentHtml !== undefined ? item.contentHtml : item.description ?? '';
-  const text = feed.sourceType === 'rss' || translationEnabled(feed) ? DomUtils.textContent(parseDocument(html)) : html;
+  const text = isFeedSource(feed) || translationEnabled(feed) ? DomUtils.textContent(parseDocument(html)) : html;
   const compact = text.replace(/\s+/g, ' ').trim();
   return compact.length > 220 ? `${compact.slice(0, 220)}…` : compact;
 }
@@ -50,11 +52,12 @@ function safeLink(value: string): string | null {
   }
 }
 
-const dateFormat = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short', hour12: false, timeZone: 'Asia/Shanghai' });
+/** Server-side text for browsers without scripts; the page script redraws it in the reader's time zone. */
 function dateText(value: string | null | undefined): string {
-  if (!value) return '';
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? '' : dateFormat.format(date);
+  const locale = currentLocale();
+  return formatDateTime(locale, value, locale === 'zh-CN'
+    ? { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Shanghai' }
+    : { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC', timeZoneName: 'short' });
 }
 
 function host(value: string): string {
@@ -71,12 +74,19 @@ interface PreviewContent {
 export function renderRssPreview(feed: Feed, items: FeedItem[], feedUrl: string): PreviewPage {
   const source = safeLink(feed.url);
   const updated = dateText(feed.lastSuccessAt);
-  const kind = feed.sourceType === 'rss'
-    ? translationEnabled(feed) ? `RSS ${translationLabel(feed)}` : 'RSS 转发'
-    : translationEnabled(feed) ? `网页订阅 · ${translationLabel(feed)}` : '网页订阅';
-  const meta = `${escape(kind)}${source ? ` · 来自 <a href="${escape(source)}" rel="noreferrer noopener" target="_blank">${escape(host(source))}</a>` : ''} · 每 ${feed.intervalMinutes} 分钟检查更新${updated ? ` · 最近更新 <time datetime="${escape(new Date(feed.lastSuccessAt!).toISOString())}">${escape(updated)}</time>` : ''}`;
+  const label = translationEnabled(feed) ? translationLabel(feed, translator(currentLocale())) : '';
+  const kind = feed.sourceType === 'pubmed'
+    ? label ? tl('preview.kindPubmedTranslated', { label }) : tl('preview.kindPubmed')
+    : feed.sourceType === 'rss'
+    ? label ? tl('preview.kindRssTranslated', { label }) : tl('preview.kindRss')
+    : label ? tl('preview.kindWebsiteTranslated', { label }) : tl('preview.kindWebsite');
+  const parts = [escape(kind)];
+  if (source) parts.push(tl('preview.from', { site: `<a href="${escape(source)}" rel="noreferrer noopener" target="_blank">${escape(host(source))}</a>` }));
+  parts.push(escape(tl('preview.interval', { count: feed.intervalMinutes })));
+  if (updated) parts.push(tl('preview.updated', { time: `<time datetime="${escape(new Date(feed.lastSuccessAt!).toISOString())}">${escape(updated)}</time>` }));
+  const meta = parts.join(' · ');
   return renderPreviewPage({
-    name: feed.name, kicker: 'RSS 订阅', meta, feedUrl, rotateHint: '订阅设置', empty: '还没有内容。首次抓取或翻译完成后会出现在这里。',
+    name: feed.name, kicker: tl('preview.kickerFeed'), meta, feedUrl, rotateHint: tl('preview.rotateFeed'), empty: tl('preview.emptyFeed'),
     entries: publishedItems(feed, items).slice(0, 30).map(item => ({ feed, item })), showSource: false,
   });
 }
@@ -85,10 +95,10 @@ export function renderRssPreview(feed: Feed, items: FeedItem[], feedUrl: string)
 export function renderBundlePreview(bundle: Bundle, members: BundleMember[], bundleUrl: string): PreviewPage {
   const updated = members.map(member => member.feed.lastSuccessAt).filter((value): value is string => !!value).sort().at(-1);
   const names = members.map(member => member.feed.name);
-  const shown = names.length > 6 ? `${names.slice(0, 6).join('、')} 等 ${names.length} 个订阅` : names.join('、');
-  const meta = `聚合 ${members.length} 个订阅${shown ? `：${escape(shown)}` : ''}${updated ? ` · 最近更新 <time datetime="${escape(new Date(updated).toISOString())}">${escape(dateText(updated))}</time>` : ''}`;
+  const shown = names.length > 6 ? tl('preview.andMore', { names: formatList(currentLocale(), names.slice(0, 6), 'unit'), count: names.length }) : formatList(currentLocale(), names);
+  const meta = `${escape(shown ? tl('preview.bundleOf', { count: members.length, names: shown }) : tl('preview.bundleCount', { count: members.length }))}${updated ? ` · ${tl('preview.updated', { time: `<time datetime="${escape(new Date(updated).toISOString())}">${escape(dateText(updated))}</time>` })}` : ''}`;
   return renderPreviewPage({
-    name: bundle.name, kicker: '聚合订阅', meta, feedUrl: bundleUrl, rotateHint: '聚合订阅', empty: members.length ? '还没有内容。成员订阅抓取或翻译完成后会出现在这里。' : '这个聚合订阅还没有成员。',
+    name: bundle.name, kicker: tl('preview.kickerBundle'), meta, feedUrl: bundleUrl, rotateHint: tl('preview.rotateBundle'), empty: members.length ? tl('preview.emptyBundle') : tl('preview.noMembers'),
     entries: mergeBundleItems(members, bundle.itemLimit).slice(0, 30), showSource: true,
   });
 }
@@ -102,11 +112,11 @@ function renderPreviewPage({ name, kicker, meta, feedUrl, rotateHint, empty, ent
     const summary = plainText(item, feed);
     const iso = item.publishedAt ?? item.firstSeenAt;
     const when = dateText(iso);
-    const title = escape(item.title || '（无标题）');
+    const title = escape(item.title || tl('preview.untitled'));
     return `<li><div class="item-head">${link ? `<a href="${escape(link)}" rel="noreferrer noopener" target="_blank">${title}</a>` : `<span>${title}</span>`}${when ? `<time datetime="${escape(new Date(iso).toISOString())}">${escape(when)}</time>` : ''}</div>${showSource ? `<span class="source">${escape(feed.name)}</span>` : ''}${summary ? `<p>${escape(summary)}</p>` : ''}</li>`;
   }).join('');
   const html = `<!doctype html>
-<html lang="zh-CN">
+<html lang="${intlTag(currentLocale())}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -154,20 +164,20 @@ footer{margin-top:28px;text-align:center;font-size:12px;color:var(--muted)}
 <p class="meta">${meta}</p>
 </header>
 <section class="how">
-<p>这是一个 RSS 订阅地址，供阅读器使用。把下面的地址添加到你常用的阅读器（例如 NetNewsWire、Reeder、Inoreader、Feedly），新内容就会自动送达。</p>
-<div class="copy"><input id="feed-url" readonly value="${escape(feedUrl)}" aria-label="RSS 订阅地址"><button id="copy" type="button">复制地址</button></div>
-<p class="small">阅读器从这个地址读取的是标准 RSS，这个页面只在浏览器中直接打开时显示。<a href="${escape(rawUrl)}">查看原始 XML</a></p>
-<p class="warn">持有这个地址就能读取订阅内容，请不要公开分享。需要撤销时，可在 FeedLantern 的${escape(rotateHint)}中轮换密钥。</p>
+<p>${escape(tl('preview.intro'))}</p>
+<div class="copy"><input id="feed-url" readonly value="${escape(feedUrl)}" aria-label="${escape(tl('preview.urlLabel'))}"><button id="copy" type="button">${escape(tl('preview.copy'))}</button></div>
+<p class="small">${escape(tl('preview.readerNote'))} <a href="${escape(rawUrl)}">${escape(tl('preview.viewXml'))}</a></p>
+<p class="warn">${escape(tl('preview.secret', { place: rotateHint }))}</p>
 </section>
-<h2>最近 ${list.length} 条内容</h2>
+<h2>${escape(tl('preview.recent', { count: list.length }))}</h2>
 ${list.length ? `<ol>${rows}</ol>` : `<ol><li class="empty">${escape(empty)}</li></ol>`}
-<footer>由 FeedLantern · 订阅灯 生成</footer>
+<footer>${escape(tl('preview.footer'))}</footer>
 </main>
 <script nonce="${nonce}">
 const input=document.getElementById('feed-url'),button=document.getElementById('copy');
-button.addEventListener('click',async()=>{try{await navigator.clipboard.writeText(input.value);}catch{input.select();document.execCommand('copy');}button.textContent='已复制';setTimeout(()=>{button.textContent='复制地址';},2000);});
+button.addEventListener('click',async()=>{try{await navigator.clipboard.writeText(input.value);}catch{input.select();document.execCommand('copy');}button.textContent=${JSON.stringify(tl('preview.copied')).replace(/</g, '\\u003c')};setTimeout(()=>{button.textContent=${JSON.stringify(tl('preview.copy')).replace(/</g, '\\u003c')};},2000);});
 input.addEventListener('focus',()=>input.select());
-for(const t of document.querySelectorAll('time[datetime]'))t.textContent=new Date(t.dateTime).toLocaleString('zh-CN',{dateStyle:'medium',timeStyle:'short',hour12:false});
+for(const t of document.querySelectorAll('time[datetime]'))t.textContent=new Date(t.dateTime).toLocaleString(${JSON.stringify(intlTag(currentLocale()))},{dateStyle:'medium',timeStyle:'short',hourCycle:'h23'});
 </script>
 </body>
 </html>`;

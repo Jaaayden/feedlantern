@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { request as httpRequest } from 'node:http';
 import { test } from 'node:test';
+import { lt, rawText } from '../src/server/i18n.js';
 import { AppError } from '../src/server/auth.js';
 import { FORBIDDEN_HEADERS, headerScopeMatches, parseNetworkProfileInput, type NetworkProfileValue } from '../src/server/fetch-options.js';
 import { createRestrictedForwardProxy, NetworkPolicy, NetworkPolicyError } from '../src/server/network.js';
@@ -133,7 +134,7 @@ test('代理不可达或认证失败时错误清楚，且不含用户名和密�
       assert.ok(error instanceof Error);
       assert.match(error.message, pattern);
       assert.doesNotMatch(error.message, /wrong-user|wrong-pass|right-pass/);
-      assert.doesNotMatch(friendlyError(error, 'fallback'), /wrong-pass/);
+      assert.doesNotMatch(lt(friendlyError(error, rawText('fallback'))), /wrong-pass/);
       return true;
     };
     await assert.rejects(probeTarget(url, policy, { proxy: { type: 'http', host: '127.0.0.1', port: deadPort, username: 'wrong-user', password: 'wrong-pass' } }), check(/无法连接代理服务器 127\.0\.0\.1:\d+（HTTP 代理）：连接被拒绝/));
@@ -183,7 +184,7 @@ test('受限代理记录上游代理失败原因，供页面错误提示使用',
   try {
     const response = await viaProxy(restricted.url, `http://${target.host}/`);
     assert.equal(response.status, 502);
-    assert.match(restricted.lastError ?? '', /无法连接代理服务器 127\.0\.0\.1:\d+（SOCKS5 代理）/);
+    assert.match(restricted.lastError ? lt(restricted.lastError) : '', /无法连接代理服务器 127\.0\.0\.1:\d+（SOCKS5 代理）/);
     assert.equal(target.requests.length, 0);
   } finally { await restricted.close(); await target.close(); }
 });
@@ -192,8 +193,8 @@ test('日志与错误提示隐藏网址中的用户名和密码，包括 socks5 
   const text = 'proxy socks5://alice:hunter2@proxy.example:1080 failed; http://bob:pw@h.test/x Proxy-Authorization: Basic abc';
   const logged = redactForLog(text);
   assert.doesNotMatch(logged, /alice|hunter2|bob:pw|Basic abc/);
-  assert.match(logged, /socks5:\/\/\[已隐藏\]@proxy\.example:1080/);
-  assert.doesNotMatch(friendlyError(new Error('connect socks5://alice:hunter2@proxy.example:1080'), 'x'), /hunter2|alice/);
+  assert.match(logged, /socks5:\/\/\[hidden\]@proxy\.example:1080/);
+  assert.doesNotMatch(lt(friendlyError(new Error('connect socks5://alice:hunter2@proxy.example:1080'), rawText('x'))), /hunter2|alice/);
 });
 
 test('被策略拦截的目标仍以断开连接失败，不会变成可打开的错误页（重定向不经过路由守卫）', async () => {

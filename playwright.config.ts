@@ -38,6 +38,8 @@ export default defineConfig({
     video: 'off',
     permissions: ['clipboard-read', 'clipboard-write'],
     testIdAttribute: 'data-testid',
+    // The suite was written against the Chinese interface; English is covered by tests/e2e/10-english.spec.ts.
+    locale: 'zh-CN',
   },
   webServer: [
     {
@@ -50,6 +52,8 @@ export default defineConfig({
       env: {
         ...inheritedEnv,
         NODE_ENV: 'test',
+        // Requests without a usable Accept-Language (API fixtures) get Chinese, like the browser tests.
+        DEFAULT_LOCALE: 'zh-CN',
         BARK_URL: '',
         HOST: '127.0.0.1',
         PORT: backendPort,

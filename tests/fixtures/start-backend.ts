@@ -15,7 +15,9 @@ const fixture = process.env.FIXTURE_ORIGIN;
 const deeplEndpoints = fixture ? { free: `${fixture}/deepl/free/v2/translate`, pro: `${fixture}/deepl/pro/v2/translate` } : undefined;
 // So are NCBI E-utilities, for PubMed journal subscriptions.
 const ncbiEndpoint = fixture ? `${fixture}/entrez/eutils` : undefined;
-const app = await createApp({ config, ncbiEndpoint, barkSender: async () => {}, notificationSenders: { webhook: async () => {}, ntfy: async () => {}, telegram: async () => {} }, translator: async text => `中文：${text}`, translationIntervalMs: 0, deeplEndpoints });
+// The PubMed conversion check reads pubmed.ncbi.nlm.nih.gov/rss/… from the fixture server instead.
+const pubmedRssBase = fixture ? `${fixture}/pubmed-rss` : undefined;
+const app = await createApp({ config, ncbiEndpoint, pubmedRssBase, barkSender: async () => {}, notificationSenders: { webhook: async () => {}, ntfy: async () => {}, telegram: async () => {} }, translator: async text => `中文：${text}`, translationIntervalMs: 0, deeplEndpoints });
 await app.listen({ host: config.host, port: config.port });
 for (const signal of ['SIGTERM', 'SIGINT'] as const) process.once(signal, () => {
   void app.close().finally(() => process.exit(0));

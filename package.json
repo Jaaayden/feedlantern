@@ -1,6 +1,6 @@
 {
   "name": "feedlantern",
-  "version": "0.7.0",
+  "version": "0.8.1",
   "private": true,
   "type": "module",
   "description": "A self-hosted visual website-to-RSS builder with private cookie storage.",
@@ -15,7 +15,7 @@
     "start": "node --import tsx --env-file-if-exists=.env src/server/index.ts",
     "admin:reset": "node --import tsx --env-file-if-exists=.env src/server/reset-password.ts",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test tests/*.test.ts",
+    "test": "DEFAULT_LOCALE=zh-CN tsx --test tests/*.test.ts",
     "test:e2e": "playwright test",
     "browser:install": "playwright install chromium"
   },
@@ -31,8 +31,8 @@
     "playwright": "^1.55.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
-    "sanitize-html": "^2.18.0",
-    "tsx": "^4.20.5",
+    "sanitize-html": "^2.18.1",
+    "tsx": "^4.23.15",
     "zod": "^4.6.7"
   },
   "devDependencies": {
@@ -43,8 +43,8 @@
     "@types/react-dom": "^19.1.9",
     "@types/sanitize-html": "^2.16.2",
     "@vitejs/plugin-react": "^5.0.2",
-    "concurrently": "^9.2.1",
+    "concurrently": "^10.0.6",
     "typescript": "^7.0.2",
-    "vite": "^7.1.4"
+    "vite": "^8.3.5"
   }
 }

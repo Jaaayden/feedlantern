@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { translationEnabled, type Bundle, type Feed, type FeedFormat, type FeedItem } from '../shared/types.js';
 import { escapeXml, feedLanguage, feedLanguageTag, fixedDate, isoDate, jsonFeedItem, publishedItems, renderAtomEntry, renderRssItem, safeJson } from './rss.js';
 import { normalizeLink } from './store.js';
+import { tl } from './i18n.js';
 
 export interface BundleMember { feed: Feed; items: FeedItem[] }
 export interface BundleEntry { feed: Feed; item: FeedItem }
@@ -55,7 +56,7 @@ function sharedLanguage(members: BundleMember[]): Feed | null {
 }
 
 function describe(members: BundleMember[]): string {
-  return `由 FeedLantern 聚合的 ${members.length} 个订阅`;
+  return tl('output.bundleDescription', { count: members.length });
 }
 
 function ttl(members: BundleMember[]): number {

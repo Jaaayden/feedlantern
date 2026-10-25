@@ -2,10 +2,14 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { ChevronDown, ExternalLink, Search } from 'lucide-react';
 import type { ExtractedItem, FeedItem, ItemOutputStatus, TranslationMode } from '../shared/types';
 import { absoluteTime, avatarHue, initial, relativeTime, summaryText } from './format';
+import { t } from './i18n';
+import { locales, translate } from '../shared/i18n';
 
-const hiddenLabels: Partial<Record<ItemOutputStatus, string>> = { excluded: '已过滤：命中排除关键词', 'not-included': '已过滤：未命中包含关键词', 'over-limit': '超出输出条数' };
+const hiddenLabel = (status: ItemOutputStatus) => status === 'excluded' ? t('item.excluded') : status === 'not-included' ? t('item.notIncluded') : status === 'over-limit' ? t('item.overLimit') : undefined;
+/** The server's “showing the original” note, in whichever language the feed was written. */
+const placeholderNotes = new Set(locales.flatMap(locale => [translate(locale, 'translate.noteFailed'), translate(locale, 'translate.notePending')]));
 const hostOf = (url: string) => { try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return url; } };
-/** Plain text this long or longer gets an “展开全文” toggle. */
+/** Plain text this long or longer gets a “Show more” toggle. */
 const LONG_TEXT = 160;
 const LEAF_BLOCKS = new Set(['P', 'LI', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'BLOCKQUOTE', 'FIGCAPTION', 'TD', 'TH', 'DD', 'DT']);
 
@@ -35,15 +39,15 @@ interface Article { html: string; text: string; thumb?: string }
 
 /**
  * Reads an item's HTML without running it (DOMParser never executes scripts):
- * drops the “暂显示原文” placeholder (the item carries a badge instead), marks
+ * drops the “showing the original” placeholder (the item carries a badge instead), marks
  * the original-language half of bilingual paragraphs, and finds a thumbnail.
  */
 function readArticle(html: string, bilingual: boolean): Article {
   const doc = new DOMParser().parseFromString(html, 'text/html');
   const first = doc.body.firstElementChild;
-  if (first?.tagName === 'P' && /^【.*暂显示原文】$/.test(first.textContent?.trim() ?? '')) first.remove();
+  if (first?.tagName === 'P' && placeholderNotes.has(first.textContent?.trim() ?? '')) first.remove();
   if (bilingual) {
-    // A translated paragraph reads “译文<br>原文”; both halves carry the same
+    // A translated paragraph reads “translation<br>original”; both halves carry the same
     // number of line breaks, so the middle <br> of an odd count separates them.
     for (const block of doc.body.querySelectorAll('*')) {
       if (!LEAF_BLOCKS.has(block.tagName)) continue;
@@ -113,38 +117,38 @@ function ItemRow({ item, index, status, mode }: { item: ExtractedItem; index: nu
   const html = item.contentHtml ?? (item.description && /<\/?[a-z][^>]*>/i.test(item.description) ? item.description : undefined);
   const article = useMemo(() => html !== undefined ? readArticle(html, bilingual) : null, [html, bilingual]);
   const feedItem = item as Partial<FeedItem>;
-  // The feed publishes “译文 / 原文”; here the original is a quieter second line.
+  // The feed publishes “translation / original”; here the original is a quieter second line.
   const [headline, original] = bilingual && item.translatedTitle && item.sourceTitle ? [item.translatedTitle, item.sourceTitle] : [item.title, ''];
   const summary = article ? article.text : item.description ? summaryText(item.description) : '';
   const expandable = article ? article.text.length > LONG_TEXT || /<(img|pre|table|ul|ol|blockquote|figure)\b/i.test(article.html) : summary.length > LONG_TEXT;
   const thumb = !thumbFailed ? item.image ?? article?.thumb : undefined;
-  const hidden = hiddenLabels[status ?? 'published'];
+  const hidden = hiddenLabel(status ?? 'published');
   const host = hostOf(item.link);
   const when = item.publishedAt ?? feedItem.firstSeenAt;
   return <article className={`preview-item${hidden ? ' is-hidden' : ''}${open ? ' is-open' : ''}${thumb ? ' has-thumb' : ''}`} data-output={status} data-translation={item.translationStatus}>
     <div className="item-body">
       <div className="item-meta">
         <SourceMark host={host} /><span className="item-host">{host}</span>
-        {when && <time dateTime={when} title={absoluteTime(when)}>{item.publishedAt ? relativeTime(item.publishedAt) : `收录于 ${relativeTime(when)}`}{item.publishedAtSource === 'relative' ? '（估算）' : ''}</time>}
-        {item.translationStatus === 'pending' && <span className="item-tag pending">翻译中</span>}
-        {item.translationStatus === 'failed' && <span className="item-tag failed" title={item.translationError}>翻译失败</span>}
+        {when && <time dateTime={when} title={absoluteTime(when)}>{item.publishedAt ? relativeTime(item.publishedAt) : t('item.collected', { time: relativeTime(when) })}{item.publishedAtSource === 'relative' ? t('item.estimated') : ''}</time>}
+        {item.translationStatus === 'pending' && <span className="item-tag pending">{t('item.translating')}</span>}
+        {item.translationStatus === 'failed' && <span className="item-tag failed" title={item.translationError}>{t('item.translationFailed')}</span>}
         {hidden && <span className="item-tag muted output-badge">{hidden}</span>}
       </div>
-      <h3 className="item-title"><a href={item.link} target="_blank" rel="noreferrer">{headline || '（未匹配到标题）'}<ExternalLink size={13} aria-hidden="true" /></a></h3>
+      <h3 className="item-title"><a href={item.link} target="_blank" rel="noreferrer">{headline || t('item.noTitle')}<ExternalLink size={13} aria-hidden="true" /></a></h3>
       {original && <p className="item-original-title">{original}</p>}
       {item.translationStatus === 'failed' && item.translationError && <p className="item-error">{item.translationError}</p>}
-      {open && article ? <ArticleFrame title={`订阅正文 ${index + 1}`} html={article.html} /> : summary && <p className={`item-summary${open ? ' is-open' : ''}`}>{summary}</p>}
-      {expandable && <button type="button" className="item-expand" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? '收起' : '展开全文'}<ChevronDown size={14} aria-hidden="true" /></button>}
+      {open && article ? <ArticleFrame title={t('item.articleFrame', { n: index + 1 })} html={article.html} /> : summary && <p className={`item-summary${open ? ' is-open' : ''}`}>{summary}</p>}
+      {expandable && <button type="button" className="item-expand" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? t('item.showLess') : t('item.showMore')}<ChevronDown size={14} aria-hidden="true" /></button>}
     </div>
     {thumb && <img className="item-thumb" src={thumb} alt="" loading="lazy" referrerPolicy="no-referrer" onError={() => setThumbFailed(true)} />}
   </article>;
 }
 
 /** Reader-style list of feed items: used by the feed panel and the editor preview. */
-export function ItemPreview({ items, empty = '还没有可预览的条目', status, mode }: { items: ExtractedItem[]; empty?: string; status?: (item: ExtractedItem) => ItemOutputStatus | undefined; mode?: TranslationMode }) {
+export function ItemPreview({ items, empty, status, mode }: { items: ExtractedItem[]; empty?: string; status?: (item: ExtractedItem) => ItemOutputStatus | undefined; mode?: TranslationMode }) {
   const [expanded, setExpanded] = useState(false);
-  if (!items.length) return <div className="empty-preview"><Search size={24} /><p>{empty}</p></div>;
+  if (!items.length) return <div className="empty-preview"><Search size={24} /><p>{empty ?? t('item.emptyPreview')}</p></div>;
   const shown = expanded ? items : items.slice(0, 20);
   return <><div className="item-list">{shown.map((item, index) => <ItemRow key={`${(item as Partial<FeedItem>).id ?? item.link}-${index}`} item={item} index={index} status={status?.(item)} mode={mode} />)}</div>
-    {items.length > 20 && !expanded && <button className="button small show-all" onClick={() => setExpanded(true)}>显示全部 {items.length} 条</button>}</>;
+    {items.length > 20 && !expanded && <button className="button small show-all" onClick={() => setExpanded(true)}>{t('item.showAll', { count: items.length })}</button>}</>;
 }

@@ -1,4 +1,4 @@
-import { translationEnabled } from '../shared/types.js';
+import { isFeedSource, translationEnabled } from '../shared/types.js';
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { parseDocument } from 'htmlparser2';
@@ -10,6 +10,8 @@ import { TRANSLATION_CACHE_LIMIT } from './backups.js';
 import { NetworkPolicy } from './network.js';
 import { TranslationError, deeplEndpoints, deeplEngine, keepWhitespace, openaiEngine, providerProblem, providerRate, retryAfterMs, type TranslationEngine, type TranslationSettings } from './translation-providers.js';
 import { storedItemLimit } from './feed-output.js';
+import { lt, msg, tl, translate, withLocale, type LocalizedText } from './i18n.js';
+import { ownerLocale, targetLocale } from './user-locale.js';
 
 export const TRANSLATION_EVENTS_PER_FEED = 200;
 import { defaultApplicationSettings, isTargetLanguage, isTranslationProvider, type Feed, type FeedItem, type TargetLanguage, type TranslationProviderId, type TranslationRate } from '../shared/types.js';
@@ -27,7 +29,7 @@ export const googleBatchLimits = { segments: 50, characters: 1800 } as const;
 /** Browser translation returns one HTML result per input, in array order. */
 export async function googleTranslateBatch(texts: string[], signal: AbortSignal, target: TargetLanguage = 'zh-CN'): Promise<string[]> {
   if (!texts.length) return [];
-  if (texts.length > googleBatchLimits.segments) throw new TranslationError('单批翻译片段过多');
+  if (texts.length > googleBatchLimits.segments) throw new TranslationError(msg('translate.batchTooLarge'));
   const response = await fetch('https://translate-pa.googleapis.com/v1/translateHtml', {
     method: 'POST', redirect: 'error', signal: AbortSignal.any([signal, AbortSignal.timeout(20_000)]),
     headers: { 'content-type': 'application/json+protobuf', 'x-goog-api-key': googleBrowserClientKey },
@@ -38,23 +40,23 @@ export async function googleTranslateBatch(texts: string[], signal: AbortSignal,
     await response.body?.cancel();
     const retryMs = retryAfterMs(response.headers.get('retry-after'));
     const limited = response.status === 429 || retryMs > 0;
-    throw new TranslationError(limited ? 'Google 浏览器翻译请求受限，请稍后重试' : response.status === 403 ? 'Google 浏览器翻译拒绝访问（HTTP 403），请检查接口可用性' : `Google 翻译服务暂不可用（HTTP ${response.status}）`, retryMs, limited);
+    throw new TranslationError(limited ? msg('translate.googleLimited') : response.status === 403 ? msg('translate.googleForbidden') : msg('translate.unavailable', { service: msg('provider.google'), status: String(response.status) }), retryMs, limited);
   }
   const reader = response.body?.getReader();
-  if (!reader) throw new TranslationError('Google 返回了空响应');
+  if (!reader) throw new TranslationError(msg('translate.googleEmptyResponse'));
   const chunks: Uint8Array[] = []; let size = 0;
   try {
     for (;;) {
       const chunk = await reader.read(); if (chunk.done) break;
       size += chunk.value.length;
-      if (size > 100_000) throw new TranslationError('Google 翻译响应过大');
+      if (size > 100_000) throw new TranslationError(msg('translate.responseTooLarge'));
       chunks.push(chunk.value);
     }
   } finally { await reader.cancel().catch(() => {}); }
   const textBody = Buffer.concat(chunks).toString('utf8');
   let body: unknown;
-  try { body = JSON.parse(textBody); } catch { throw new TranslationError('Google 返回了非翻译内容，可能是请求限制页面', 0, /automated queries|unusual traffic|<title>Sorry/i.test(textBody)); }
-  if (!Array.isArray(body) || !Array.isArray(body[0]) || body[0].length !== texts.length || !body[0].every((value: unknown) => typeof value === 'string')) throw new TranslationError('Google 批量译文数量或格式不匹配，整批未发布');
+  try { body = JSON.parse(textBody); } catch { throw new TranslationError(msg('translate.googleNotTranslation'), 0, /automated queries|unusual traffic|<title>Sorry/i.test(textBody)); }
+  if (!Array.isArray(body) || !Array.isArray(body[0]) || body[0].length !== texts.length || !body[0].every((value: unknown) => typeof value === 'string')) throw new TranslationError(msg('translate.mismatch', { service: 'Google' }));
   return (body[0] as string[]).map((html, i) => {
     const parts: string[] = [];
     const collect = (node: AnyNode): void => {
@@ -63,7 +65,7 @@ export async function googleTranslateBatch(texts: string[], signal: AbortSignal,
     };
     parseDocument(html).children.forEach(collect);
     const text = parts.join('').trim();
-    if (!text) throw new TranslationError('Google 返回了空译文');
+    if (!text) throw new TranslationError(msg('translate.empty', { service: 'Google' }));
     return keepWhitespace(texts[i], text);
   });
 }
@@ -86,11 +88,13 @@ export class RssTranslations {
       CREATE INDEX IF NOT EXISTS translation_events_feed ON translation_events(feed_id,id);
       CREATE TABLE IF NOT EXISTS translation_cache (key TEXT PRIMARY KEY, text TEXT NOT NULL, touched_at INTEGER NOT NULL);`);
   }
-  event(job: Job, message: string): void {
+  /** Stored in the feed owner's language; the server log is in English. */
+  event(job: Job, text: LocalizedText): void {
     if (!this.valid(job)) return;
-    this.db.prepare('INSERT INTO translation_events(feed_id,item_id,at,message) VALUES (?,?,?,?)').run(job.feed_id, job.item_id, Date.now(), message);
-    console.info(`[RSS 翻译] feed=${job.feed_id} item=${job.item_id} ${message}`);
+    this.db.prepare('INSERT INTO translation_events(feed_id,item_id,at,message) VALUES (?,?,?,?)').run(job.feed_id, job.item_id, Date.now(), lt(text));
+    console.info(`[RSS translation] feed=${job.feed_id} item=${job.item_id} ${translate('en', text.key, text.params)}`);
   }
+  ownerLocale(job: Pick<Job, 'owner_id'>) { return ownerLocale(this.db, job.owner_id); }
   progress(id: string) {
     return {
       tasks: this.db.prepare(`SELECT t.item_id AS id,i.title,t.status,t.attempts,t.next_at AS nextAt,t.error FROM translations t JOIN feed_items i ON i.id=t.item_id WHERE t.feed_id=? ORDER BY CASE t.status WHEN 'running' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END,i.first_seen_at DESC LIMIT 100`).all(id),
@@ -98,7 +102,7 @@ export class RssTranslations {
     };
   }
   syncWebsite(feed: Feed): void {
-    if (feed.sourceType === 'rss' || !translationEnabled(feed)) return;
+    if (isFeedSource(feed) || !translationEnabled(feed)) return;
     for (const row of this.db.prepare('SELECT id,title,description,image,link FROM feed_items WHERE feed_id=?').all(feed.id)) {
       const html = sanitizeDescription(row.description ? String(row.description) : undefined, String(row.link), row.image ? String(row.image) : undefined);
       const previous = this.db.prepare('SELECT body_json FROM translations WHERE item_id=?').get(row.id);
@@ -152,7 +156,8 @@ export class RssTranslations {
       const done = row?.status === 'success' && typeof body.title === 'string' && !!body.title.trim() && typeof body.translatedHtml === 'string' && typeof body.bilingualHtml === 'string';
       const bilingual = feed.translationMode !== 'translated';
       return { ...item, title: done && body.title ? bilingual ? `${body.title} / ${item.title}` : body.title : item.title,
-        contentHtml: safeHtml(done ? (bilingual ? body.bilingualHtml : body.translatedHtml) ?? body.html : `<p>【${row?.status === 'failed' ? '翻译失败，暂显示原文' : '等待翻译，暂显示原文'}】</p>${body.html}`, item.link),
+        // The note is part of the feed, so it follows the feed's target language.
+        contentHtml: safeHtml(done ? (bilingual ? body.bilingualHtml : body.translatedHtml) ?? body.html : `<p>${escapeXml(translate(targetLocale(feed.targetLanguage), row?.status === 'failed' ? 'translate.noteFailed' : 'translate.notePending'))}</p>${body.html}`, item.link),
         description: undefined,
         ...(done && body.title ? { translatedTitle: body.title, sourceTitle: item.title } : {}),
         translationStatus: done ? 'success' : row?.status === 'failed' ? 'failed' : 'pending',
@@ -174,7 +179,7 @@ export class RssTranslations {
     this.db.prepare("UPDATE translations SET revision=?,status=CASE WHEN status='running' THEN 'pending' ELSE status END WHERE json_extract(body_json,'$.actorId')=? AND status IN ('pending','running')").run(randomUUID(), id);
   }
   cancelActor(id: string): void {
-    this.db.prepare("UPDATE translations SET status='failed',revision=?,error='操作人身份已变化，请手动重试' WHERE json_extract(body_json,'$.actorId')=? AND status IN ('pending','running') AND feed_id IN (SELECT id FROM feeds WHERE owner_id!=?)").run(randomUUID(), id, id);
+    this.db.prepare("UPDATE translations SET status='failed',revision=?,error=? WHERE json_extract(body_json,'$.actorId')=? AND status IN ('pending','running') AND feed_id IN (SELECT id FROM feeds WHERE owner_id!=?)").run(randomUUID(), tl('translate.actorChanged'), id, id);
   }
   /** A new service or target language: every article is translated again (cache hits stay free). */
   retranslate(id: string): void {
@@ -324,7 +329,7 @@ export class TranslationWorker {
     if (provider === 'openai') return { ...openaiEngine(target, settings.openai, policy), unavailable: providerProblem(settings, 'openai') };
     const native = this.translate === googleTranslate;
     return {
-      provider: 'google', label: 'Google 免费翻译', namespace: `google-browser:v2:${target}`,
+      provider: 'google', label: msg('provider.google'), namespace: `google-browser:v2:${target}`,
       batch: native ? googleBatchLimits : { segments: 1, characters: Infinity },
       translate: native ? (texts, signal) => googleTranslateBatch(texts, signal, target) : async (texts, signal) => [await this.translate(texts[0], signal, target)],
     };
@@ -344,8 +349,11 @@ export class TranslationWorker {
       const job = this.store.next(settings.defaultProvider, skip); if (!job) break;
       const provider = isTranslationProvider(job.provider) ? job.provider : 'google';
       this.store.begin(job);
-      this.store.event(job, `开始翻译，第 ${job.attempts + 1} 次尝试`);
-      const work = this.run(job, provider).catch(() => { console.error('RSS 翻译后台任务失败，将在重启后恢复'); }).finally(() => {
+      // Progress and errors are stored in the language of the feed's owner.
+      const work = withLocale(() => this.store.ownerLocale(job), () => {
+        this.store.event(job, msg('translate.started', { attempt: job.attempts + 1 }));
+        return this.run(job, provider);
+      }).catch(() => { console.error('RSS translation task failed; it resumes after a restart'); }).finally(() => {
         this.active.delete(work); if (!this.stopped) this.wake();
       });
       this.active.set(work, provider);
@@ -390,9 +398,9 @@ export class TranslationWorker {
       void (async () => {
         const results = await job.engine.translate(batch.map(part => part.text), job.signal);
         job.signal.throwIfAborted();
-        if (results.length !== batch.length) throw new TranslationError('翻译服务返回的译文数量不匹配');
+        if (results.length !== batch.length) throw new TranslationError(msg('translate.countMismatch'));
         for (let i = 0; i < batch.length; i++) {
-          if (!results[i]?.trim()) throw new TranslationError('翻译服务返回了空译文');
+          if (!results[i]?.trim()) throw new TranslationError(msg('translate.emptyResult'));
         }
         for (let i = 0; i < batch.length; i++) {
           this.store.cache(batch[i].text, results[i], job.engine.namespace); batch[i].resolve(results[i]);
@@ -412,7 +420,7 @@ export class TranslationWorker {
     const signal = AbortSignal.any([this.controller.signal, this.store.signal(job)]);
     const engine = this.engine(provider, isTargetLanguage(job.target_language) ? job.target_language : 'zh-CN');
     // Unexpected errors may carry raw socket details; only a fixed message is shown and stored.
-    const fallback = provider === 'google' ? 'Google 免费翻译连接失败' : `${engine.label} 连接失败`;
+    const fallback = msg('translate.connectionFailed', { service: engine.label });
     let completed = 0, submitted = 0, cached = 0;
     try {
       if (engine.unavailable) throw new TranslationError(engine.unavailable);
@@ -425,7 +433,7 @@ export class TranslationWorker {
           if (this.store.cached(part, engine.namespace) !== undefined) cached++;
           const result = await this.segment(part, signal, job.owner_id, engine);
           completed++;
-          this.store.event(job, `已完成 ${completed} 个片段（已提交 ${submitted}，缓存命中 ${cached}）`);
+          this.store.event(job, msg('translate.progress', { count: completed, submitted, cached }));
           return result;
         });
         return output.join('');
@@ -435,14 +443,15 @@ export class TranslationWorker {
       if (title.status === 'rejected') throw title.reason;
       if (body.status === 'rejected') throw body.reason;
       signal.throwIfAborted();
-      this.store.event(job, `翻译完成，共 ${completed} 个片段，缓存命中 ${cached}，即将发布`);
+      this.store.event(job, msg('translate.finished', { count: completed, cached }));
       this.store.finish(job, { ...original, title: title.value, ...body.value });
       if (this.store.valid(job)) this.notify?.(job.feed_id);
     } catch (error) {
       const retryMs = error instanceof TranslationError ? error.retryAfterMs : 0;
-      this.store.event(job, signal.aborted ? '翻译中断，恢复运行后继续' : `${error instanceof TranslationError ? error.message : '翻译连接失败'}；${job.attempts >= 2 ? '已达重试上限' : '已安排自动重试'}`);
-      this.store.fail(job, error instanceof TranslationError ? error.message : `${fallback}，请检查服务主机网络后重试`, retryMs, signal.aborted);
-      if (!signal.aborted && this.store.valid(job)) this.notify?.(job.feed_id, error instanceof TranslationError ? error.message : fallback);
+      const reason = error instanceof TranslationError ? error.text : msg('translate.connectionFailedShort');
+      this.store.event(job, signal.aborted ? msg('translate.interrupted') : msg(job.attempts >= 2 ? 'translate.failedFinal' : 'translate.failedRetry', { reason }));
+      this.store.fail(job, lt(error instanceof TranslationError ? error.text : msg('translate.checkNetwork', { reason: fallback })), retryMs, signal.aborted);
+      if (!signal.aborted && this.store.valid(job)) this.notify?.(job.feed_id, lt(error instanceof TranslationError ? error.text : fallback));
     }
   }
   /** Queue state for one service, or all of them combined. */
