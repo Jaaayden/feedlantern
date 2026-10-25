@@ -1,6 +1,6 @@
 {
   "name": "feedlantern-cli",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "Command line and MCP server for driving a FeedLantern instance from scripts and AI agents.",
   "license": "MIT",
   "type": "module",
