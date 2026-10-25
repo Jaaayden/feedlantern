@@ -6,6 +6,6 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     // The message catalogs change with the text, not the code: keep them in their own cached chunk.
-    rollupOptions: { output: { manualChunks: id => id.includes('/src/shared/locales/') ? 'locales' : undefined } },
+    rolldownOptions: { output: { codeSplitting: { groups: [{ name: 'locales', test: /\/src\/shared\/locales\// }] } } },
   },
 });
