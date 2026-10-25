@@ -8,11 +8,11 @@ const app = await createApp({ config });
 
 try {
   await app.listen({ host: config.host, port: config.port });
-  process.stdout.write(`FeedLantern 已启动：http://${config.host}:${config.port}\n`);
+  process.stdout.write(`FeedLantern is running at http://${config.host}:${config.port}\n`);
   const setupPath = join(config.dataDir, 'setup-token');
-  if (existsSync(setupPath)) process.stdout.write(`首次管理员设置码：${readFileSync(setupPath, 'utf8').trim()}\n请在初始化页面填写，创建管理员后失效。\n`);
+  if (existsSync(setupPath)) process.stdout.write(`First-run setup code: ${readFileSync(setupPath, 'utf8').trim()}\nEnter it on the setup page; it expires once the administrator account is created.\n`);
 } catch (error) {
-  process.stderr.write(`FeedLantern 启动失败：${error instanceof Error ? error.message : '未知错误'}\n`);
+  process.stderr.write(`FeedLantern failed to start: ${error instanceof Error ? error.message : 'unknown error'}\n`);
   await app.close().catch(() => undefined);
   process.exitCode = 1;
 }

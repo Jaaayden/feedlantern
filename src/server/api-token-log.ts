@@ -85,7 +85,7 @@ export class ApiTokenLog {
       } catch (error) { this.db.exec('ROLLBACK TO token_log; RELEASE token_log'); throw error; }
     } catch {
       // Logging must never break an API call; the calls of this batch are lost.
-      console.error(`访问令牌调用日志写入失败，已丢弃 ${calls.length} 条记录`);
+      console.error(`Failed to write the access token call log; dropped ${calls.length} records`);
     }
   }
 

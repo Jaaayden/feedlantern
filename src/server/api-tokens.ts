@@ -23,6 +23,7 @@ export const SESSION_ONLY_ROUTES: readonly string[] = [
   'POST /api/auth/login',
   'POST /api/auth/logout',
   'POST /api/auth/password',
+  'PUT /api/auth/locale',
   'POST /api/backups/export',
   'POST /api/backups/preview',
   'POST /api/backups/restore',

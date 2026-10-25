@@ -8,6 +8,7 @@ import { fetchSource, parseSource } from '../src/server/rss-source.js';
 import { NetworkPolicy } from '../src/server/network.js';
 import { NotAFeedError, nonFeedReason } from '../src/server/fetch-errors.js';
 import { friendlyError } from '../src/server/validation.js';
+import { lt, rawText } from '../src/server/i18n.js';
 import type { NotificationMessage } from '../src/server/notify.js';
 import { startTarget } from './proxy-fixtures.js';
 
@@ -15,6 +16,8 @@ const fixture = (name: string) => readFileSync(new URL(`./fixtures/pubmed/${name
 const challenge = fixture('journal-challenge.html');
 const plainPage = '<!DOCTYPE html>\n<html><head><title>Welcome</title></head><body><h1>Sign in</h1><p>Our newsletter.</p></body></html>';
 const rss = '<?xml version="1.0"?><rss version="2.0"><channel><title>Valid</title><item><guid>one</guid><title>Hello</title><link>https://example.test/one</link></item></channel></rss>';
+/** The reason in the current language (zh-CN in unit tests). */
+const reasonOf = (...args: Parameters<typeof nonFeedReason>) => { const reason = nonFeedReason(...args); return reason && lt(reason); };
 const externalEntity = '<?xml version="1.0"?><!DOCTYPE rss [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><rss version="2.0"><channel><title>&xxe;</title></channel></rss>';
 
 test('解析前识别网页：验证页注明标记，普通网页说明不是订阅源；合法 RSS 正常；外部实体仍按原逻辑拒绝', () => {
@@ -23,7 +26,7 @@ test('解析前识别网页：验证页注明标记，普通网页说明不是�
   const error = (() => { try { parseSource(challenge, base); } catch (reason) { return reason; } })();
   assert.ok(error instanceof NotAFeedError, String(error));
   assert.match(error.message, /^来源返回的是反爬验证页而不是 RSS\/Atom（页面含 cookies-required 标记）。FeedLantern 不会尝试绕过/);
-  assert.equal(friendlyError(error, 'fallback'), error.message);
+  assert.equal(lt(friendlyError(error, rawText('fallback'))), error.message);
   assert.throws(() => parseSource(plainPage, base), /^NotAFeedError: 来源返回的是网页而不是 RSS\/Atom。可能是对方的反爬验证页或登录页，FeedLantern 不会尝试绕过/);
   // A leading XML declaration or comment does not hide an HTML page.
   assert.throws(() => parseSource(`﻿<?xml version="1.0"?>\n<!-- cached -->\n<html><body>x</body></html>`, base), /网页而不是 RSS\/Atom/);
@@ -33,17 +36,17 @@ test('解析前识别网页：验证页注明标记，普通网页说明不是�
   assert.throws(() => parseSource('<!DOCTYPE rss SYSTEM "http://evil.test/x.dtd"><rss/>', base), /实体声明/);
 
   // Status and content type are judged before the body.
-  assert.match(nonFeedReason(challenge, 203, 'text/html; charset=utf-8')!, /反爬验证页.*HTTP 203，页面含 cookies-required 标记/);
-  assert.match(nonFeedReason(plainPage, 200, 'text/html')!, /^来源返回的是网页而不是 RSS\/Atom（HTTP 200）/);
-  assert.match(nonFeedReason(rss, 203, 'application/rss+xml')!, /^来源返回 HTTP 203，不是正常的订阅响应（应为 HTTP 200）：内容可能被中间代理/);
-  assert.match(nonFeedReason('', 204)!, /^来源返回 HTTP 204，不是正常的订阅响应/);
-  assert.match(nonFeedReason('<p>not a document</p>', 200, 'text/html')!, /网页而不是/);
+  assert.match(reasonOf(challenge, 203, 'text/html; charset=utf-8')!, /反爬验证页.*HTTP 203，页面含 cookies-required 标记/);
+  assert.match(reasonOf(plainPage, 200, 'text/html')!, /^来源返回的是网页而不是 RSS\/Atom（HTTP 200）/);
+  assert.match(reasonOf(rss, 203, 'application/rss+xml')!, /^来源返回 HTTP 203，不是正常的订阅响应（应为 HTTP 200）：内容可能被中间代理/);
+  assert.match(reasonOf('', 204)!, /^来源返回 HTTP 204，不是正常的订阅响应/);
+  assert.match(reasonOf('<p>not a document</p>', 200, 'text/html')!, /网页而不是/);
   // Some servers label a valid feed text/html: it is still read as a feed.
   assert.equal(nonFeedReason(rss, 200, 'text/html'), undefined);
   assert.equal(nonFeedReason(rss, 200, 'application/rss+xml'), undefined);
   // Other errors keep their status message unless the page is a bot check.
   assert.equal(nonFeedReason(plainPage, 404, 'text/html'), undefined);
-  assert.match(nonFeedReason('<html><body><div class="g-recaptcha"></div></body></html>', 403, 'text/html')!, /^RSS 获取失败（HTTP 403）：来源返回了反爬验证页（页面含 reCAPTCHA 标记）/);
+  assert.match(reasonOf('<html><body><div class="g-recaptcha"></div></body></html>', 403, 'text/html')!, /^RSS 获取失败（HTTP 403）：来源返回了反爬验证页（页面含 reCAPTCHA 标记）/);
 });
 
 test('fetchSource 按状态码、类型和正文给出准确报错，合法 RSS（含标成 text/html 的）照常解析', async () => {

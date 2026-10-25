@@ -4,6 +4,7 @@ import { ExtractionError, extractPage } from './extraction.js';
 import { normalizeLink } from './links.js';
 import { NetworkPolicyError } from './network.js';
 import { templateUrl } from './validation.js';
+import { LocalizedError, errorText, lt, msg, tl } from './i18n.js';
 
 /** Whole-run limits: a paginated collection never runs or grows past these. */
 export const PAGINATION_BUDGET_MS = 180_000;
@@ -67,9 +68,12 @@ function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+/** A page's error for the report, in the current language; "Couldn't open the page:" is implied. */
 function message(error: unknown): string {
-  const text = error instanceof Error ? error.message : String(error);
-  return text.split('\n')[0].replace(/^打开页面失败：/, '').slice(0, 200);
+  const text = errorText(error);
+  const detail = text?.key === 'error.failedWithDetail' && (text.params?.action as { key?: string } | undefined)?.key === 'action.openPage' ? String(text.params?.detail ?? '') : undefined;
+  const shown = detail ?? (text ? lt(text) : error instanceof Error ? error.message : String(error));
+  return shown.split('\n')[0].slice(0, 200);
 }
 
 /**
@@ -89,7 +93,7 @@ export async function collectPages(page: Page, options: CollectOptions): Promise
   const items: ExtractedItem[] = [];
   const seen = new Set<string>();
   const pages: PageReport[] = [];
-  const checkAbort = () => { if (options.signal?.aborted) throw options.signal.reason ?? new Error('操作已取消'); };
+  const checkAbort = () => { if (options.signal?.aborted) throw options.signal.reason ?? new LocalizedError(msg('error.canceled')); };
   const known = (item: ExtractedItem) => seen.has(normalizeLink(item.link)) || !!options.isKnown?.(item.link);
   const add = (list: ExtractedItem[]): ExtractedItem[] => {
     const fresh: ExtractedItem[] = [];
@@ -113,9 +117,9 @@ export async function collectPages(page: Page, options: CollectOptions): Promise
   const firstAllKnown = first.every(known);
   const firstFresh = add(first);
   pages.push({ page: 1, url: page.url(), count: first.length, added: firstFresh.length });
-  if (!plan || maxPages <= 1) return finish('single', 1, '只抓取源网址这一页');
-  if (options.isKnown && firstAllKnown) return finish('known', 1, '第 1 页的条目都已见过，不再翻页');
-  if (items.length >= MAX_COLLECTED_ITEMS) return finish('limit', 1, `已达到 ${MAX_COLLECTED_ITEMS} 条上限，停在第 1 页`);
+  if (!plan || maxPages <= 1) return finish('single', 1, tl('pagination.single'));
+  if (options.isKnown && firstAllKnown) return finish('known', 1, tl('pagination.firstKnown'));
+  if (items.length >= MAX_COLLECTED_ITEMS) return finish('limit', 1, tl('pagination.limit', { max: MAX_COLLECTED_ITEMS, page: 1 }));
 
   const visited = new Set([normalizeLink(page.url())]);
   const deadline = started + budget;
@@ -142,17 +146,17 @@ export async function collectPages(page: Page, options: CollectOptions): Promise
     } else {
       let found: { invalid?: string; href: string | null; hidden: boolean; disabled: boolean } | null;
       try { found = await page.evaluate(`(${NEXT_SCRIPT})(${JSON.stringify(plan.nextSelector ?? '')})`) as typeof found; }
-      catch (error) { pages.push({ page: number, url: page.url(), count: 0, added: 0, error: message(error) }); return finish('failed', number, `第 ${number} 页失败：读取${plan.mode === 'next' ? '下一页链接' : '加载更多按钮'}出错，已保留前 ${previous} 页的条目`); }
-      const name = plan.mode === 'next' ? '下一页链接或按钮' : '“加载更多”按钮';
-      if (found?.invalid) return finish('failed', previous, `${name}的选择器无效：${found.invalid.slice(0, 120)}`);
-      if (!found) return finish('end', previous, `第 ${previous} 页没有找到${name}，翻页结束`);
-      if (found.disabled) return finish('end', previous, `第 ${previous} 页的${name}已禁用，翻页结束`);
+      catch (error) { pages.push({ page: number, url: page.url(), count: 0, added: 0, error: message(error) }); return finish('failed', number, tl(plan.mode === 'next' ? 'pagination.readNextFailed' : 'pagination.readMoreFailed', { page: number, kept: previous })); }
+      const name = msg(plan.mode === 'next' ? 'pagination.nextControl' : 'pagination.moreControl');
+      if (found?.invalid) return finish('failed', previous, tl('pagination.selectorInvalid', { control: name, detail: found.invalid.slice(0, 120) }));
+      if (!found) return finish('end', previous, tl('pagination.controlMissing', { page: previous, control: name }));
+      if (found.disabled) return finish('end', previous, tl('pagination.controlDisabled', { page: previous, control: name }));
       if (plan.mode === 'next' && found.href) target = { url: found.href };
-      else if (found.hidden) return finish('end', previous, `第 ${previous} 页的${name}不可见，翻页结束`);
+      else if (found.hidden) return finish('end', previous, tl('pagination.controlHidden', { page: previous, control: name }));
       else target = { click: true };
     }
-    if ('url' in target && visited.has(normalizeLink(target.url))) return finish('repeat', previous, `第 ${number} 页的地址与已抓取的页面相同，翻页结束`);
-    if (now() + plan.delayMs >= deadline) return finish('budget', previous, `已接近单次抓取的总时长上限，停在第 ${previous} 页`);
+    if ('url' in target && visited.has(normalizeLink(target.url))) return finish('repeat', previous, tl('pagination.sameUrl', { page: number }));
+    if (now() + plan.delayMs >= deadline) return finish('budget', previous, tl('pagination.nearBudget', { page: previous }));
 
     await sleep(plan.delayMs + Math.floor(random() * plan.delayMs * 0.2), options.signal);
     checkAbort();
@@ -180,28 +184,28 @@ export async function collectPages(page: Page, options: CollectOptions): Promise
         }
         try { return await extractPage(page, options.rules); }
         catch (error) {
-          if (error instanceof ExtractionError && error.message.startsWith('没有抽取到有效条目')) return [];
+          if (error instanceof ExtractionError && error.text.key === 'extract.noItems') return [];
           throw error;
         }
       })());
     } catch (error) {
       checkAbort();
       if (error instanceof BudgetError) {
-        pages.push({ page: number, url: page.url(), count: 0, added: 0, error: '超出单次抓取总时长上限' });
-        return finish('budget', number, `第 ${number} 页超出单次抓取总时长上限，已保留前 ${previous} 页的条目`);
+        pages.push({ page: number, url: page.url(), count: 0, added: 0, error: tl('pagination.budgetError') });
+        return finish('budget', number, tl('pagination.overBudget', { page: number, kept: previous }));
       }
       const text = message(error);
       const url = 'url' in target ? target.url : page.url();
-      if (error instanceof NetworkPolicyError || /网络安全策略|SSRF|私网或特殊地址/.test(text)) {
+      if (error instanceof NetworkPolicyError || errorText(error)?.key === 'error.pageBlocked') {
         pages.push({ page: number, url, count: 0, added: 0, error: text });
-        return finish('blocked', number, `第 ${number} 页被网络安全策略拦截，已保留前 ${previous} 页的条目`);
+        return finish('blocked', number, tl('pagination.blocked', { page: number, kept: previous }));
       }
       if (/HTTP (?:404|410)\b/.test(text)) {
         pages.push({ page: number, url, count: 0, added: 0, error: text });
-        return finish('end', number, `第 ${number} 页不存在（${text.match(/HTTP \d+/)![0]}），翻页结束`);
+        return finish('end', number, tl('pagination.notFound', { page: number, status: text.match(/HTTP \d+/)![0] }));
       }
       pages.push({ page: number, url, count: 0, added: 0, error: text });
-      return finish('failed', number, `第 ${number} 页失败：${text}，已保留前 ${previous} 页的条目`);
+      return finish('failed', number, tl('pagination.failed', { page: number, detail: text, kept: previous }));
     }
     checkAbort();
     // "Load more" keeps earlier items on the page; only the appended ones count.
@@ -209,16 +213,16 @@ export async function collectPages(page: Page, options: CollectOptions): Promise
     const allKnown = pageItems.length > 0 && pageItems.every(known);
     const fresh = add(pageItems);
     pages.push({ page: number, url: page.url(), count: pageItems.length, added: fresh.length });
-    if (!list.length) return finish('empty', number, `第 ${number} 页没有抽取到条目，翻页结束`);
-    if (!fresh.length) return finish('repeat', number, plan.mode === 'loadMore' ? `第 ${number} 次加载没有出现新条目，翻页结束` : `第 ${number} 页的条目与前面的页相同，翻页结束`);
-    if (items.length >= MAX_COLLECTED_ITEMS) return finish('limit', number, `已达到 ${MAX_COLLECTED_ITEMS} 条上限，停在第 ${number} 页`);
-    if (options.isKnown && allKnown) return finish('known', number, `第 ${number} 页的条目都已见过，提前停止`);
+    if (!list.length) return finish('empty', number, tl('pagination.empty', { page: number }));
+    if (!fresh.length) return finish('repeat', number, tl(plan.mode === 'loadMore' ? 'pagination.noNewLoad' : 'pagination.samePage', { page: number }));
+    if (items.length >= MAX_COLLECTED_ITEMS) return finish('limit', number, tl('pagination.limit', { max: MAX_COLLECTED_ITEMS, page: number }));
+    if (options.isKnown && allKnown) return finish('known', number, tl('pagination.known', { page: number }));
   }
-  return finish('max', maxPages, `已达到最多 ${maxPages} 页`);
+  return finish('max', maxPages, tl('pagination.max', { count: maxPages }));
 }
 
-/** One line for the fetch log, e.g. "共 3 页（12 + 10 + 0 条）；第 3 页失败：…". */
+/** One line for the fetch log, e.g. "3 pages (12 + 10 + 0 items); page 3 failed: …". */
 export function reportSummary(report: PaginationReport): string {
   const counts = report.pages.filter(page => !page.error).map(page => page.added);
-  return `共 ${counts.length} 页（${counts.join(' + ')} 条）；${report.message}`;
+  return tl('pagination.summary', { count: counts.length, items: counts.join(' + '), message: report.message });
 }

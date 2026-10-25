@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import { createApp, Store, type BrowserServiceLike } from '../src/server/app.js';
 import { RULE_HEALTH, evaluateHealth, measureItems } from '../src/server/rule-health.js';
+import { ruleHealthSeverity } from '../src/shared/rule-health.js';
 import { NotificationWorker, alertTitle, type NotificationMessage } from '../src/server/notify.js';
 import { notificationChannelsSchema } from '../src/server/notify.js';
 import type { DetectionResult, ExtractedItem } from '../src/shared/types.js';
@@ -15,6 +16,21 @@ function before(count = 20): ExtractedItem[] {
   return Array.from({ length: count }, (_, i) => ({ title: `文章 ${i}`, link: `https://example.test/post/${i}`, publishedAt: '2026-01-01T00:00:00.000Z', image: `https://example.test/${i}.png`, description: `摘要 ${i}` }));
 }
 const history = (count = 6, items = before()) => Array.from({ length: count }, () => measureItems(items));
+
+test('条数未变：日期、图片和摘要仅为轻提示，标题或链接异常仍为警告', () => {
+  for (const field of ['publishedAt', 'image', 'description'] as const) {
+    const items = before(6).map(item => ({ ...item, [field]: undefined }));
+    const reasons = evaluateHealth(measureItems(items), history(5, before(6)))!;
+    assert.equal(measureItems(items).itemCount, 6);
+    assert.equal(reasons.length, 1);
+    assert.equal(ruleHealthSeverity(reasons), 'notice');
+  }
+  for (const items of [
+    before().map(item => ({ ...item, title: 'Read more', publishedAt: undefined })),
+    before().map(item => ({ ...item, link: 'https://example.test/', image: undefined })),
+    before(3),
+  ]) assert.equal(ruleHealthSeverity(evaluateHealth(measureItems(items), history())!), 'warning');
+});
 
 test('样本不足时不判断，正常波动不告警', () => {
   assert.equal(evaluateHealth(measureItems(before(2)), history(RULE_HEALTH.minSamples - 1)), null);
@@ -55,6 +71,94 @@ function fixture() {
   const alerts = () => store.history.nextAlert(Date.now() + 1000);
   return { dir, store, feed, fetch, alerts, close: () => { store.close(); rmSync(dir, { recursive: true, force: true }); } };
 }
+
+test('6 条仍为 6 条：缺少可选字段只在订阅和日志中提示，不排队任何渠道通知，恢复后清除', () => {
+  const { store, feed, fetch, alerts, close } = fixture();
+  try {
+    store.setNotificationChannels('admin', notificationChannelsSchema.parse({ webhook: { enabled: true, url: 'https://hooks.example.test/x', secret: '', headers: [] } }));
+    for (let i = 0; i < RULE_HEALTH.minSamples; i++) fetch(before(6));
+    for (const field of ['publishedAt', 'image', 'description'] as const) {
+      const result = fetch(before(6).map(item => ({ ...item, [field]: undefined })));
+      assert.equal(result.warning?.severity, 'notice');
+      assert.equal(result.warning?.itemCount, 6);
+      assert.equal(store.getFeed(feed.id)!.ruleHealth?.severity, 'notice');
+      assert.equal(store.getFeed(feed.id)!.lastError, null);
+      const log = store.history.list(feed.id).logs[0];
+      assert.equal(log.status, 'success');
+      assert.equal(log.itemCount, 6);
+      assert.equal(log.newItemCount, 0);
+      assert.equal(log.warningSeverity, 'notice');
+      assert.equal(log.notification, null);
+      assert.equal(alerts(), null);
+    }
+    assert.equal(fetch(before(6)).warning, null);
+    assert.equal(store.getFeed(feed.id)!.ruleHealth, undefined);
+  } finally { close(); }
+});
+
+test('轻提示升级为关键字段异常会通知，降级会取消尚未发送的各渠道告警', () => {
+  const { store, feed, fetch, alerts, close } = fixture();
+  try {
+    store.setNotificationChannels('admin', notificationChannelsSchema.parse({ webhook: { enabled: true, url: 'https://hooks.example.test/x', secret: '', headers: [] } }));
+    for (let i = 0; i < RULE_HEALTH.minSamples; i++) fetch(before(6));
+    const missingDates = before(6).map(item => ({ ...item, publishedAt: undefined }));
+    assert.equal(fetch(missingDates).warning?.severity, 'notice');
+    assert.equal(alerts(), null);
+    const now = Date.now() + 100;
+    const warning = fetch(missingDates.map(item => ({ ...item, title: 'Read more' })), now).warning!;
+    assert.equal(warning.severity, 'warning');
+    assert.equal(warning.detectedAt, new Date(now).toISOString());
+    const originalLog = store.history.list(feed.id).logs[0];
+    assert.equal(originalLog.warningSeverity, 'warning');
+    assert.equal(originalLog.notification?.channels?.length, 2);
+    const alert = alerts()!;
+    assert.equal(alert.kind, 'health');
+    // A sustained critical problem stays one episode.
+    assert.equal(fetch(missingDates.map(item => ({ ...item, title: 'Read more' })), now + 1).warning?.detectedAt, warning.detectedAt);
+    assert.equal(alerts()!.alertId, alert.alertId);
+    assert.equal(fetch(missingDates, now + 2).warning?.severity, 'notice');
+    assert.equal(alerts(), null);
+    const canceled = store.history.list(feed.id).logs.find(log => log.id === originalLog.id)!;
+    assert.deepEqual(canceled.notification?.channels?.map(channel => channel.status), ['canceled', 'canceled']);
+    // A later warning is still eligible; notices neither notify nor consume cooldown.
+    fetch(before(1), now + 31 * 60_000);
+    assert.ok(store.history.nextAlert(now + 31 * 60_000 + 1000));
+  } finally { close(); }
+});
+
+test('升级旧记录：字段缺失立即降级并取消旧通知，真正的规则告警保留', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fl-health-upgrade-'));
+  let store = new Store(dir);
+  try {
+    store.setBark('admin', { enabled: true, url: 'https://example.test/mock-key' });
+    const noticeFeed = store.createFeed({ ...input, name: '日期缺失' }).feed;
+    const warningFeed = store.createFeed({ ...input, name: '条目骤降', url: 'https://example.test/other' }).feed;
+    const record = (feed: typeof noticeFeed, items: ExtractedItem[]) => {
+      const run = store.history.start(feed.id, 'scheduled');
+      store.history.succeed(run, feed.id, 1, { itemCount: items.length, newItemCount: 0 });
+      return store.ruleHealth.record(feed, run, items);
+    };
+    for (const feed of [noticeFeed, warningFeed]) for (let i = 0; i < RULE_HEALTH.minSamples; i++) record(feed, before());
+    const notice = record(noticeFeed, before().map(item => ({ ...item, publishedAt: undefined })))!;
+    const legacyAlert = store.history.ruleHealthAlert(noticeFeed, notice.reasons.map(reason => reason.message), null);
+    assert.ok(legacyAlert.id);
+    record(warningFeed, before(3));
+    store.close();
+    const db = new DatabaseSync(join(dir, 'app.db'));
+    db.exec("ALTER TABLE fetch_logs DROP COLUMN warning_severity; UPDATE feed_health SET warning_json=json_remove(warning_json,'$.severity');");
+    db.prepare('UPDATE feed_health SET alerted_at=? WHERE feed_id=?').run(Date.now(), noticeFeed.id);
+    db.close();
+    store = new Store(dir);
+    assert.equal(store.getFeed(noticeFeed.id)!.ruleHealth?.severity, 'notice');
+    assert.equal(store.getFeed(warningFeed.id)!.ruleHealth?.severity, 'warning');
+    assert.equal(store.history.nextAlert(Date.now() + 1000)?.feedId, warningFeed.id);
+    const migrated = new DatabaseSync(join(dir, 'app.db'));
+    assert.equal(migrated.prepare('SELECT status FROM fetch_alerts WHERE id=?').get(legacyAlert.id!)?.status, 'canceled');
+    assert.equal(migrated.prepare('SELECT alerted_at FROM feed_health WHERE feed_id=?').get(noticeFeed.id)?.alerted_at, null);
+    assert.equal(store.history.list(noticeFeed.id).logs[0].warningSeverity, undefined, 'old logs do not invent a historical severity');
+    migrated.close();
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
 
 test('警告记录在订阅和日志上，每次出现只通知一次，恢复后取消', () => {
   const { store, feed, fetch, alerts, close } = fixture();

@@ -1,15 +1,18 @@
 import { ZodError } from 'zod';
-import { FetchTimeoutError } from './fetch-errors.js';
 import type { Cookie } from 'playwright';
 import { isTargetLanguage, isTranslationProvider, paginationLimits, type FeedInput, type PaginationRules, type SelectionRules, type TargetLanguage, type TranslationMode, type TranslationProviderId } from '../shared/types.js';
 import { AppError } from './auth.js';
 import { CookieParseError } from './cookies.js';
 import { redactForLog } from './log.js';
+import { LocalizedError, msg, rawText, type LocalizedText } from './i18n.js';
+import type { Param } from '../shared/i18n.js';
 import type { CredentialValue } from './store.js';
+import { PUBMED_DEFAULT_LIMIT, PUBMED_LIMITS, PUBMED_QUERY_MAX, pubmedQueryProblem, pubmedSearchFromUrl, pubmedSearchUrl, type PubmedSearch } from '../shared/pubmed.js';
 
 interface FeedBody {
   pagination?: unknown;
   sourceType?: unknown;
+  pubmed?: unknown;
   translationMode?: unknown;
   targetLanguage?: unknown;
   translationProvider?: unknown;
@@ -35,35 +38,36 @@ export function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
-export function asNonEmptyString(value: unknown, label: string, max = 20_000): string {
-  if (typeof value !== 'string' || !value.trim() || value.length > max) throw new AppError(400, `${label}不能为空且长度不能超过 ${max}`);
+/** `label` names the field in messages: an API field name as is, or a translated label. */
+export function asNonEmptyString(value: unknown, label: Param, max = 20_000): string {
+  if (typeof value !== 'string' || !value.trim() || value.length > max) throw new AppError(400, msg('error.fieldRequired', { label, max }));
   return value.trim();
 }
 
-export function asOptionalString(value: unknown, label: string, max = 20_000): string | undefined {
+export function asOptionalString(value: unknown, label: Param, max = 20_000): string | undefined {
   if (value === undefined || value === null || value === '') return undefined;
   return asNonEmptyString(value, label, max);
 }
 
-function asOptionalSelector(value: unknown, label: string, max = 4_000): string | undefined {
+function asOptionalSelector(value: unknown, label: Param, max = 4_000): string | undefined {
   // The editor sends an empty string when a user deliberately clears an
   // optional field. Treat it as absent instead of rejecting the whole form.
   if (value === undefined || value === null || value === '') return undefined;
   return asNonEmptyString(value, label, max);
 }
 
-export function asInteger(value: unknown, label: string, min: number, max: number, fallback: number): number {
+export function asInteger(value: unknown, label: Param, min: number, max: number, fallback: number): number {
   if (value === undefined || value === null || value === '') return fallback;
   const number = typeof value === 'number' ? value : Number(value);
-  if (!Number.isInteger(number) || number < min || number > max) throw new AppError(400, `${label}必须是 ${min} 到 ${max} 之间的整数`);
+  if (!Number.isInteger(number) || number < min || number > max) throw new AppError(400, msg('error.integerRange', { label, min: String(min), max: String(max) }));
   return number;
 }
 
-export function parseHttpUrl(value: unknown, label: string): string {
+export function parseHttpUrl(value: unknown, label: Param): string {
   const text = asNonEmptyString(value, label, 4_000);
   let parsed: URL;
-  try { parsed = new URL(text); } catch { throw new AppError(400, `${label}不是有效 URL`); }
-  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) throw new AppError(400, `${label}只能使用不带账号密码的 HTTP 或 HTTPS URL`);
+  try { parsed = new URL(text); } catch { throw new AppError(400, msg('error.urlInvalid', { label })); }
+  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) throw new AppError(400, msg('error.urlScheme', { label }));
   return parsed.toString();
 }
 
@@ -96,7 +100,7 @@ function parseRuleOrigins(value: unknown): FeedInput['ruleOrigins'] {
   const output: NonNullable<FeedInput['ruleOrigins']> = {};
   for (const key of ['item', 'title', 'link', 'description', 'image', 'date'] as const) {
     if (record[key] === undefined) continue;
-    if (record[key] !== 'auto' && record[key] !== 'manual') throw new AppError(400, 'ruleOrigins 只能使用 auto 或 manual');
+    if (record[key] !== 'auto' && record[key] !== 'manual') throw new AppError(400, 'error.ruleOriginsInvalid');
     output[key] = record[key];
   }
   return output;
@@ -107,18 +111,18 @@ export function parseTranslationMode(value: unknown): TranslationMode | undefine
   if (value === undefined) return undefined;
   if (value === 'chinese') return 'translated';
   if (value === 'original' || value === 'translated' || value === 'bilingual') return value;
-  throw new AppError(400, '翻译输出模式无效');
+  throw new AppError(400, 'error.translationModeInvalid');
 }
 export function parseTargetLanguage(value: unknown): TargetLanguage | undefined {
   if (value === undefined) return undefined;
-  if (!isTargetLanguage(value)) throw new AppError(400, '翻译目标语言无效');
+  if (!isTargetLanguage(value)) throw new AppError(400, 'error.targetLanguageInvalid');
   return value;
 }
 /** `null` (or an empty string) follows the instance default service. */
 export function parseTranslationProvider(value: unknown): TranslationProviderId | null | undefined {
   if (value === undefined) return undefined;
   if (value === null || value === '') return null;
-  if (!isTranslationProvider(value)) throw new AppError(400, '翻译服务无效');
+  if (!isTranslationProvider(value)) throw new AppError(400, 'error.translationProviderInvalid');
   return value;
 }
 
@@ -136,28 +140,64 @@ export function parsePagination(value: unknown): PaginationRules | null | undefi
   if (value === null) return null;
   const record = asRecord(value);
   if (record.mode === undefined || record.mode === 'none') return null;
-  if (!['next', 'template', 'loadMore'].includes(String(record.mode))) throw new AppError(400, '翻页方式无效');
+  if (!['next', 'template', 'loadMore'].includes(String(record.mode))) throw new AppError(400, 'error.paginationModeInvalid');
   const mode = record.mode as PaginationRules['mode'];
-  const maxPages = asInteger(record.maxPages, '最多翻页数', 1, paginationLimits.maxPages, 3);
-  const delayMs = asInteger(record.delayMs, '翻页间隔（毫秒）', paginationLimits.minDelayMs, paginationLimits.maxDelayMs, paginationLimits.defaultDelayMs);
+  const maxPages = asInteger(record.maxPages, msg('label.maxPages'), 1, paginationLimits.maxPages, 3);
+  const delayMs = asInteger(record.delayMs, msg('label.pageDelayMs'), paginationLimits.minDelayMs, paginationLimits.maxDelayMs, paginationLimits.defaultDelayMs);
   if (mode === 'template') {
-    const urlTemplate = asNonEmptyString(record.urlTemplate, 'URL 模板', 4_000);
-    if (!urlTemplate.includes('{n}')) throw new AppError(400, 'URL 模板需要包含页码占位符 {n}');
-    const start = asInteger(record.start, '起始页码', 0, 1_000_000, 2);
-    const step = asInteger(record.step, '页码步长', 1, 10_000, 1);
-    parseHttpUrl(templateUrl(urlTemplate, start), 'URL 模板');
+    const urlTemplate = asNonEmptyString(record.urlTemplate, msg('label.urlTemplate'), 4_000);
+    if (!urlTemplate.includes('{n}')) throw new AppError(400, msg('error.urlTemplatePlaceholder', { placeholder: '{n}' }));
+    const start = asInteger(record.start, msg('label.startPage'), 0, 1_000_000, 2);
+    const step = asInteger(record.step, msg('label.pageStep'), 1, 10_000, 1);
+    parseHttpUrl(templateUrl(urlTemplate, start), msg('label.urlTemplate'));
     return { mode, maxPages, delayMs, urlTemplate, start, step };
   }
-  const nextSelector = asNonEmptyString(record.nextSelector, mode === 'next' ? '下一页选择器' : '加载更多按钮选择器', 4_000);
+  const nextSelector = asNonEmptyString(record.nextSelector, mode === 'next' ? msg('label.nextSelector') : msg('label.loadMoreSelector'), 4_000);
   return { mode, maxPages, delayMs, nextSelector };
+}
+
+/** A PubMed query that can be sent, trimmed; otherwise `pubmed_query_invalid` naming the problem. */
+export function parsePubmedQueryText(value: unknown): string {
+  if (typeof value !== 'string') throw new AppError(400, 'error.pubmedQueryRequired', 'pubmed_query_invalid');
+  const problem = pubmedQueryProblem(value);
+  if (problem === 'empty') throw new AppError(400, 'error.pubmedQueryRequired', 'pubmed_query_invalid');
+  if (problem) throw new AppError(400, msg('error.pubmedQueryInvalid', { reason: msg(`pubmed.problem.${problem}`, { max: PUBMED_QUERY_MAX }) }), 'pubmed_query_invalid');
+  return value.trim();
+}
+
+/** `{ query, limit }`, or the PubMed search address a backup or configuration export stores. */
+export function parsePubmedSearch(value: unknown, url: unknown): PubmedSearch {
+  if (value === undefined || value === null) {
+    const stored = typeof url === 'string' ? pubmedSearchFromUrl(url) : null;
+    if (!stored) throw new AppError(400, 'error.pubmedQueryRequired', 'pubmed_query_invalid');
+    return { query: parsePubmedQueryText(stored.query), limit: stored.limit };
+  }
+  const record = asRecord(value);
+  const limit = record.limit === undefined || record.limit === null ? PUBMED_DEFAULT_LIMIT : record.limit;
+  if (typeof limit !== 'number' || !(PUBMED_LIMITS as readonly number[]).includes(limit)) throw new AppError(400, msg('error.pubmedLimitInvalid', { allowed: PUBMED_LIMITS.join(' / ') }));
+  return { query: parsePubmedQueryText(record.query), limit };
 }
 
 export function parseFeedInput(value: unknown): FeedInput {
   const record = asRecord(value) as FeedBody;
-  if (record.sourceType !== undefined && !['website','rss'].includes(String(record.sourceType))) throw new AppError(400, '订阅来源类型无效');
+  if (record.sourceType !== undefined && !['website', 'rss', 'pubmed'].includes(String(record.sourceType))) throw new AppError(400, 'error.sourceTypeInvalid');
   const mode = parseTranslationMode(record.translationMode);
   const targetLanguage = parseTargetLanguage(record.targetLanguage);
   const translationProvider = parseTranslationProvider(record.translationProvider);
+  if (record.sourceType === 'pubmed') {
+    const pubmed = parsePubmedSearch(record.pubmed, record.url);
+    return {
+      sourceType: 'pubmed', pubmed, pagination: null, translationMode: mode ?? 'original',
+      ...(targetLanguage ? { targetLanguage } : {}),
+      ...(translationProvider !== undefined ? { translationProvider } : {}),
+      name: asNonEmptyString(record.name, 'feed name', 200),
+      url: pubmedSearchUrl(pubmed),
+      rules: { item: '', title: '', link: '' }, credentialId: null,
+      ...(record.networkProfileId === undefined ? {} : { networkProfileId: record.networkProfileId === null || record.networkProfileId === '' ? null : asNonEmptyString(record.networkProfileId, 'networkProfileId', 200) }),
+      intervalMinutes: asInteger(record.intervalMinutes, 'intervalMinutes', 5, 1_440, 60),
+      waitMs: 0,
+    };
+  }
   const rss = record.sourceType === 'rss';
   const credentialId = record.credentialId === undefined || record.credentialId === null || record.credentialId === '' ? null : asNonEmptyString(record.credentialId, 'credentialId', 200);
   const pagination = rss ? null : parsePagination(record.pagination);
@@ -182,37 +222,41 @@ export function parseFeedInput(value: unknown): FeedInput {
 
 export function parseCredentialInput(value: unknown): CredentialValue {
   const record = asRecord(value) as CredentialBody;
-  if (record.format !== 'header' && record.format !== 'json') throw new AppError(400, 'Cookie 格式必须是 header 或 json');
-  const url = parseHttpUrl(record.url, 'Cookie 绑定 URL');
-  const name = asNonEmptyString(record.name, 'Cookie 凭据名称', 200);
-  const cookieValue = asNonEmptyString(record.value, 'Cookie 内容', 2_000_000);
+  if (record.format !== 'header' && record.format !== 'json') throw new AppError(400, 'error.cookieFormatInvalid');
+  const url = parseHttpUrl(record.url, msg('label.cookieUrl'));
+  const name = asNonEmptyString(record.name, msg('label.credentialName'), 200);
+  const cookieValue = asNonEmptyString(record.value, msg('label.cookieValue'), 2_000_000);
   return { name, url, format: record.format, value: cookieValue };
 }
 
-export function friendlyError(error: unknown, fallback: string): string {
-  if (error instanceof CookieParseError) return error.message;
-  if (error instanceof AppError) return error.message;
-  // Names only the host, so it is safe to show as is.
-  if (error instanceof FetchTimeoutError) return error.message;
+/**
+ * What a user may see about an error: its own localized text, a timeout
+ * naming only the host, or a short, redacted third-party message. Anything
+ * else becomes `fallback`.
+ */
+export function friendlyError(error: unknown, fallback: LocalizedText): LocalizedText {
+  if (error instanceof LocalizedError) return error.text;
+  if (error instanceof CookieParseError) return rawText(error.message);
   // Node and Playwright report these in English ("The operation was aborted").
-  if (error instanceof Error && error.name === 'TimeoutError') return '请求超时，目标网站长时间未响应';
-  if (error instanceof Error && error.name === 'AbortError') return '操作已中止（已取消或服务正在停止）';
+  if (error instanceof Error && error.name === 'TimeoutError') return msg('error.requestTimeout');
+  if (error instanceof Error && error.name === 'AbortError') return msg('error.aborted');
   if (error instanceof Error) {
-    const message = error.message.replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s/@]+@/gi, '[已隐藏]@').replace(/https?:\/\/[^\s)]+/gi, '[目标页面]').replace(/(?:cookie|authorization|set-cookie)\s*[:=][^\n]*/gi, '[敏感请求头已隐藏]');
-    if (message && message.length <= 300 && !/\n|stack|at\s+/.test(message)) return message;
+    const message = error.message.replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s/@]+@/gi, '[hidden]@').replace(/https?:\/\/[^\s)]+/gi, '[target page]').replace(/(?:cookie|authorization|set-cookie)\s*[:=][^\n]*/gi, '[sensitive header hidden]');
+    if (message && message.length <= 300 && !/\n|stack|at\s+/.test(message)) return rawText(message);
   }
   return fallback;
 }
 
 /** Log the original error when the user only sees a summary of it. */
-export function logHiddenError(where: string, error: unknown, shown: string): void {
-  if (error instanceof Error && error.message === shown) return;
-  console.error(`${where}：${redactForLog(describeError(error))}`);
+export function logHiddenError(where: string, error: unknown, shown: LocalizedText): void {
+  if (error instanceof LocalizedError && error.text === shown) return;
+  if (error instanceof Error && shown.key === 'error.raw' && error.message === shown.params?.message) return;
+  console.error(`${where}: ${redactForLog(describeError(error))}`);
 }
 
-export function frameError(error: unknown, action = '网页操作'): AppError {
-  const shown = friendlyError(error, '网页操作失败，请检查目标页面和等待条件');
-  logHiddenError(`${action}失败`, error, shown);
+export function frameError(error: unknown, action = 'Page action'): AppError {
+  const shown = friendlyError(error, msg('error.pageActionFailed'));
+  logHiddenError(`${action} failed`, error, shown);
   return new AppError(400, shown);
 }
 
@@ -227,9 +271,9 @@ export function cookieMetadata(cookies: readonly Cookie[], url: string): { domai
 /** Summarize an error for logs and operator-facing messages without echoing any data values. */
 export function describeError(error: unknown): string {
   if (error instanceof ZodError) {
-    const issues = error.issues.slice(0, 5).map(issue => `${issue.path.join('.') || '(root)'}（${issue.code}）`);
-    return issues.join('；') + (error.issues.length > 5 ? `；另有 ${error.issues.length - 5} 处` : '');
+    const issues = error.issues.slice(0, 5).map(issue => `${issue.path.join('.') || '(root)'} (${issue.code})`);
+    return issues.join('; ') + (error.issues.length > 5 ? `; ${error.issues.length - 5} more` : '');
   }
-  if (error instanceof Error) return `${error.name}: ${error.message}${error.stack ? ' | ' + error.stack.split('\n').slice(1, 4).map(line => line.trim()).join(' <- ') : ''}`;
+  if (error instanceof Error) return `${error.name}: ${error instanceof LocalizedError ? error.englishMessage : error.message}${error.stack ? ' | ' + error.stack.split('\n').slice(1, 4).map(line => line.trim()).join(' <- ') : ''}`;
   return String(error);
 }

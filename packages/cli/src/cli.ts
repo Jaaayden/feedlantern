@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
+import { isPubmedDate, PUBMED_ARTICLE_TYPES, PUBMED_DAYS_MAX, PUBMED_LIMITS, type PubmedField, type PubmedFilters } from '../../../src/shared/pubmed.js';
 import type { ApiTokenCallFilter, BulkFeedSettingsInput, FeedInput, FetchStatus, ItemFilter, ItemOutputStatus, PaginationRules, SelectionRules } from '../../../src/shared/types.js';
 import { FeedLanternClient, type BulkAction, type HttpMethod, type ImportJobInput } from './client.js';
 import { maskToken, readConfig, resolveConnection, writeConfig, type Connection, type Env } from './config.js';
@@ -63,6 +64,20 @@ const PAGE_OPTIONS: Record<string, Option> = {
 const FEED_OPTIONS: Record<string, Option> = {
   url: { type: 'string' }, name: { type: 'string' }, ...RULE_OPTIONS, ...PAGE_OPTIONS, rss: { type: 'boolean' }, interval: { type: 'string' },
   pagination: { type: 'string' }, translation: { type: 'string' }, 'target-language': { type: 'string' }, 'translation-provider': { type: 'string' }, data: { type: 'string' },
+};
+/** PubMed builder conditions as flags; each may repeat, and all are AND-ed in this order. */
+const PUBMED_FIELD_FLAGS: ReadonlyArray<[string, PubmedField]> = [
+  ['all-fields', 'all'], ['title-abstract', 'tiab'], ['title', 'title'], ['author', 'author'], ['first-author', 'firstAuthor'], ['last-author', 'lastAuthor'],
+  ['journal', 'journal'], ['affiliation', 'affiliation'], ['mesh', 'mesh'], ['publication-type', 'pubType'], ['language', 'language'], ['nlm-id', 'nlmId'],
+];
+const PUBMED_OPTIONS: Record<string, Option> = {
+  query: { type: 'string' },
+  'all-fields': { type: 'string', multiple: true }, 'title-abstract': { type: 'string', multiple: true }, title: { type: 'string', multiple: true },
+  author: { type: 'string', multiple: true }, 'first-author': { type: 'string', multiple: true }, 'last-author': { type: 'string', multiple: true },
+  journal: { type: 'string', multiple: true }, affiliation: { type: 'string', multiple: true }, mesh: { type: 'string', multiple: true },
+  'publication-type': { type: 'string', multiple: true }, language: { type: 'string', multiple: true }, 'nlm-id': { type: 'string', multiple: true },
+  days: { type: 'string' }, from: { type: 'string' }, to: { type: 'string' }, 'has-abstract': { type: 'boolean' }, type: { type: 'string', multiple: true },
+  'network-profile': { type: 'string' },
 };
 const LOG_OPTIONS: Record<string, Option> = { status: { type: 'string' }, limit: { type: 'string' }, cursor: { type: 'string' } };
 
@@ -155,6 +170,21 @@ async function feedChanges(ctx: Context): Promise<ops.FeedChanges> {
 }
 
 const enabledArg = (ctx: Context) => String(ctx.args.id);
+
+const pubmedLimit = (ctx: Context) => { const value = oneOf(ctx.opts, 'limit', PUBMED_LIMITS.map(String)); return value === undefined ? undefined : Number(value); };
+
+/** `--query`, or builder conditions and filters given as flags. */
+function pubmedInput(ctx: Context): ops.PubmedSearchInput {
+  const conditions = PUBMED_FIELD_FLAGS.flatMap(([flag, field]) => ((ctx.opts[flag] as string[] | undefined) ?? []).map(term => ({ field, term })));
+  for (const name of ['from', 'to']) { const value = str(ctx.opts, name); if (value !== undefined && !isPubmedDate(value)) throw usageError(t('usage.pubmedDate', { name: `--${name}` })); }
+  const types = ((ctx.opts.type as string[] | undefined) ?? []).map(raw => {
+    const type = PUBMED_ARTICLE_TYPES.find(known => known.toLowerCase() === raw.trim().toLowerCase());
+    if (!type) throw usageError(t('usage.badChoice', { name: '--type', allowed: PUBMED_ARTICLE_TYPES.join(' | ') }));
+    return type;
+  });
+  const filters: PubmedFilters = compact({ days: int(ctx.opts, 'days', 1, PUBMED_DAYS_MAX), from: str(ctx.opts, 'from'), to: str(ctx.opts, 'to'), hasAbstract: ctx.opts['has-abstract'] ? true : undefined, types: types.length ? types : undefined });
+  return { query: str(ctx.opts, 'query'), conditions, filters };
+}
 
 // Commands
 
@@ -251,6 +281,40 @@ const commands: Command[] = [
       if (url && (!rules.item || !rules.title || !rules.link)) throw usageError(t('usage.missingRules'));
       if (feedId && !Object.keys(rules).length) throw usageError(t('usage.missingOption', { name: '--rules' }));
       return ops.previewRules(await ctx.client(), { ...pageOptions(ctx), ...compact({ url, feedId, limit: int(ctx.opts, 'limit', 1, 1000), pagination: await json<PaginationRules>(ctx, 'pagination') }), rules });
+    },
+  },
+  {
+    name: 'pubmed preview', options: PUBMED_OPTIONS, write: true,
+    table: { rows: 'items', columns: ['pmid', 'pubDate', 'journal', 'title'] },
+    run: async ctx => ops.pubmedPreview(await ctx.client(), pubmedInput(ctx), str(ctx.opts, 'network-profile')),
+  },
+  {
+    name: 'pubmed create', write: true,
+    options: { ...PUBMED_OPTIONS, name: { type: 'string' }, limit: { type: 'string' }, interval: { type: 'string' }, translation: { type: 'string' }, 'target-language': { type: 'string' }, 'translation-provider': { type: 'string' } },
+    run: async ctx => ops.createPubmedFeed(await ctx.client(), {
+      ...pubmedInput(ctx),
+      ...compact({
+        name: str(ctx.opts, 'name'), limit: pubmedLimit(ctx),
+        intervalMinutes: int(ctx.opts, 'interval', 5, 1440), translationMode: oneOf(ctx.opts, 'translation', translationModes),
+        targetLanguage: str(ctx.opts, 'target-language') as FeedInput['targetLanguage'], translationProvider: str(ctx.opts, 'translation-provider') as FeedInput['translationProvider'],
+        networkProfileId: str(ctx.opts, 'network-profile'),
+      }),
+    }),
+  },
+  {
+    name: 'pubmed convert', args: ['[feedId]'], write: true,
+    options: { 'all-verified': { type: 'boolean' }, query: { type: 'string' }, limit: { type: 'string' }, recheck: { type: 'boolean' }, rename: { type: 'boolean' } },
+    table: { rows: 'feeds', columns: ['feedId', 'name', 'status', 'reason', 'coverage', 'query'] },
+    run: async ctx => ops.pubmedConvert(await ctx.client(), compact({ feedId: ctx.args.feedId as string | undefined, allVerified: ctx.opts['all-verified'] ? true : undefined, yes: ctx.opts.yes ? true : undefined, query: str(ctx.opts, 'query'), limit: pubmedLimit(ctx), recheck: ctx.opts.recheck ? true : undefined, rename: ctx.opts.rename ? true : undefined })),
+  },
+  {
+    name: 'pubmed checks', write: true,
+    options: { job: { type: 'string' }, start: { type: 'boolean' }, feeds: { type: 'string' }, recheck: { type: 'boolean' }, wait: { type: 'boolean' }, cancel: { type: 'boolean' }, retry: { type: 'boolean' } },
+    table: { rows: 'feeds', columns: ['feedId', 'name', 'state', 'status', 'reason', 'coverage', 'query'] },
+    run: async ctx => {
+      const waitMs = ctx.opts.wait ? 30 * 60_000 : undefined;
+      if (ctx.opts.start || ctx.opts.recheck || str(ctx.opts, 'feeds')) return ops.pubmedChecks(await ctx.client(), compact({ feedIds: list(str(ctx.opts, 'feeds')), recheck: ctx.opts.recheck ? true : undefined, waitMs }));
+      return ops.pubmedCheckStatus(await ctx.client(), compact({ jobId: str(ctx.opts, 'job'), cancel: ctx.opts.cancel ? true : undefined, retry: ctx.opts.retry ? true : undefined, waitMs }));
     },
   },
   {
