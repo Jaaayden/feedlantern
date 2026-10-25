@@ -57,7 +57,7 @@ test('CLI：pubmed preview 用检索条件或完整查询式预览，参数错�
   try {
     const built = await t.cli(['pubmed', 'preview', '--title-abstract', 'cryo-EM', '--affiliation', 'ShanghaiTech', '--days', '30', '--type', 'review']);
     assert.equal(built.code, 0, built.stderr);
-    assert.equal(built.json().query, '(("cryo-EM"[Title/Abstract]) AND ("ShanghaiTech"[Affiliation])) AND ("last 30 days"[Date - Publication]) AND ("Review"[pt])');
+    assert.equal(built.json().query, '((cryo-EM[Title/Abstract]) AND (ShanghaiTech[Affiliation])) AND ("last 30 days"[Date - Publication]) AND ("Review"[pt])');
     assert.equal(t.terms.at(-1), built.json().query);
     assert.equal(built.json().count, 172);
     assert.deepEqual(built.json().items.map((item: { pmid: string }) => item.pmid), ['42900001', '42883926', '41714066']);
@@ -91,7 +91,7 @@ test('CLI：pubmed create 保存检索订阅，dry-run 不创建；feeds update 
     assert.equal(created.code, 0, created.stderr);
     const feed = created.json().feed;
     assert.deepEqual([feed.sourceType, feed.name, feed.translationMode, feed.intervalMinutes], ['pubmed', 'PubMed: PLoS Pathog', 'bilingual', 180]);
-    assert.deepEqual(feed.pubmed, { query: '("PLoS Pathog"[Journal]) AND (hasabstract)', limit: 50 });
+    assert.deepEqual(feed.pubmed, { query: '(PLoS Pathog[Journal]) AND (hasabstract)', limit: 50 });
     assert.equal(feed.url, pubmedSearchUrl(feed.pubmed));
     assert.match(created.json().feedUrls.json, /\.json$/);
     assert.equal((await t.cli(['pubmed', 'create', '--journal', 'x', '--limit', '30'])).code, 2);
@@ -112,14 +112,14 @@ test('MCP：pubmed_preview / pubmed_create 支持条件或查询式，只读模�
     assert.ok(!(await readOnly.client.listTools()).tools.some(tool => tool.name.startsWith('pubmed_')));
     const preview = await writer.call('pubmed_preview', { conditions: [{ field: 'author', term: 'Zhang Y' }, { field: 'lastAuthor', term: 'Li X', op: 'OR' }], filters: { hasAbstract: true } });
     assert.equal(preview.isError, false, JSON.stringify(preview.body));
-    assert.equal(preview.body.query, '(("Zhang Y"[Author]) OR ("Li X"[Author - Last])) AND (hasabstract)');
+    assert.equal(preview.body.query, '((Zhang Y[Author]) OR (Li X[Author - Last])) AND (hasabstract)');
     assert.equal(preview.body.items[0].journal, 'PLoS Pathog');
     const both = await writer.call('pubmed_preview', { query: 'x', conditions: [{ field: 'all', term: 'y' }] });
     assert.deepEqual([both.isError, both.body.error.code], [true, 'usage']);
-    const created = await writer.call('pubmed_create', { query: '("cryo-EM"[Title/Abstract]) AND ("ShanghaiTech"[Affiliation])', name: 'Cryo-EM at ShanghaiTech', limit: 10 });
+    const created = await writer.call('pubmed_create', { query: '(cryo-EM[Title/Abstract]) AND (ShanghaiTech[Affiliation])', name: 'Cryo-EM at ShanghaiTech', limit: 10 });
     assert.equal(created.isError, false, JSON.stringify(created.body));
     assert.deepEqual([created.body.feed.name, created.body.feed.pubmed.limit], ['Cryo-EM at ShanghaiTech', 10]);
     const dry = await writer.call('pubmed_create', { conditions: [{ field: 'journal', term: 'Nature' }], dryRun: true });
-    assert.deepEqual([dry.isError, dry.body.requests[0].method, dry.body.requests[0].body.pubmed.query], [false, 'POST', '("Nature"[Journal])']);
+    assert.deepEqual([dry.isError, dry.body.requests[0].method, dry.body.requests[0].body.pubmed.query], [false, 'POST', '(Nature[Journal])']);
   } finally { await writer.client.close(); await readOnly.client.close(); await t.close(); }
 });

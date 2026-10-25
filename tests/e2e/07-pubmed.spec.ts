@@ -5,7 +5,7 @@ import { fixtureBaseUrl } from '../../playwright.config';
 // The e2e backend sends E-utilities requests to the fixture server (tests/fixtures/pubmed):
 // every search lists the same three PLoS Pathog articles (12,686 matches); a term with "zzqx" matches nothing.
 const JOURNAL = 'https://pubmed.ncbi.nlm.nih.gov/rss/journals/101238921/?limit=15&name=PLoS%20Pathog&utm_campaign=journals';
-const BUILT = '(("cryo-EM"[Title/Abstract]) AND ("ShanghaiTech"[Affiliation])) AND (hasabstract)';
+const BUILT = '((cryo-EM[Title/Abstract]) AND (ShanghaiTech[Affiliation])) AND (hasabstract)';
 const searches = async (request: import('@playwright/test').APIRequestContext) => (await (await request.get(`${fixtureBaseUrl}/entrez/searches`)).json()) as string[];
 
 test('PubMed 检索订阅：构建条件 → 预览 → 保存 → 刷新 → 查看条目', async ({ page }) => {
@@ -96,7 +96,7 @@ test('期刊 RSS 订阅一键转换为 PubMed 检索订阅：确认后保留订�
     // NCBI blocks the journal RSS and nothing is stored yet, so the prefill is marked for review.
     await expect(page.getByTestId('pubmed-convert-note')).toContainText('未能确认与原 RSS 一致，请核对：没有可对比的条目');
     await expect(page.getByLabel('条件 1 的字段')).toHaveValue('journal');
-    await expect(page.getByLabel('PubMed 查询式')).toHaveValue('("PLoS Pathog"[Journal])');
+    await expect(page.getByLabel('PubMed 查询式')).toHaveValue('(PLoS Pathog[Journal])');
     await expect(page.getByLabel('订阅名称')).toHaveValue('PLoS Pathog RSS');
     await expect(page.getByTestId('pubmed-count')).toContainText('12,686');
 
@@ -111,7 +111,7 @@ test('期刊 RSS 订阅一键转换为 PubMed 检索订阅：确认后保留订�
     expect(converted.feed.id).toBe(feed.id);
     expect(converted.feed.sourceType).toBe('pubmed');
     expect(converted.feedUrl).toBe(before.feedUrl);
-    await expect(page.getByRole('dialog').locator('.pubmed-source')).toContainText('"PLoS Pathog"[Journal]');
+    await expect(page.getByRole('dialog').locator('.pubmed-source')).toContainText('PLoS Pathog[Journal]');
     await expect(page.getByRole('dialog').getByTestId('pubmed-rss-notice')).toHaveCount(0);
 
     // Resuming fetches through E-utilities into the same feed.
@@ -138,7 +138,7 @@ test('来源返回反爬验证页时，预览给出准确报错而不是“实�
   await page.getByLabel('RSS / Atom 地址').fill(JOURNAL);
   await expect(page.getByTestId('pubmed-rss-hint')).toContainText('NCBI 会拦截程序访问');
   await page.getByRole('button', { name: '改用 PubMed 检索订阅' }).click();
-  await expect(page.getByLabel('PubMed 查询式')).toHaveValue('("PLoS Pathog"[Journal])');
+  await expect(page.getByLabel('PubMed 查询式')).toHaveValue('(PLoS Pathog[Journal])');
   await expect(page.getByRole('button', { name: 'PubMed 检索', exact: true })).toHaveAttribute('aria-pressed', 'true');
 });
 
@@ -185,7 +185,7 @@ test('检索式 RSS 订阅：验证还原的查询式后确认转换', async ({ 
     const result = dialog.getByTestId('pubmed-check-result');
     await expect(result).toContainText('可直接转换');
     await expect(result).toContainText('2/2（100%）');
-    await expect(result.locator('code')).toHaveText('("PLoS Pathog"[Journal]) AND (Wolbachia[tiab])');
+    await expect(result.locator('code')).toHaveText('(PLoS Pathog[Journal]) AND (Wolbachia[tiab])');
     await result.getByRole('button', { name: '确认转换' }).click();
     await expect(page.getByRole('status').filter({ hasText: '已转换为 PubMed 检索订阅' })).toBeVisible();
     await expect(dialog.locator('.pubmed-source')).toContainText('(Wolbachia[tiab])');

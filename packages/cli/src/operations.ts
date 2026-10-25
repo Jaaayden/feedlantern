@@ -183,7 +183,7 @@ export function rssPreview(client: FeedLanternClient, url: string, networkProfil
 /** A PubMed search given as a ready query, or as builder conditions (AND by default) and filters. */
 export interface PubmedSearchInput {
   query?: string;
-  conditions?: Array<{ field: PubmedField; term: string; op?: PubmedOperator }>;
+  conditions?: Array<{ field: PubmedField; term: string; op?: PubmedOperator; phrase?: boolean }>;
   filters?: PubmedFilters;
 }
 
@@ -192,7 +192,7 @@ export function pubmedQueryFrom(input: PubmedSearchInput): string {
   const filters = input.filters ?? {};
   const built = !!input.conditions?.length || Object.values(filters).some(value => value !== undefined && value !== false && !(Array.isArray(value) && !value.length));
   if (input.query?.trim() && built) throw usageError(t('usage.pubmedQueryOrConditions'));
-  const query = input.query?.trim() || buildPubmedQuery({ rows: (input.conditions ?? []).map(condition => ({ op: condition.op ?? 'AND', field: condition.field, term: condition.term })), filters });
+  const query = input.query?.trim() || buildPubmedQuery({ rows: (input.conditions ?? []).map(condition => ({ op: condition.op ?? 'AND', field: condition.field, term: condition.term, ...(condition.phrase ? { phrase: true } : {}) })), filters });
   if (!query) throw usageError(t('usage.pubmedNoQuery'));
   return query;
 }

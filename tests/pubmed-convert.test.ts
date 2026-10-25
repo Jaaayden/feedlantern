@@ -95,7 +95,7 @@ test('转换前的验证：还原查询式并与 RSS 最新条目对比，覆盖
     [`${HU})`]: ['42883926', '41714066'],
     '"lantern fungi"[Title]': ['42883926', '41714066', '49999999'],
     '"nothing yet"[Title]': [],
-    '("PLoS Pathog"[Journal])': ['42900001', '42883926', '41714066'],
+    '(PLoS Pathog[Journal])': ['42900001', '42883926', '41714066'],
   });
   try {
     const verified = await t.check(t.rssFeed('Sun', search('sun')).id);
@@ -129,7 +129,7 @@ test('转换前的验证：还原查询式并与 RSS 最新条目对比，覆盖
     const journal = t.rssFeed('PLoS Pathog', JOURNAL);
     t.store.transaction(() => t.store.translations.upsert(journal, parseSource(fixture('rss-journal.xml'), JOURNAL).items));
     const byJournal = await t.check(journal.id);
-    assert.deepEqual([byJournal.kind, byJournal.status, byJournal.query, byJournal.coverage.source, byJournal.coverage.ratio], ['journal', 'verified', '("PLoS Pathog"[Journal])', 'stored', 1]);
+    assert.deepEqual([byJournal.kind, byJournal.status, byJournal.query, byJournal.coverage.source, byJournal.coverage.ratio], ['journal', 'verified', '(PLoS Pathog[Journal])', 'stored', 1]);
 
     const website = t.store.createFeed({ name: 'Site', url: 'https://example.com/', rules: { item: 'a', title: 'b', link: 'c' }, credentialId: null, intervalMinutes: 60, waitMs: 0 }, t.owner).feed;
     const other = await t.app.inject({ method: 'POST', url: `/api/feeds/${website.id}/pubmed-check`, headers: t.headers, payload: {} });

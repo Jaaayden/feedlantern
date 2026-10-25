@@ -53,7 +53,7 @@ const pubmedConditions = {
   query: z.string().min(1).max(4000).optional().describe(d('pubmedQuery')),
   conditions: z.array(z.object({
     field: z.enum(['all', 'tiab', 'title', 'author', 'firstAuthor', 'lastAuthor', 'journal', 'affiliation', 'mesh', 'pubType', 'language', 'nlmId']).describe(d('pubmedField')),
-    term: z.string().min(1).max(500), op: z.enum(['AND', 'OR', 'NOT']).optional().describe(d('pubmedOp')),
+    term: z.string().min(1).max(500), op: z.enum(['AND', 'OR', 'NOT']).optional().describe(d('pubmedOp')), phrase: z.boolean().optional().describe(d('pubmedPhrase')),
   })).max(20).optional().describe(d('pubmedConditions')),
   filters: z.object({
     days: z.number().int().min(1).max(36500).optional(), from: z.string().regex(/^\d{4}(\/\d{1,2}(\/\d{1,2})?)?$/).optional(), to: z.string().regex(/^\d{4}(\/\d{1,2}(\/\d{1,2})?)?$/).optional(),

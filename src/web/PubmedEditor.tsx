@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { ArrowLeft, ExternalLink, LoaderCircle, Plus, Trash2 } from 'lucide-react';
 import type { Feed, PubmedPreview, PubmedRssCheck, TargetLanguage, TranslationMode, TranslationProviderId } from '../shared/types';
 import {
-  buildPubmedQuery, isPubmedDate, parsePubmedQuery, pubmedConversion, pubmedDefaultTerms, pubmedQueryProblem, pubmedRssSource, pubmedSearchUrl,
+  buildPubmedQuery, isPubmedDate, parsePubmedQuery, pubmedTermHasOperator, pubmedConversion, pubmedDefaultTerms, pubmedQueryProblem, pubmedRssSource, pubmedSearchUrl,
   PUBMED_ARTICLE_TYPES, PUBMED_DAYS_MAX, PUBMED_DEFAULT_LIMIT, PUBMED_FIELD_IDS, PUBMED_LIMITS, PUBMED_OPERATORS,
   type PubmedArticleType, type PubmedBuilder, type PubmedField, type PubmedFilters, type PubmedOperator, type PubmedRow,
 } from '../shared/pubmed';
@@ -153,7 +153,9 @@ export function PubmedEditor({ initial, convert = false, check, prefill, existin
               : <select className="pubmed-op" aria-label={t('pubmedEditor.operatorOf', { n: index + 1 })} value={entry.op} onChange={e => updateLine(entry.key, { op: e.target.value as PubmedOperator })}>{PUBMED_OPERATORS.map(op => <option key={op} value={op}>{op}</option>)}</select>}
             <select className="pubmed-field" aria-label={t('pubmedEditor.fieldOf', { n: index + 1 })} value={entry.field} onChange={e => updateLine(entry.key, { field: e.target.value as PubmedField })}>{PUBMED_FIELD_IDS.map(field => <option key={field} value={field}>{t(`pubmedField.${field}`)}</option>)}</select>
             <input className="pubmed-term" aria-label={t('pubmedEditor.termOf', { n: index + 1 })} value={entry.term} maxLength={500} spellCheck={false} placeholder={t(`pubmedField.placeholder.${entry.field}`)} onChange={e => updateLine(entry.key, { term: e.target.value })} />
+            <label className="pubmed-phrase" title={t('pubmedEditor.phraseHint')}><input type="checkbox" aria-label={t('pubmedEditor.phraseOf', { n: index + 1 })} checked={!!entry.phrase} onChange={e => updateLine(entry.key, { phrase: e.target.checked || undefined })} /><span>{t('pubmedEditor.phrase')}</span></label>
             <button type="button" className="icon-button danger pubmed-remove" aria-label={t('pubmedEditor.removeRow', { n: index + 1 })} title={t('pubmedEditor.removeRow', { n: index + 1 })} disabled={lines.length === 1} onClick={() => apply(lines.filter(other => other.key !== entry.key), filters)}><Trash2 size={15} /></button>
+            {pubmedTermHasOperator(entry.term, entry.phrase) && <p className="hint pubmed-row-warning">{t('pubmedEditor.operatorInTerm')}</p>}
           </div>)}
           <div className="pubmed-row-actions"><button type="button" className="button small" disabled={lines.length >= 20} onClick={() => apply([...lines, line({ field: 'tiab' })], filters)}><Plus size={14} />{t('pubmedEditor.addRow')}</button><span className="hint">{t('pubmedEditor.termHint')}</span></div>
         </fieldset>
@@ -190,7 +192,7 @@ export function PubmedEditor({ initial, convert = false, check, prefill, existin
             <span className="pubmed-meta">{[item.journal, item.pubDate].filter(Boolean).join(' · ')}</span>
             {item.authors.length > 0 && <span className="pubmed-authors">{authorLine(item.authors)}</span>}
           </li>)}</ol></>}
-          {shown.queryTranslation && <details className="pubmed-translation"><summary>{t('pubmedEditor.translation')}</summary><code>{shown.queryTranslation}</code></details>}
+          {shown.queryTranslation && <div className="pubmed-translation" data-testid="pubmed-translation"><span>{t('pubmedEditor.translation')}</span><code>{shown.queryTranslation}</code><small>{t('pubmedEditor.translationHint')}</small></div>}
         </> : <p className="hint">{t('pubmedEditor.previewing')}</p>}
         <p className="hint pubmed-rate">{t('pubmedEditor.rateNote')}</p>
       </section>

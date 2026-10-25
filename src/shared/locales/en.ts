@@ -1756,7 +1756,7 @@ const messages = {
   'pubmedEditor.termOf': 'Search term of condition {n}',
   'pubmedEditor.removeRow': 'Remove condition {n}',
   'pubmedEditor.addRow': 'Add condition',
-  'pubmedEditor.termHint': 'Terms are quoted for you. In All Fields, an unquoted term is also expanded by PubMed (MeSH and synonyms); put it in "quotes" to match the exact phrase.',
+  'pubmedEditor.termHint': 'Terms are sent as PubMed\'s builder writes them, without quotes, so PubMed expands them to MeSH terms, synonyms and author name variants (automatic term mapping). Tick “Exact phrase” to match the words exactly.',
   'pubmedEditor.filters': 'Filters',
   'pubmedEditor.date': 'Publication date',
   'pubmedEditor.date.any': 'Any time',
@@ -1785,7 +1785,7 @@ const messages = {
   'pubmedEditor.warning.quotedPhraseNotFound': 'Quoted phrase not found: {text}',
   'pubmedEditor.warning.phraseIgnored': 'Ignored by PubMed: {text}',
   'pubmedEditor.warning.message': 'PubMed: {text}',
-  'pubmedEditor.translation': 'How PubMed read the query',
+  'pubmedEditor.translation': 'What PubMed actually ran',
   'pubmedEditor.rateNote': 'Previews and refreshes share NCBI\'s limit of 3 requests per second (10 with an API key).',
   'pubmedEditor.settings': 'Feed settings',
   'pubmedEditor.nameHint': 'Filled in from your conditions until you change it.',
@@ -1843,6 +1843,11 @@ const messages = {
   'pubmedEditor.checkCoverage': 'Newest items found: {coverage}.',
   'pubmedEditor.checkTitle': 'RSS title:',
   'pubmedEditor.checkKeeps': 'The feed ID, RSS address, stored items and translations are kept.',
+  'pubmedEditor.phrase': 'Exact phrase',
+  'pubmedEditor.phraseOf': 'Search condition {n} as an exact phrase',
+  'pubmedEditor.phraseHint': 'Puts the term in quotes: PubMed matches these exact words and turns off automatic term mapping (no MeSH, synonyms or author name variants).',
+  'pubmedEditor.operatorInTerm': 'Upper-case AND, OR or NOT in this term are read as operators by PubMed. Write them in lower case, or tick “Exact phrase”, to search for the words.',
+  'pubmedEditor.translationHint': 'PubMed\'s own translation of the query (querytranslation), showing what automatic term mapping added.',
   // @end
 } as const;
 

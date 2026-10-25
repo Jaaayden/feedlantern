@@ -30,8 +30,12 @@ export const PUBMED_FIELD_IDS = Object.keys(PUBMED_FIELDS) as PubmedField[];
 
 export type PubmedOperator = 'AND' | 'OR' | 'NOT';
 export const PUBMED_OPERATORS: readonly PubmedOperator[] = ['AND', 'OR', 'NOT'];
-/** One builder line. The first line's `op` is not used. */
-export interface PubmedRow { op: PubmedOperator; field: PubmedField; term: string }
+/**
+ * One builder line. The first line's `op` is not used. `phrase` puts the term
+ * in quotes, which turns off PubMed's automatic term mapping (MeSH, synonyms,
+ * author name variants) and matches the exact phrase only.
+ */
+export interface PubmedRow { op: PubmedOperator; field: PubmedField; term: string; phrase?: boolean }
 
 /** Article-type shortcuts, written as `"<name>"[pt]` and OR-ed together. */
 export const PUBMED_ARTICLE_TYPES = ['Review', 'Systematic Review', 'Meta-Analysis', 'Clinical Trial', 'Randomized Controlled Trial', 'Case Reports'] as const;
@@ -63,21 +67,48 @@ export const isPubmedDate = (value: string) => DATE_PART.test(value);
 
 // Writing a query
 
-/** Terms that All Fields may leave unquoted, so PubMed still maps them to MeSH and synonyms. */
-const PLAIN_TERM = /^[\p{L}\p{N}](?:[\p{L}\p{N}'.\- ]*[\p{L}\p{N}*])?$/u;
-const OPERATOR_WORD = /(?:^|\s)(?:and|or|not)(?:\s|$)/i;
-
-/** The term as one safe query leaf: quoted (PubMed has no escape for `"`, so inner quotes become spaces) and tagged. */
-export function pubmedTerm(field: PubmedField, raw: string): string {
-  let text = raw.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();
-  const phrase = /^".*"$/s.test(text) && text.length > 1;
-  text = text.replace(/"/g, ' ').replace(/\s+/g, ' ').trim();
-  if (!text) return '';
-  const { tag } = PUBMED_FIELDS[field];
-  if (field === 'all' && !phrase && PLAIN_TERM.test(text) && !OPERATOR_WORD.test(text)) return `${text}[${tag}]`;
-  if (field === 'nlmId' && /^\d{4,10}[A-Za-z]?$/.test(text)) return `${text}[${tag}]`;
-  return `"${text}"[${tag}]`;
+/** Drops the parentheses that have no partner, keeping balanced groups as the user wrote them. */
+function balanceParentheses(text: string): string {
+  const drop = new Set<number>(), open: number[] = [];
+  let quoted = false;
+  [...text].forEach((char, index) => {
+    if (char === '"') quoted = !quoted;
+    else if (quoted) return;
+    else if (char === '(') open.push(index);
+    else if (char === ')') { if (open.length) open.pop(); else drop.add(index); }
+  });
+  for (const index of open) drop.add(index);
+  return [...text].filter((_, index) => !drop.has(index)).join('');
 }
+
+/**
+ * The term as one query leaf, written as PubMed's Advanced Search Builder
+ * writes it: `term[Field]`, unquoted and unchanged, so PubMed maps it to MeSH
+ * terms, synonyms and author name variants (automatic term mapping); All
+ * Fields has no tag. Only what would break the query is changed: `[` and `]`
+ * (they would start a field tag) become spaces, and an unpaired parenthesis
+ * or double quote is dropped. A term the user put in quotes stays quoted;
+ * `phrase` adds the quotes (an exact phrase, without term mapping).
+ */
+export function pubmedTerm(field: PubmedField, raw: string, phrase = false): string {
+  let text = raw.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (/^".+"$/s.test(text) && (text.match(/"/g) ?? []).length === 2) { phrase = true; text = text.slice(1, -1); }
+  // PubMed has no escape for a double quote inside a phrase.
+  if (phrase || (text.match(/"/g) ?? []).length % 2) text = text.replace(/"/g, ' ');
+  text = text.replace(/[[\]]/g, ' ');
+  if (!phrase) text = balanceParentheses(text);
+  text = text.replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  const tag = field === 'all' ? '' : `[${PUBMED_FIELDS[field].tag}]`;
+  if (phrase) return `"${text}"${tag}`;
+  // An operator with nothing on one side (a term that is just "OR", or starts with "AND ") would break the
+  // query; only then are the operator words lower-cased, which PubMed reads as ordinary words.
+  if (pubmedQueryProblem(`(${text}${tag})`)) text = text.replace(/\b(AND|OR|NOT)\b/g, word => word.toLowerCase());
+  return `${text}${tag}`;
+}
+
+/** Upper-case AND, OR or NOT inside an unquoted term: PubMed reads them as operators. */
+export const pubmedTermHasOperator = (term: string, phrase = false) => !phrase && !/^".+"$/s.test(term.trim()) && /(?:^|[\s(])(?:AND|OR|NOT)(?=[\s)]|$)/.test(term);
 
 function dateFilter(filters: PubmedFilters): string {
   if (filters.days) return `"last ${filters.days} days"[Date - Publication]`;
@@ -88,7 +119,7 @@ function dateFilter(filters: PubmedFilters): string {
 
 /** The query the builder stands for: rows left to right as PubMed's Advanced Search Builder nests them, then the filters. */
 export function buildPubmedQuery(builder: PubmedBuilder): string {
-  const leaves = builder.rows.map(row => ({ op: row.op, leaf: pubmedTerm(row.field, row.term) })).filter(row => row.leaf);
+  const leaves = builder.rows.map(row => ({ op: row.op, leaf: pubmedTerm(row.field, row.term, row.phrase) })).filter(row => row.leaf);
   let body = '';
   leaves.forEach((row, index) => {
     if (index === 0) body = `(${row.leaf})`;
@@ -243,7 +274,7 @@ function readRows(node: Node, op: PubmedOperator | null, rows: PubmedRow[]): boo
   if (node.type === 'leaf') {
     const field = fieldOf(node.tag);
     if (!field || !node.text) return false;
-    rows.push({ op: op ?? 'AND', field, term: field === 'all' && node.quoted ? `"${node.text}"` : node.text });
+    rows.push({ op: op ?? 'AND', field, term: node.text, ...(node.quoted ? { phrase: true } : {}) });
     return true;
   }
   // A group on the left can always be spread out (PubMed reads left to right);

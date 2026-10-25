@@ -1,46 +1,55 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  buildPubmedQuery, parsePubmedQuery, pubmedConversion, pubmedDefaultTerms, pubmedQueryProblem, pubmedRssSource, pubmedSearchFromUrl, pubmedSearchUrl, pubmedTerm,
+  buildPubmedQuery, parsePubmedQuery, pubmedConversion, pubmedTermHasOperator, pubmedDefaultTerms, pubmedQueryProblem, pubmedRssSource, pubmedSearchFromUrl, pubmedSearchUrl, pubmedTerm,
   PUBMED_FIELD_IDS, type PubmedBuilder,
 } from '../src/shared/pubmed.js';
 
 const rows = (...list: Array<[PubmedBuilder['rows'][number]['op'], PubmedBuilder['rows'][number]['field'], string]>) => list.map(([op, field, term]) => ({ op, field, term }));
 
-test('查询式生成：每个字段写成 PubMed 标签，检索词加引号；示例与 PubMed 高级检索一致', () => {
-  assert.equal(buildPubmedQuery({ rows: rows(['AND', 'tiab', 'cryo-EM'], ['AND', 'affiliation', 'ShanghaiTech']), filters: {} }), '("cryo-EM"[Title/Abstract]) AND ("ShanghaiTech"[Affiliation])');
+test('查询式生成：与 PubMed 高级检索构建器相同，写成 (检索词[字段])，默认不加引号也不改写检索词', () => {
+  assert.equal(buildPubmedQuery({ rows: rows(['AND', 'tiab', 'cryo-EM'], ['AND', 'affiliation', 'ShanghaiTech']), filters: {} }), '(cryo-EM[Title/Abstract]) AND (ShanghaiTech[Affiliation])');
+  // A user's PubMed search RSS title is reproduced exactly (automatic term mapping still applies).
+  const title = '(Hu wanlong[Author]) AND (The University of Hong Kong[Affiliation])';
+  assert.equal(buildPubmedQuery(parsePubmedQuery(title)!), title);
   // Three or more lines nest from the left, as PubMed's Advanced Search Builder writes them.
-  assert.equal(buildPubmedQuery({ rows: rows(['AND', 'author', 'Zhang Y'], ['OR', 'firstAuthor', 'Li X'], ['NOT', 'lastAuthor', 'Wang Z']), filters: {} }), '(("Zhang Y"[Author]) OR ("Li X"[Author - First])) NOT ("Wang Z"[Author - Last])');
-  const tags = PUBMED_FIELD_IDS.map(field => pubmedTerm(field, 'x'));
-  assert.deepEqual(tags, ['x[All Fields]', '"x"[Title/Abstract]', '"x"[Title]', '"x"[Author]', '"x"[Author - First]', '"x"[Author - Last]', '"x"[Journal]', '"x"[Affiliation]', '"x"[MeSH Terms]', '"x"[Publication Type]', '"x"[Language]', '"x"[jid]']);
+  assert.equal(buildPubmedQuery({ rows: rows(['AND', 'author', 'Sun Jin-peng'], ['OR', 'firstAuthor', 'Li X'], ['NOT', 'lastAuthor', 'Wang Z']), filters: {} }), '((Sun Jin-peng[Author]) OR (Li X[Author - First])) NOT (Wang Z[Author - Last])');
+  // All Fields has no tag, like PubMed's builder; case is kept (PubMed ignores it).
+  assert.deepEqual(PUBMED_FIELD_IDS.map(field => pubmedTerm(field, 'x')), ['x', 'x[Title/Abstract]', 'x[Title]', 'x[Author]', 'x[Author - First]', 'x[Author - Last]', 'x[Journal]', 'x[Affiliation]', 'x[MeSH Terms]', 'x[Publication Type]', 'x[Language]', 'x[jid]']);
+  assert.equal(pubmedTerm('all', 'cryo electron microscopy'), 'cryo electron microscopy');
+  // Only "Exact phrase", or quotes the user typed, add quotes (turning automatic term mapping off).
+  assert.equal(pubmedTerm('all', 'cryo electron microscopy', true), '"cryo electron microscopy"');
+  assert.equal(pubmedTerm('author', '"Sun Jin-peng"'), '"Sun Jin-peng"[Author]');
+  assert.deepEqual(parsePubmedQuery('("cryo electron microscopy") AND (Sun Jin-peng[Author])')!.rows, [{ op: 'AND', field: 'all', term: 'cryo electron microscopy', phrase: true }, { op: 'AND', field: 'author', term: 'Sun Jin-peng' }]);
+  assert.equal(buildPubmedQuery({ rows: [{ op: 'AND', field: 'title', term: 'stem cell', phrase: true }, { op: 'NOT', field: 'all', term: 'mouse' }], filters: {} }), '("stem cell"[Title]) NOT (mouse)');
   // Empty lines are skipped; a single line is just that line.
-  assert.equal(buildPubmedQuery({ rows: rows(['AND', 'journal', 'PLoS Pathog'], ['AND', 'tiab', '   ']), filters: {} }), '("PLoS Pathog"[Journal])');
+  assert.equal(buildPubmedQuery({ rows: rows(['AND', 'journal', 'PLoS Pathog'], ['AND', 'tiab', '   ']), filters: {} }), '(PLoS Pathog[Journal])');
   assert.equal(buildPubmedQuery({ rows: [], filters: {} }), '');
 });
 
-test('检索词转义：引号、括号、运算符和标签都不会拼坏查询式', () => {
-  // PubMed has no escape for a double quote inside a phrase: it becomes a space.
-  assert.equal(pubmedTerm('title', 'say "hello" (world) [x] AND y'), '"say hello (world) [x] AND y"[Title]');
-  assert.equal(pubmedTerm('author', '  Smith\u0000 J\n'), '"Smith J"[Author]');
+test('检索词只处理会破坏语法的字符：方括号、未配平的括号和引号；大写运算符给出提示', () => {
+  assert.equal(pubmedTerm('title', 'a[b]c'), 'a b c[Title]');
+  assert.equal(pubmedTerm('title', 'a (b'), 'a b[Title]');
+  assert.equal(pubmedTerm('title', 'a) b (c'), 'a b c[Title]');
+  assert.equal(pubmedTerm('title', 'IL-6 (interleukin)'), 'IL-6 (interleukin)[Title]');
+  assert.equal(pubmedTerm('title', 'x "y'), 'x y[Title]');
+  assert.equal(pubmedTerm('title', 'say "hello" (world)', true), '"say hello (world)"[Title]');
+  assert.equal(pubmedTerm('author', '  Smith\u0000 J\n'), 'Smith J[Author]');
   assert.equal(pubmedTerm('affiliation', '"'), '');
-  // All Fields keeps plain words unquoted so PubMed still maps them to MeSH and synonyms…
-  assert.equal(pubmedTerm('all', 'breast cancer'), 'breast cancer[All Fields]');
-  assert.equal(pubmedTerm('all', 'canc*'), 'canc*[All Fields]');
-  // …and quotes anything that could be read as syntax, or a phrase the user quoted.
-  assert.equal(pubmedTerm('all', 'cats and dogs'), '"cats and dogs"[All Fields]');
-  assert.equal(pubmedTerm('all', 'a OR b'), '"a OR b"[All Fields]');
-  assert.equal(pubmedTerm('all', '"breast cancer"'), '"breast cancer"[All Fields]');
-  assert.equal(pubmedTerm('all', 'x[ti]'), '"x[ti]"[All Fields]');
-  assert.equal(pubmedTerm('nlmId', '101238921'), '101238921[jid]');
-  assert.equal(pubmedTerm('nlmId', '1012 OR 1'), '"1012 OR 1"[jid]');
-  // Whatever is typed, the query stays well-formed and reads back as the same line.
-  for (const raw of ['a"b', '((', ')) OR ((', '[Title]', 'x" OR "y', 'NOT', '"', '\\"', 'a]b', '* : /']) {
-    for (const field of ['all', 'title', 'affiliation'] as const) {
-      const query = buildPubmedQuery({ rows: rows(['AND', field, raw], ['AND', 'journal', 'Nature']), filters: {} });
+  // Upper-case operators are left alone (PubMed reads them as operators) and pointed out.
+  assert.equal(pubmedTerm('title', 'cats AND dogs'), 'cats AND dogs[Title]');
+  assert.equal(pubmedTermHasOperator('cats AND dogs'), true);
+  assert.equal(pubmedTermHasOperator('cats and dogs'), false);
+  assert.equal(pubmedTermHasOperator('cats AND dogs', true), false);
+  assert.equal(pubmedTermHasOperator('ANDROGEN'), false);
+  // Whatever is typed, the query stays well-formed and reads back to the same query.
+  for (const raw of ['a"b', '((', ')) OR ((', '[Title]', 'x" OR "y', '"', '\\"', 'a]b', '* : /', 'cats AND dogs']) {
+    for (const field of ['all', 'title', 'affiliation'] as const) for (const phrase of [false, true]) {
+      const query = buildPubmedQuery({ rows: [{ op: 'AND', field, term: raw, phrase }, { op: 'AND', field: 'journal', term: 'Nature' }], filters: {} });
       assert.equal(pubmedQueryProblem(query), null, `${field} ${raw}: ${query}`);
       const back = parsePubmedQuery(query);
-      assert.ok(back, `${field} ${raw}: ${query}`);
-      assert.equal(buildPubmedQuery(back), query);
+      // Read back into the builder, the query is stable from then on.
+      if (back) { const again = buildPubmedQuery(back); assert.equal(pubmedQueryProblem(again), null); assert.equal(buildPubmedQuery(parsePubmedQuery(again)!), again, `${field} ${raw}: ${query}`); }
     }
   }
 });
@@ -48,9 +57,9 @@ test('检索词转义：引号、括号、运算符和标签都不会拼坏查�
 test('筛选：最近 N 天、日期区间、只看有摘要、文章类型写在最后，并能原样读回', () => {
   const builder: PubmedBuilder = { rows: rows(['AND', 'all', 'cancer'], ['OR', 'mesh', 'Neoplasms']), filters: { days: 30, hasAbstract: true, types: ['Review', 'Clinical Trial'] } };
   const query = buildPubmedQuery(builder);
-  assert.equal(query, '((cancer[All Fields]) OR ("Neoplasms"[MeSH Terms])) AND ("last 30 days"[Date - Publication]) AND (hasabstract) AND ("Review"[pt] OR "Clinical Trial"[pt])');
+  assert.equal(query, '((cancer) OR (Neoplasms[MeSH Terms])) AND ("last 30 days"[Date - Publication]) AND (hasabstract) AND ("Review"[pt] OR "Clinical Trial"[pt])');
   assert.deepEqual(parsePubmedQuery(query), builder);
-  assert.equal(buildPubmedQuery({ rows: rows(['AND', 'journal', 'Nature']), filters: { from: '2020/01/01' } }), '("Nature"[Journal]) AND (2020/01/01:3000[Date - Publication])');
+  assert.equal(buildPubmedQuery({ rows: rows(['AND', 'journal', 'Nature']), filters: { from: '2020/01/01' } }), '(Nature[Journal]) AND (2020/01/01:3000[Date - Publication])');
   assert.equal(buildPubmedQuery({ rows: [], filters: { to: '2021', hasAbstract: true } }), '(1800:2021[Date - Publication]) AND (hasabstract)');
   for (const filters of [{ from: '2020/01/01' }, { to: '2021/06' }, { from: '2019', to: '2020/12/31' }, { types: ['Meta-Analysis' as const] }, { hasAbstract: true }]) {
     const built = { rows: rows(['AND', 'title', 'sepsis']), filters };
@@ -64,10 +73,10 @@ test('筛选：最近 N 天、日期区间、只看有摘要、文章类型写�
 test('手写查询式读回构建器：常见写法能还原，构建器表达不了的改为手动编辑', () => {
   assert.deepEqual(parsePubmedQuery('cancer'), { rows: rows(['AND', 'all', 'cancer']), filters: {} });
   assert.deepEqual(parsePubmedQuery('heart attack[tiab] AND smith j[au]'), { rows: rows(['AND', 'tiab', 'heart attack'], ['AND', 'author', 'smith j']), filters: {} });
-  assert.deepEqual(parsePubmedQuery('"PLoS Pathog"[jour] AND "last 7 days"[dp]'), { rows: rows(['AND', 'journal', 'PLoS Pathog']), filters: { days: 7 } });
+  assert.deepEqual(parsePubmedQuery('"PLoS Pathog"[jour] AND "last 7 days"[dp]'), { rows: [{ op: 'AND', field: 'journal', term: 'PLoS Pathog', phrase: true }], filters: { days: 7 } });
   assert.deepEqual(parsePubmedQuery('(a OR b) AND c'), { rows: rows(['AND', 'all', 'a'], ['OR', 'all', 'b'], ['AND', 'all', 'c']), filters: {} });
   assert.deepEqual(parsePubmedQuery('a AND (b AND c)'), { rows: rows(['AND', 'all', 'a'], ['AND', 'all', 'b'], ['AND', 'all', 'c']), filters: {} });
-  assert.deepEqual(parsePubmedQuery('"x" [tiab] review[pt]'), { rows: rows(['AND', 'tiab', 'x']), filters: { types: ['Review'] } });
+  assert.deepEqual(parsePubmedQuery('"x" [tiab] review[pt]'), { rows: [{ op: 'AND', field: 'tiab', term: 'x', phrase: true }], filters: { types: ['Review'] } });
   assert.deepEqual(parsePubmedQuery('101238921[jid]'), { rows: rows(['AND', 'nlmId', '101238921']), filters: {} });
   // Grouping on the right, unknown fields and filters in the middle cannot be builder lines.
   for (const manual of ['a AND (b OR c)', 'a NOT (b NOT c)', 'cancer[dp]', 'x[Grants and Funding]', '"last 30 days"[dp] OR x']) {
@@ -106,7 +115,7 @@ test('PubMed 地址：检索订阅保存为 PubMed 检索页；识别期刊 RSS 
   // The journal RSS `name` is the ISO abbreviation PubMed's Journal field matches
   // (NCBI itself turns 101238921[jid] into "plos pathog"[Journal]); without it, the NLM ID.
   const converted = pubmedConversion(journal!);
-  assert.equal(buildPubmedQuery(converted.builder), '("PLoS Pathog"[Journal])');
+  assert.equal(buildPubmedQuery(converted.builder), '(PLoS Pathog[Journal])');
   assert.equal(converted.limit, 20);
   assert.equal(buildPubmedQuery(pubmedConversion(pubmedRssSource('https://pubmed.ncbi.nlm.nih.gov/rss/journals/101238921/')!).builder), '(101238921[jid])');
   // A search RSS id is opaque: the builder starts empty.

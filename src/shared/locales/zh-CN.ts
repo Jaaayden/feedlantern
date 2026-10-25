@@ -1753,7 +1753,7 @@ const messages: LocaleMessages = {
   'pubmedEditor.termOf': '条件 {n} 的检索词',
   'pubmedEditor.removeRow': '删除条件 {n}',
   'pubmedEditor.addRow': '添加条件',
-  'pubmedEditor.termHint': '检索词会自动加引号。“全部字段”中不加引号的检索词还会由 PubMed 自动扩展 MeSH 和同义词；用英文双引号括起来则精确匹配短语。',
+  'pubmedEditor.termHint': '检索词按 PubMed 构建器的方式发送，不加引号，PubMed 会自动扩展 MeSH、同义词和作者名变体（自动词映射，ATM）。需要逐字匹配时勾选“精确短语”。',
   'pubmedEditor.filters': '筛选',
   'pubmedEditor.date': '发表日期',
   'pubmedEditor.date.any': '不限',
@@ -1782,7 +1782,7 @@ const messages: LocaleMessages = {
   'pubmedEditor.warning.quotedPhraseNotFound': '找不到带引号的短语：{text}',
   'pubmedEditor.warning.phraseIgnored': 'PubMed 忽略了：{text}',
   'pubmedEditor.warning.message': 'PubMed 提示：{text}',
-  'pubmedEditor.translation': 'PubMed 实际检索的查询式',
+  'pubmedEditor.translation': 'PubMed 实际执行的查询式',
   'pubmedEditor.rateNote': '预览和刷新共用 NCBI 每秒 3 个请求的额度（填写 API Key 后为 10 个）。',
   'pubmedEditor.settings': '订阅设置',
   'pubmedEditor.nameHint': '默认根据检索条件生成，修改后不再自动更新。',
@@ -1840,6 +1840,11 @@ const messages: LocaleMessages = {
   'pubmedEditor.checkCoverage': '最新条目覆盖：{coverage}。',
   'pubmedEditor.checkTitle': 'RSS 标题：',
   'pubmedEditor.checkKeeps': '订阅 ID、RSS 地址、已存条目和译文都会保留。',
+  'pubmedEditor.phrase': '精确短语',
+  'pubmedEditor.phraseOf': '条件 {n} 作为精确短语',
+  'pubmedEditor.phraseHint': '给检索词加上引号：PubMed 只匹配这几个词的原样短语，并关闭自动词映射（不再扩展 MeSH、同义词和作者名变体）。',
+  'pubmedEditor.operatorInTerm': '这个检索词里的大写 AND、OR 或 NOT 会被 PubMed 当成运算符。要检索这些词本身，请改成小写，或勾选“精确短语”。',
+  'pubmedEditor.translationHint': 'PubMed 对查询式的翻译（querytranslation），可以看到自动词映射展开了哪些词。',
   // @end
 };
 
