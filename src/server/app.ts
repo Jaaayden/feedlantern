@@ -1,7 +1,8 @@
 import { defaultApplicationSettings, errorCodeForStatus, isFeedSource, isTargetLanguage, isTranslationProvider, OUTPUT_LIMIT, translationEnabled, type ApiErrorCode, type TranslationProviderId, type TranslationProvidersInfo } from '../shared/types.js';
 import { providerProblem } from './translation-providers.js';
 import { fetchSource, probeTarget, type SourceFetcher, type SourceOptions, type SourceResult } from './rss-source.js';
-import { checkPubmedRss, fetchPubmedSearch, NcbiRateLimiter, previewPubmed, withPubmedRssHint } from './pubmed.js';
+import { checkPubmedRss, fetchPubmedSearch, keyDigest, NcbiRateLimiter, previewPubmed, testNcbiSettings, withPubmedRssHint } from './pubmed.js';
+import { checkSignature, jobSnapshot, PubmedCheckRunner } from './pubmed-checks.js';
 import { nearestPubmedLimit, pubmedPmidOf, pubmedRssSource, pubmedSearchUrl } from '../shared/pubmed.js';
 import { NetworkPolicy, NetworkPolicyError } from './network.js';
 import { networkOptions, parseNetworkProfileInput, type FetchNetworkOptions } from './fetch-options.js';
@@ -36,6 +37,7 @@ import type {
   Feed,
   PubmedPreview,
   PubmedRssCheck,
+  NcbiKeyTest,
   FetchSource,
   FetchStatus,
   FeedInput,
@@ -1389,41 +1391,136 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (feed.sourceType !== 'rss' || !pubmedRssSource(feed.url)) throw new AppError(400, 'error.notPubmedRss');
     return feed;
   };
-  // Reads the RSS address once and compares its newest items with the recovered query's newest matches; saves nothing.
-  app.post('/api/feeds/:id/pubmed-check', async (request): Promise<PubmedRssCheck> => {
-    feedsGuard(request);
-    const feed = pubmedRssFeed(request);
+  const describeFailure = (error: unknown) => safeDiagnostic(lt(friendlyError(error, msg('error.rssFetchFailed'))));
+  /** One conversion check with the feed's network profile; requests go through the shared NCBI limiter. */
+  const checkFeed = async (feed: Feed, signal: AbortSignal) => {
     const network = networkFor(feed.networkProfileId, feed.ownerId);
-    const signal = operationSignal(request);
     const target = (url: string) => options.pubmedRssBase ? `${options.pubmedRssBase}${new URL(url).pathname}${new URL(url).search}` : url;
-    const check = await checkPubmedRss(feed, {
+    // Checks run in the feed owner's language, wherever they were started from.
+    return withLocale(() => store.ownerLocale(feed.ownerId), () => checkPubmedRss(feed, {
       fetchRss: url => getRss(target(url), { signal, ...(network ? { network } : {}) }),
       storedPmids: store.getItems(feed.id, 100).map(item => pubmedPmidOf(item.link)).filter((id): id is string => !!id),
-      policy: fetchPolicy(), ctx: ncbi, options: { signal, ...(network ? { network } : {}) },
-      describe: error => safeDiagnostic(lt(friendlyError(error, msg('error.rssFetchFailed')))),
-    });
-    feedsGuard(request);
-    return { ...check, feedId: feed.id, name: feed.name, ncbiKeyConfigured: !!store.getSettings().ncbi.apiKey };
+      policy: fetchPolicy(), ctx: ncbi, options: { signal, ...(network ? { network } : {}) }, describe: describeFailure,
+    }));
+  };
+  const pubmedJobs = new PubmedCheckRunner({
+    store: store.pubmedChecks, getFeed: id => store.getFeed(id),
+    check: async (feed, signal) => ({ ...await checkFeed(feed as Feed, signal), feedId: feed.id, name: feed.name }), keyConfigured: () => !!store.getSettings().ncbi.apiKey,
+    ownerSignal: id => store.userSignal(id), describe: (error, ownerId) => withLocale(() => store.ownerLocale(ownerId), () => describeFailure(error)),
   });
-  // Converts a PubMed RSS feed into a PubMed search with the given query. Everything else about the feed stays as it is.
-  app.post('/api/feeds/:id/pubmed-convert', async request => {
-    feedsGuard(request);
-    const feed = pubmedRssFeed(request);
-    const body = asRecord(request.body);
-    const pubmed = parsePubmedSearch({ query: body.query, limit: body.limit ?? nearestPubmedLimit(pubmedRssSource(feed.url)!.limit) }, undefined);
+  /**
+   * Turns a PubMed RSS feed into a PubMed search with this query; everything
+   * else about the feed stays. Converting a feed that already is this search
+   * succeeds without changes, so a batch can be retried.
+   */
+  const convertToPubmed = async (id: string, query: unknown, limit: unknown, guard: () => void): Promise<Feed> => {
+    const feed = store.getFeed(id);
+    if (!feed) throw new AppError(404, 'error.feedNotFound');
+    const rss = feed.sourceType === 'rss' ? pubmedRssSource(feed.url) : null;
+    const pubmed = parsePubmedSearch({ query, limit: limit ?? (rss ? nearestPubmedLimit(rss.limit) : feed.pubmed?.limit) }, undefined);
+    if (feed.sourceType === 'pubmed' && feed.pubmed?.query === pubmed.query && (limit === undefined || feed.pubmed.limit === pubmed.limit)) return feed;
+    if (!rss) throw new AppError(400, 'error.notPubmedRss');
+    // Only this feed is held: other PubMed feeds' refreshes (same site) don't make a batch wait.
     const updated = await enqueueRefresh(() => {
-      feedsGuard(request);
-      const current = pubmedRssFeed(request);
+      guard();
+      const current = store.getFeed(id);
+      if (!current || current.sourceType !== 'rss') throw new AppError(409, 'error.notPubmedRss');
       return store.updateFeed(current.id, {
         sourceType: 'pubmed', pubmed, url: pubmedSearchUrl(pubmed), name: current.name,
         translationMode: current.translationMode, targetLanguage: current.targetLanguage, translationProvider: current.translationProvider ?? null,
         rules: { item: '', title: '', link: '' }, credentialId: null, intervalMinutes: current.intervalMinutes, waitMs: 0,
       });
-    }, refreshKeys(feed.id));
+    }, [`feed:${id}`]);
     if (!updated) throw new AppError(404, 'error.feedNotFound');
-    // The first E-utilities fetch runs in the background, so a batch of conversions returns at once.
+    // The first E-utilities fetch runs in the background (through the NCBI limiter), so conversions return at once.
     if (store.isFeedActive(updated.id)) void doRefresh(updated.id, false, 'edit').catch(() => {});
-    return feedPayload(updated);
+    return updated;
+  };
+  // Checks one feed now (the panel's button); the result is also saved for batch checks.
+  app.post('/api/feeds/:id/pubmed-check', async (request): Promise<PubmedRssCheck> => {
+    feedsGuard(request);
+    const feed = pubmedRssFeed(request);
+    const check = await checkFeed(feed, operationSignal(request));
+    store.pubmedChecks.save(feed.id, checkSignature(feed), { ...check, feedId: feed.id, name: feed.name });
+    feedsGuard(request);
+    return { ...check, feedId: feed.id, name: feed.name, ncbiKeyConfigured: !!store.getSettings().ncbi.apiKey };
+  });
+  app.post('/api/feeds/:id/pubmed-convert', async request => {
+    feedsGuard(request);
+    const body = asRecord(request.body);
+    const feed = await convertToPubmed(String((request.params as { id: string }).id), body.query, body.limit, () => feedsGuard(request));
+    return feedPayload(feed);
+  });
+
+  // Background check jobs for many PubMed RSS feeds.
+  const pubmedJob = (request: FastifyRequest) => {
+    const job = store.pubmedChecks.job(String((request.params as { id: string }).id));
+    if (!job || job.ownerId !== workspace(request).userId) throw new AppError(404, 'error.pubmedJobNotFound');
+    return job;
+  };
+  const jobView = (job: Parameters<typeof jobSnapshot>[0]) => jobSnapshot(job, !!store.getSettings().ncbi.apiKey, pubmedJobs.concurrency);
+  app.post('/api/pubmed-checks', async request => {
+    feedsGuard(request);
+    const body = asRecord(request.body);
+    const context = workspace(request, true);
+    const owned = store.listFeeds(context.userId).filter(feed => feed.sourceType === 'rss' && pubmedRssSource(feed.url));
+    if (body.feedIds !== undefined && (!Array.isArray(body.feedIds) || body.feedIds.length > 1000 || !body.feedIds.every(id => typeof id === 'string'))) throw new AppError(400, 'error.selectFeeds');
+    const wanted = Array.isArray(body.feedIds) ? new Set(body.feedIds as string[]) : undefined;
+    const feeds = wanted ? owned.filter(feed => wanted.has(feed.id)) : owned;
+    if (!feeds.length) throw new AppError(400, 'error.noPubmedRssFeeds');
+    // Opening the batch again while a job runs shows that job instead of starting over.
+    const running = store.pubmedChecks.latestJob(context.userId);
+    if (running?.state === 'running' && body.recheck !== true && feeds.every(feed => running.entries.some(entry => entry.feedId === feed.id))) return jobView(running);
+    if (running?.state === 'running') pubmedJobs.cancel(running);
+    return jobView(pubmedJobs.create(context.userId, context.actorId, feeds, body.recheck === true));
+  });
+  app.get('/api/pubmed-checks/latest', async request => {
+    feedsGuard(request);
+    const job = store.pubmedChecks.latestJob(workspace(request).userId);
+    return { job: job ? jobView(job) : null };
+  });
+  app.get('/api/pubmed-checks/:id', async request => { feedsGuard(request); return jobView(pubmedJob(request)); });
+  app.post('/api/pubmed-checks/:id/cancel', async request => { feedsGuard(request); return jobView(pubmedJobs.cancel(pubmedJob(request))); });
+  app.post('/api/pubmed-checks/:id/retry', async request => { feedsGuard(request); return jobView(pubmedJobs.retry(pubmedJob(request))); });
+  // Converts the job's verified feeds (or the listed ones among them), one after another; already converted ones succeed again.
+  app.post('/api/pubmed-checks/:id/convert', async request => {
+    feedsGuard(request);
+    const body = asRecord(request.body);
+    if (body.feedIds !== undefined && (!Array.isArray(body.feedIds) || !body.feedIds.every(id => typeof id === 'string'))) throw new AppError(400, 'error.selectFeeds');
+    const wanted = Array.isArray(body.feedIds) ? new Set(body.feedIds as string[]) : undefined;
+    const job = pubmedJob(request);
+    const results: Array<{ feedId: string; ok: boolean; error?: string }> = [];
+    for (const entry of job.entries) {
+      if (wanted && !wanted.has(entry.feedId)) continue;
+      if (!entry.check || entry.check.status !== 'verified' || !(entry.state === 'done' || entry.state === 'converted')) { if (wanted) results.push({ feedId: entry.feedId, ok: false, error: tl('pubmedConvert.needsReview') }); continue; }
+      try {
+        await convertToPubmed(entry.feedId, entry.check.query, entry.check.limit, () => feedsGuard(request));
+        results.push({ feedId: entry.feedId, ok: true });
+        const current = store.pubmedChecks.job(job.id)!;
+        const row = current.entries.find(item => item.feedId === entry.feedId);
+        if (row) { row.state = 'converted'; store.pubmedChecks.updateJob(current); }
+      } catch (error) { results.push({ feedId: entry.feedId, ok: false, error: lt(friendlyError(error, msg('error.actionFailed'))) }); }
+    }
+    return { results, job: jobView(store.pubmedChecks.job(job.id)!) };
+  });
+
+  // Tests NCBI settings as typed (not saved yet) with a tiny esearch; the key is never returned.
+  app.post('/api/settings/ncbi/test', async (request): Promise<NcbiKeyTest> => {
+    adminGuard(request);
+    const body = asRecord(request.body);
+    const saved = store.getSettings().ncbi;
+    const apiKey = typeof body.apiKey === 'string' && body.apiKey.trim() ? body.apiKey.trim() : body.apiKey === null ? '' : saved.apiKey;
+    const email = typeof body.email === 'string' ? body.email.trim() : saved.email;
+    if (apiKey.length > 200 || email.length > 254) throw new AppError(400, 'error.ncbiSettingsInvalid');
+    const test = await testNcbiSettings({ apiKey, email }, fetchPolicy(), ncbi, { signal: operationSignal(request) }, describeFailure);
+    if (apiKey) store.pubmedChecks.saveKeyTest(keyDigest(apiKey), test);
+    return test;
+  });
+  app.get('/api/settings/ncbi/status', async request => {
+    adminGuard(request);
+    const { apiKey } = store.getSettings().ncbi;
+    const lastTest = apiKey ? store.pubmedChecks.keyTest(keyDigest(apiKey)) : undefined;
+    return { apiKeyConfigured: !!apiKey, ...(lastTest ? { lastTest } : {}) };
   });
   app.get('/api/feeds/:id/translation/progress', async request => {
     feedsGuard(request);
@@ -1722,12 +1819,15 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   }, 60 * 60_000);
   cleanup.unref();
   app.addHook('onReady', async () => { jobs.recover(); notifier.start(); translations.start(); });
+  // Check jobs left running when the service stopped continue where they were.
+  pubmedJobs.resume();
   if (options.startScheduler !== false) {
     scheduler = setInterval(() => { void refreshDue().catch(() => {}); }, 30_000);
     scheduler.unref();
     app.addHook('onReady', async () => { void refreshDue().catch(() => {}); });
   }
   app.addHook('onClose', async () => {
+    pubmedJobs.close();
     jobs.stop();
     closing = true;
     if (scheduler) clearInterval(scheduler);

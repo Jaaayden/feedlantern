@@ -446,6 +446,24 @@ export interface PubmedRssCheck {
   /** Without an NCBI API key, checks and fetches share 3 requests per second instead of 10. */
   ncbiKeyConfigured: boolean;
 }
+/** One feed in a PubMed conversion check job. `cached`: an earlier result for the unchanged feed was reused. */
+export interface PubmedCheckEntry {
+  feedId: string; name: string;
+  state: 'queued' | 'checking' | 'done' | 'failed' | 'canceled' | 'converted';
+  check?: Omit<PubmedRssCheck, 'ncbiKeyConfigured'>; error?: string; cached?: boolean; startedAt?: string; finishedAt?: string;
+}
+/** A background check of many PubMed RSS feeds (`/api/pubmed-checks`); it keeps running without the page. */
+export interface PubmedCheckJob {
+  id: string; createdAt: string; finishedAt?: string; state: 'running' | 'done' | 'canceled';
+  entries: PubmedCheckEntry[]; ncbiKeyConfigured?: boolean;
+  progress?: { total: number; done: number; verified: number; review: number; failed: number; converted: number; etaSeconds?: number };
+}
+/** The result of testing NCBI settings with a tiny esearch request. `rateLimit` is NCBI's `X-RateLimit-Limit`. */
+export interface NcbiKeyTest {
+  result: 'valid' | 'noKey' | 'invalidKey' | 'badFormat' | 'rateLimited' | 'network' | 'error';
+  rateLimit?: number; detail?: string; testedAt: string;
+  email: 'ok' | 'missing' | 'invalid';
+}
 /** POST /api/pubmed/preview: how many articles match and the newest few. */
 export interface PubmedPreview { count: number; queryTranslation?: string; warnings: PubmedWarning[]; items: PubmedArticle[]; pubmedUrl: string }
 

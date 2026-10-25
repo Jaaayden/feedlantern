@@ -9,6 +9,7 @@ import { RuleHealth } from './rule-health.js';
 import { BUNDLE_SCHEMA, BundleStore } from './bundle-store.js';
 import { ApiTokens } from './api-tokens.js';
 import { ApiTokenLog, API_TOKEN_LOG_SCHEMA } from './api-token-log.js';
+import { PUBMED_CHECK_SCHEMA, PubmedCheckStore } from './pubmed-checks.js';
 import { AppError } from './auth.js';
 import { applicationSettingsSchema } from './settings.js';
 import { clampOutputLimit, clampRetentionLimit, parseItemFilter, retentionProblem, storedItemLimit } from './feed-output.js';
@@ -185,6 +186,8 @@ export class Store {
   readonly bundles: BundleStore;
   readonly tokens: ApiTokens;
   readonly tokenLog: ApiTokenLog;
+  /** Saved PubMed conversion checks, check jobs and the last NCBI key test. */
+  readonly pubmedChecks: PubmedCheckStore;
   readonly dataDir: string;
   readonly dbPath: string;
   readonly masterKeyPath: string;
@@ -412,6 +415,7 @@ export class Store {
       this.db.exec(`BEGIN; ${API_TOKEN_LOG_SCHEMA} PRAGMA user_version=${Math.max(19, current)}; COMMIT;`);
     }
     this.tokenLog = new ApiTokenLog(this.db, () => this.getSettings().logRetentionDays);
+    this.pubmedChecks = new PubmedCheckStore(this.db);
     this.ruleHealth = new RuleHealth(this.db, () => this.getSettings(), this.history);
     // Interface language of each account: `locale` is the user's own choice,
     // `detected_locale` the language their browser last asked for. 21 is
@@ -425,6 +429,11 @@ export class Store {
         ${userColumns.has('locale') ? '' : "ALTER TABLE users ADD COLUMN locale TEXT; UPDATE users SET locale='zh-CN';"}
         ${userColumns.has('detected_locale') ? '' : 'ALTER TABLE users ADD COLUMN detected_locale TEXT;'}
         PRAGMA user_version=${Math.max(21, current)}; COMMIT;`);
+    }
+    // 22: PubMed conversion checks (results per feed, background check jobs) and the last NCBI key test.
+    if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pubmed_check_jobs'").get()) {
+      const current = Number((this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
+      this.db.exec(`BEGIN; ${PUBMED_CHECK_SCHEMA} PRAGMA user_version=${Math.max(22, current)}; COMMIT;`);
     }
     this.migrateBark();
     this.ensureSetupToken();
@@ -556,7 +565,7 @@ export class Store {
       if (confirmation !== user.username) throw new AppError(400, 'error.confirmUsername');
       if (user.role === 'admin' && user.enabled && !this.listUsers().some(u => u.id !== id && u.role === 'admin' && u.enabled)) throw new AppError(409, 'error.lastAdmin');
       this.revokeUser(id);
-      for (const table of ['import_jobs', 'bundles', 'feeds', 'credentials', 'network_profiles']) this.db.prepare(`DELETE FROM ${table} WHERE owner_id=?`).run(id);
+      for (const table of ['pubmed_check_jobs', 'import_jobs', 'bundles', 'feeds', 'credentials', 'network_profiles']) this.db.prepare(`DELETE FROM ${table} WHERE owner_id=?`).run(id);
       // The shared translation cache can contain this user's source fragments.
       this.db.prepare('DELETE FROM translation_cache').run();
       this.db.prepare('DELETE FROM user_notifications WHERE user_id=?').run(id);
@@ -995,7 +1004,7 @@ export class Store {
     this.userControllers.clear();
     this.transaction(() => {
       // Like sessions, access tokens are not part of a backup; a restore revokes them all.
-      for (const table of ['sessions', 'api_token_logs', 'api_tokens', 'import_jobs', 'bundle_feeds', 'bundles', 'translations', 'rss_sources', 'translation_cache', 'feed_items', 'feeds', 'credentials', 'network_profiles', 'user_notifications', 'users', 'settings']) this.db.exec(`DELETE FROM ${table}`);
+      for (const table of ['pubmed_check_jobs', 'pubmed_checks', 'ncbi_key_tests', 'sessions', 'api_token_logs', 'api_tokens', 'import_jobs', 'bundle_feeds', 'bundles', 'translations', 'rss_sources', 'translation_cache', 'feed_items', 'feeds', 'credentials', 'network_profiles', 'user_notifications', 'users', 'settings']) this.db.exec(`DELETE FROM ${table}`);
       for (const table of ['users', 'user_notifications', 'credentials', 'network_profiles', 'feeds', 'feed_items', 'settings', 'rss_sources', 'translations', 'translation_cache', 'bundles', 'bundle_feeds'] as const) {
         for (const value of tables[table] ?? []) {
           const row: Record<string, string | number | null> = { ...value };

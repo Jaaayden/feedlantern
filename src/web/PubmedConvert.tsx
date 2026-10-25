@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { LoaderCircle, Microscope } from 'lucide-react';
-import type { Feed, PubmedRssCheck } from '../shared/types';
+import type { Feed, PubmedCheckEntry, PubmedCheckJob, PubmedRssCheck } from '../shared/types';
 import { pubmedRssSource } from '../shared/pubmed';
 import { api } from './api';
 import { Modal } from './Modal';
@@ -16,7 +16,7 @@ export function coverageText(check: Pick<PubmedRssCheck, 'coverage'>): string {
   const text = t('pubmedConvert.coverageValue', { matched, total, percent: fmt.number(ratio, { style: 'percent', maximumFractionDigits: 0 }) });
   return source === 'stored' ? `${text} ${t('pubmedConvert.coverageStored')}` : text;
 }
-export const reasonText = (check: PubmedRssCheck) => check.reason ? t(`pubmedConvert.reason.${check.reason}`) : '';
+export const reasonText = (check: Pick<PubmedRssCheck, 'reason'>) => check.reason ? t(`pubmedConvert.reason.${check.reason}`) : '';
 
 /**
  * PubMed RSS addresses in a feed's panel: what converting brings, then a check
@@ -58,65 +58,90 @@ export function PubmedRssNotice({ feed, review, converted }: { feed: Feed; revie
   </div>;
 }
 
-type Row = { feed: Feed; check?: PubmedRssCheck; error?: string; state: 'waiting' | 'checking' | 'checked' | 'converting' | 'converted' | 'failed' };
+/** "about 2 min" / "about 40 s". */
+const etaText = (seconds: number) => seconds >= 90 ? t('pubmedBatch.etaMinutes', { count: Math.round(seconds / 60) }) : t('pubmedBatch.etaSeconds', { count: Math.max(1, seconds) });
+const POLL_MS = 1500;
 
 /**
- * Converts many PubMed RSS feeds: each is checked in turn (requests follow the
- * shared NCBI rate limit), the results are shown as a table, and only the
- * verified ones are converted after the user confirms. The others are listed
- * to review one by one in the search builder.
+ * Converts many PubMed RSS feeds. The check runs on the server as a job (it
+ * continues when this window or the page is closed; reopening shows it), up
+ * to five feeds at a time within the shared NCBI rate limit. Feeds that are
+ * verified can be converted as soon as they are, without waiting for the
+ * rest; the others are reviewed one by one in the search builder.
  */
 export function PubmedBatchConvert({ feeds, close, review, changed, notify }: { feeds: Feed[]; close: () => void; review: (feed: Feed, check?: PubmedRssCheck) => void; changed: () => void; notify: (text: string) => void }) {
-  const [rows, setRows] = useState<Row[]>(() => feeds.map(feed => ({ feed, state: 'waiting' })));
-  const [phase, setPhase] = useState<'checking' | 'ready' | 'converting' | 'done'>('checking');
-  const stopped = useRef(false);
-  const update = (id: string, change: Partial<Row>) => setRows(previous => previous.map(row => row.feed.id === id ? { ...row, ...change } : row));
+  const [job, setJob] = useState<PubmedCheckJob>();
+  const [busy, setBusy] = useState<'' | 'convert' | 'cancel' | 'retry' | 'recheck'>('');
+  const [error, setError] = useState('');
+  const ids = feeds.map(feed => feed.id).sort().join(',');
+  // Reopening shows the job already running (or finished) for these feeds; otherwise a new one starts, reusing saved results.
   useEffect(() => {
-    stopped.current = false;
+    let live = true;
     void (async () => {
-      for (const feed of feeds) {
-        if (stopped.current) break;
-        update(feed.id, { state: 'checking' });
-        try { update(feed.id, { state: 'checked', check: await api.feeds.pubmedCheck(feed.id) }); }
-        catch (reason) { update(feed.id, { state: 'failed', error: messageOf(reason) }); }
-      }
-      if (!stopped.current) setPhase('ready');
+      try {
+        const { job: latest } = await api.pubmedChecks.latest();
+        const covers = latest && feeds.every(feed => latest.entries.some(entry => entry.feedId === feed.id));
+        const next = covers && latest ? latest : await api.pubmedChecks.start(feeds.map(feed => feed.id));
+        if (live) setJob(next);
+      } catch (reason) { if (live) setError(messageOf(reason)); }
     })();
-    return () => { stopped.current = true; };
-  }, [feeds]);
-  const checked = rows.filter(row => row.check).length + rows.filter(row => row.state === 'failed').length;
-  const verified = rows.filter(row => row.check?.status === 'verified' && row.state === 'checked');
-  const keyMissing = rows.some(row => row.check && !row.check.ncbiKeyConfigured);
-  async function convertVerified() {
-    if (!verified.length || !confirm(t('pubmedBatch.confirm', { count: verified.length }))) return;
-    setPhase('converting');
-    let done = 0;
-    for (const row of verified) {
-      update(row.feed.id, { state: 'converting' });
-      try { await api.feeds.pubmedConvert(row.feed.id, row.check!.query, row.check!.limit); update(row.feed.id, { state: 'converted' }); done++; }
-      catch (reason) { update(row.feed.id, { state: 'failed', error: messageOf(reason) }); }
-    }
-    setPhase('done'); changed();
-    notify(t('pubmedBatch.converted', { count: done }));
+    return () => { live = false; };
+  }, [ids]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!job || job.state !== 'running') return;
+    const timer = window.setTimeout(() => { void api.pubmedChecks.get(job.id).then(setJob).catch(reason => setError(messageOf(reason))); }, POLL_MS);
+    return () => window.clearTimeout(timer);
+  }, [job]);
+  const byId = new Map(feeds.map(feed => [feed.id, feed]));
+  const entries = job?.entries.filter(entry => byId.has(entry.feedId)) ?? [];
+  const ready = entries.filter(entry => entry.state === 'done' && entry.check?.status === 'verified');
+  const progress = job?.progress;
+  async function act(kind: 'cancel' | 'retry' | 'recheck') {
+    if (!job) return;
+    setBusy(kind); setError('');
+    try { setJob(kind === 'cancel' ? await api.pubmedChecks.cancel(job.id) : kind === 'retry' ? await api.pubmedChecks.retry(job.id) : await api.pubmedChecks.start(feeds.map(feed => feed.id), true)); }
+    catch (reason) { setError(messageOf(reason)); } finally { setBusy(''); }
   }
-  const status = (row: Row) => row.state === 'waiting' ? t('pubmedBatch.waiting') : row.state === 'checking' ? t('pubmedConvert.checking') : row.state === 'converting' ? t('pubmedBatch.converting')
-    : row.state === 'converted' ? t('pubmedBatch.done') : row.state === 'failed' ? row.error ?? '' : row.check?.status === 'verified' ? t('pubmedConvert.verified') : row.check?.reason ? t('pubmedConvert.needsReviewBecause', { reason: reasonText(row.check) }) : t('pubmedConvert.needsReview');
-  return <Modal title={t('pubmedBatch.title')} close={() => { stopped.current = true; close(); }} wide><div className="modal-body pubmed-batch">
+  async function convertReady() {
+    if (!job || !ready.length || !confirm(t('pubmedBatch.confirm', { count: ready.length }))) return;
+    setBusy('convert'); setError('');
+    try {
+      const { results, job: next } = await api.pubmedChecks.convert(job.id, ready.map(entry => entry.feedId));
+      setJob(next); changed();
+      const done = results.filter(result => result.ok).length;
+      notify(t('pubmedBatch.converted', { count: done }));
+      if (done < results.length) setError(results.filter(result => !result.ok).map(result => `${byId.get(result.feedId)?.name ?? result.feedId}: ${result.error ?? ''}`).join('\n'));
+    } catch (reason) { setError(messageOf(reason)); } finally { setBusy(''); }
+  }
+  const status = (entry: PubmedCheckEntry) => entry.state === 'queued' ? t('pubmedBatch.waiting') : entry.state === 'checking' ? t('pubmedConvert.checking')
+    : entry.state === 'converted' ? t('pubmedBatch.done') : entry.state === 'canceled' ? t('pubmedBatch.canceled') : entry.state === 'failed' ? t('pubmedBatch.failed', { error: entry.error ?? '' })
+    : entry.check?.status === 'verified' ? t('pubmedConvert.verified') : entry.check?.reason ? t('pubmedConvert.needsReviewBecause', { reason: reasonText(entry.check as PubmedRssCheck) }) : t('pubmedConvert.needsReview');
+  const rowState = (entry: PubmedCheckEntry) => entry.state === 'done' ? entry.check?.status : entry.state;
+  return <Modal title={t('pubmedBatch.title')} close={close} wide><div className="modal-body pubmed-batch">
     <p className="muted">{t('pubmedBatch.lead')}</p>
-    {keyMissing && <div className="notice">{t('pubmedBatch.noKey')}</div>}
-    <p className="pubmed-batch-progress" role="status">{phase === 'checking' ? <><LoaderCircle size={14} className="spin" />{t('pubmedBatch.progress', { done: checked, total: rows.length })}</> : t('pubmedBatch.summary', { verified: verified.length + rows.filter(row => row.state === 'converted').length, review: rows.filter(row => row.check?.status === 'review').length, total: rows.length })}</p>
-    <div className="pubmed-batch-table" role="table" aria-label={t('pubmedBatch.title')}>
+    {job && !job.ncbiKeyConfigured && <div className="notice"><span>{t('pubmedBatch.noKey')} <a className="text-link" href="#/settings/pubmed" onClick={close}>{t('pubmedBatch.keySettings')}</a></span></div>}
+    {progress && <div className="pubmed-batch-progress" role="status">
+      <div className="pubmed-progress-bar" aria-hidden="true"><span style={{ width: `${progress.total ? Math.round(progress.done / progress.total * 100) : 0}%` }} /></div>
+      <span>{job?.state === 'running' && <LoaderCircle size={14} className="spin" />}{t('pubmedBatch.progressLine', { done: progress.done, total: progress.total })}{job?.state === 'running' && progress.etaSeconds !== undefined ? ` · ${etaText(progress.etaSeconds)}` : ''}</span>
+      <span className="muted">{t('pubmedBatch.summary', { verified: progress.verified, review: progress.review, total: progress.total })}{progress.failed ? ` ${t('pubmedBatch.failedCount', { count: progress.failed })}` : ''}{progress.converted ? ` ${t('pubmedBatch.convertedCount', { count: progress.converted })}` : ''}</span>
+    </div>}
+    {!job && !error && <p className="pubmed-batch-progress"><LoaderCircle size={14} className="spin" />{t('pubmedConvert.checking')}</p>}
+    {error && <div className="error-note" role="alert">{error}</div>}
+    {entries.length > 0 && <div className="pubmed-batch-table" role="table" aria-label={t('pubmedBatch.title')}>
       <div role="row" className="pubmed-batch-head"><span role="columnheader">{t('label.feedName')}</span><span role="columnheader">{t('pubmedBatch.query')}</span><span role="columnheader">{t('pubmedBatch.coverage')}</span><span role="columnheader">{t('pubmedBatch.status')}</span></div>
-      {rows.map(row => <div role="row" key={row.feed.id} data-state={row.check?.status ?? row.state}>
-        <span role="cell" className="pubmed-batch-name">{row.feed.name}</span>
-        <span role="cell">{row.check?.query ? <code>{row.check.query}</code> : '—'}</span>
-        <span role="cell">{row.check ? coverageText(row.check) : '—'}</span>
-        <span role="cell" className="pubmed-batch-status">{status(row)}{row.check?.status === 'review' && row.state === 'checked' && <button type="button" className="button small" onClick={() => { stopped.current = true; review(row.feed, row.check); }}>{t('pubmedBatch.review')}</button>}</span>
+      {entries.map(entry => <div role="row" key={entry.feedId} data-state={rowState(entry)}>
+        <span role="cell" className="pubmed-batch-name">{entry.name}</span>
+        <span role="cell">{entry.check?.query ? <code>{entry.check.query}</code> : '—'}</span>
+        <span role="cell">{entry.check ? coverageText(entry.check) : '—'}{entry.cached && <small className="pubmed-cached"> {t('pubmedBatch.cached')}</small>}</span>
+        <span role="cell" className="pubmed-batch-status">{status(entry)}{entry.state === 'done' && entry.check?.status === 'review' && byId.get(entry.feedId) && <button type="button" className="button small" onClick={() => review(byId.get(entry.feedId)!, { ...entry.check!, ncbiKeyConfigured: !!job?.ncbiKeyConfigured } as PubmedRssCheck)}>{t('pubmedBatch.review')}</button>}</span>
       </div>)}
-    </div>
+    </div>}
     <div className="modal-actions">
-      <button type="button" className="button" onClick={() => { stopped.current = true; close(); }}>{phase === 'done' ? t('common.close') : t('common.cancel')}</button>
-      {phase !== 'done' && <button type="button" className="button primary" disabled={phase !== 'ready' || !verified.length} onClick={() => void convertVerified()}>{phase === 'converting' ? t('pubmedBatch.converting') : t('pubmedBatch.convert', { count: verified.length })}</button>}
+      {job?.state === 'running' && <button type="button" className="button" disabled={!!busy} onClick={() => void act('cancel')}>{t('pubmedBatch.cancelChecks')}</button>}
+      {job && !!progress?.failed && job.state !== 'running' && <button type="button" className="button" disabled={!!busy} onClick={() => void act('retry')}>{t('pubmedBatch.retryFailed')}</button>}
+      {job && job.state !== 'running' && <button type="button" className="button" disabled={!!busy} onClick={() => void act('recheck')}>{t('pubmedBatch.recheck')}</button>}
+      <button type="button" className="button" onClick={close}>{t('common.close')}</button>
+      <button type="button" className="button primary" disabled={!!busy || !ready.length} onClick={() => void convertReady()}>{busy === 'convert' ? t('pubmedBatch.converting') : t('pubmedBatch.convert', { count: ready.length })}</button>
     </div>
   </div></Modal>;
 }

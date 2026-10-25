@@ -1033,7 +1033,12 @@ summary { cursor: pointer; }
 .pubmed-batch-strip { align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
 .pubmed-batch-strip > span { flex: 1 1 260px; }
 .pubmed-batch { display: grid; gap: 14px; }
-.pubmed-batch-progress { display: inline-flex; align-items: center; gap: 8px; font-size: 13.5px; color: var(--ink-2); }
+.pubmed-batch-progress { display: grid; gap: 6px; font-size: 13.5px; color: var(--ink-2); }
+.pubmed-batch-progress > span { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pubmed-progress-bar { height: 6px; border-radius: 999px; background: var(--bg-sunken); overflow: hidden; }
+.pubmed-progress-bar > span { display: block; height: 100%; background: var(--glow-strong); transition: width .4s var(--ease); }
+.pubmed-cached { color: var(--muted); }
+.pubmed-batch-table [data-state="checking"] .pubmed-batch-status, .pubmed-batch-table [data-state="queued"] .pubmed-batch-status { color: var(--muted); }
 .pubmed-batch-table { display: grid; border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden; max-height: 55vh; overflow-y: auto; }
 .pubmed-batch-table > [role="row"] { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(0, 2.2fr) 120px minmax(150px, 1fr); gap: 12px; align-items: start; padding: 10px 14px; border-top: 1px solid var(--line); font-size: 13px; }
 .pubmed-batch-table > [role="row"]:first-child { border-top: 0; }
@@ -1042,7 +1047,7 @@ summary { cursor: pointer; }
 .pubmed-batch-status { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .pubmed-batch-table [data-state="verified"] .pubmed-batch-status, .pubmed-batch-table [data-state="converted"] .pubmed-batch-status { color: var(--success); }
 .pubmed-batch-table [data-state="review"] .pubmed-batch-status { color: var(--warning); }
-.pubmed-batch-table [data-state="failed"] .pubmed-batch-status { color: var(--danger); }
+.pubmed-batch-table [data-state="failed"] .pubmed-batch-status, .pubmed-batch-table [data-state="canceled"] .pubmed-batch-status { color: var(--danger); }
 @media (max-width: 760px) {
   .pubmed-batch-table > [role="row"] { grid-template-columns: minmax(0, 1fr); gap: 4px; }
   .pubmed-batch-head { display: none !important; }
@@ -1855,3 +1860,10 @@ button.card-warning:hover { text-decoration: underline; text-underline-offset: 3
   .topbar > span:first-child > .muted, .topbar > span:first-child > .slash { display: none; }
   .topbar-status-text { display: none; }
 }
+
+/* NCBI settings test */
+.ncbi-test { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.ncbi-test > p { margin: 0; flex: 1 1 260px; font-size: 13px; }
+.ncbi-test-result.is-valid, .ncbi-test-result.is-noKey { color: var(--success); }
+.ncbi-test-result.is-invalidKey, .ncbi-test-result.is-badFormat, .ncbi-test-result.is-error { color: var(--danger); }
+.ncbi-test-result.is-rateLimited, .ncbi-test-result.is-network { color: var(--warning); }
