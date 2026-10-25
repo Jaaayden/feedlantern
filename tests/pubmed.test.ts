@@ -98,25 +98,114 @@ test('esearch 解析：匹配总数、PMID、NCBI 的实际查询式和提示；
   for (const broken of ['not json', '{}', '{"esearchresult":{"count":"x","idlist":[]}}', '{"esearchresult":{"count":"1"}}']) assert.throws(() => parseEsearch(broken), /返回的数据无法解析/, broken);
 });
 
-test('NCBI 限流器：调用顺序排队，不带 Key 每 350 毫秒一个，带 Key 每 110 毫秒一个；429 后整体后移', async () => {
+function limiterClock() {
   let now = 1000;
+  const alarms: Array<{ at: number; wake: () => void }> = [];
   const waits: number[] = [];
-  const limiter = new NcbiRateLimiter(() => now, async ms => { waits.push(ms); });
-  await Promise.all([1, 2, 3, 4].map(() => limiter.acquire(NCBI_INTERVAL_MS.anonymous)));
-  assert.deepEqual(waits, [350, 700, 1050]);
-  // The next request would wait for the fifth slot.
-  assert.equal(limiter.backlog(), 1400);
-  // Any one second holds at most three request starts without a key, ten with one.
-  assert.ok(1000 / NCBI_INTERVAL_MS.anonymous < 3 && 1000 / NCBI_INTERVAL_MS.withKey < 10);
-  now = 10_000; waits.length = 0;
+  const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
+    const finish = () => { signal?.removeEventListener('abort', abort); resolve(); };
+    const alarm = { at: now + ms, wake: finish };
+    const abort = () => {
+      const index = alarms.indexOf(alarm);
+      if (index >= 0) alarms.splice(index, 1);
+      reject(signal?.reason);
+    };
+    signal?.addEventListener('abort', abort, { once: true });
+    alarms.push(alarm); waits.push(ms);
+  });
+  const advance = async (ms: number) => {
+    now += ms;
+    for (const alarm of alarms.filter(alarm => alarm.at <= now)) {
+      alarms.splice(alarms.indexOf(alarm), 1); alarm.wake();
+    }
+    await new Promise<void>(resolve => setImmediate(resolve));
+  };
+  return { now: () => now, sleep, advance, waits, pending: () => alarms.length };
+}
+
+test('NCBI 限流器：按实际放行时间排队，匿名间隔 350 毫秒、带 Key 间隔 110 毫秒', async () => {
+  const clock = limiterClock();
+  const limiter = new NcbiRateLimiter(clock.now, clock.sleep);
+  const starts: number[] = [];
+  const tasks = Array.from({ length: 4 }, () => limiter.acquire(NCBI_INTERVAL_MS.anonymous).then(() => starts.push(clock.now())));
+  await clock.advance(0);
+  assert.equal(limiter.backlog(), 1400, 'backlog includes requests that are still queued');
+  for (let i = 0; i < 3; i++) await clock.advance(350);
+  await Promise.all(tasks);
+  assert.deepEqual(starts, [1000, 1350, 1700, 2050]);
+  assert.deepEqual(clock.waits, [350, 350, 350]);
+  await clock.advance(10_000);
   assert.equal(limiter.backlog(), 0);
-  await Promise.all([1, 2, 3].map(() => limiter.acquire(NCBI_INTERVAL_MS.withKey)));
-  assert.deepEqual(waits, [110, 220]);
-  limiter.pause(2000); waits.length = 0;
-  await limiter.acquire(NCBI_INTERVAL_MS.withKey);
-  assert.deepEqual(waits, [2000]);
+  starts.length = 0; clock.waits.length = 0;
+  const begin = clock.now();
+  const keyed = Array.from({ length: 3 }, () => limiter.acquire(NCBI_INTERVAL_MS.withKey).then(() => starts.push(clock.now())));
+  await clock.advance(0);
+  for (let i = 0; i < 2; i++) await clock.advance(110);
+  await Promise.all(keyed);
+  assert.deepEqual(starts, [begin, begin + 110, begin + 220]);
+  assert.deepEqual(clock.waits, [110, 110]);
   const controller = new AbortController(); controller.abort();
   await assert.rejects(limiter.acquire(NCBI_INTERVAL_MS.anonymous, controller.signal));
+});
+
+test('NCBI 限流器：事件循环停顿后不追赶过期时隙，匿名和带 Key 均不会集中放行', async () => {
+  for (const [interval, count, maximum] of [[350, 5, 3], [110, 12, 10]]) {
+    const clock = limiterClock();
+    const limiter = new NcbiRateLimiter(clock.now, clock.sleep);
+    const starts: number[] = [];
+    const tasks = Array.from({ length: count }, () => limiter.acquire(interval).then(() => starts.push(clock.now())));
+    await clock.advance(0);
+    assert.deepEqual(starts, [1000]);
+    // A busy event loop wakes every overdue timer together. Only one caller
+    // may take a slot now; the others must wait from the actual grant time.
+    await clock.advance(2000);
+    assert.deepEqual(starts, [1000, 3000]);
+    assert.equal(clock.pending(), 1);
+    for (let i = 2; i < count; i++) await clock.advance(interval);
+    await Promise.all(tasks);
+    for (let i = 1; i < starts.length; i++) assert.ok(starts[i] - starts[i - 1] >= interval);
+    const inSecond = Math.max(...starts.map(first => starts.filter(at => at >= first && at < first + 1000).length));
+    assert.ok(inSecond <= maximum, `at most ${maximum} per second, saw ${inSecond}`);
+  }
+});
+
+test('NCBI 限流器：429 暂停覆盖已在等待的请求，取消排队或等待中的请求不阻塞后续请求', async () => {
+  const clock = limiterClock();
+  const limiter = new NcbiRateLimiter(clock.now, clock.sleep);
+  await limiter.acquire(350);
+  const starts: number[] = [];
+  const waiting = limiter.acquire(350).then(() => starts.push(clock.now()));
+  const controller = new AbortController();
+  const canceled = limiter.acquire(350, controller.signal);
+  const next = limiter.acquire(350).then(() => starts.push(clock.now()));
+  await clock.advance(0);
+  limiter.pause(2000);
+  const reason = new Error('canceled while queued');
+  controller.abort(reason);
+  await assert.rejects(canceled, error => error === reason);
+  assert.equal(limiter.backlog(), 2700, 'canceled queued requests no longer contribute to backlog');
+  await clock.advance(350);
+  assert.deepEqual(starts, []);
+  await clock.advance(1649);
+  assert.deepEqual(starts, []);
+  await clock.advance(1);
+  assert.deepEqual(starts, [3000]);
+  await clock.advance(350);
+  await Promise.all([waiting, next]);
+  assert.deepEqual(starts, [3000, 3350]);
+
+  const sleepingController = new AbortController();
+  const sleeping = limiter.acquire(350, sleepingController.signal);
+  let finished = false;
+  const following = limiter.acquire(350).then(() => { finished = true; });
+  await clock.advance(0);
+  sleepingController.abort(reason);
+  await assert.rejects(sleeping, error => error === reason);
+  await clock.advance(0);
+  assert.equal(finished, false);
+  await clock.advance(350);
+  await following;
+  assert.equal(finished, true);
 });
 
 test('检索订阅走 esearch（默认的 Most recent 排序）+ efetch：参数、顺序、tool/email/api_key', async () => {

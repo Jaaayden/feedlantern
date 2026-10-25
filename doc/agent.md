@@ -17,7 +17,7 @@ pnpm install --frozen-lockfile && pnpm build
 ```
 
 ```bash
-npm install --global ./packages/cli/feedlantern-cli-0.8.0.tgz
+npm install --global ./packages/cli/feedlantern-cli-0.8.1.tgz
 ```
 
 `npm pack` 生成的 `.tgz` 可以复制到其他机器上用同样的命令安装，安装时会从 npm 下载依赖（MCP SDK 和 zod）。不想全局安装时，在仓库里直接运行打包好的文件：

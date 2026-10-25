@@ -14,6 +14,7 @@
  */
 import { XMLParser, XMLValidator } from 'fast-xml-parser';
 import sanitizeHtml from 'sanitize-html';
+import { setTimeout as sleepTimer } from 'node:timers/promises';
 import type { NetworkPolicy } from './network.js';
 import { digest, fetchRaw, safeHtml, type RawResponse, type SourceFetcher, type SourceItem, type SourceOptions, type SourceResult } from './rss-source.js';
 import { looksLikeHtml, NcbiError, NotAFeedError, sourceMessages } from './fetch-errors.js';
@@ -26,7 +27,7 @@ export const NCBI_TOOL = 'feedlantern';
 /**
  * Spacing between request starts. NCBI allows 3 requests per second without
  * an API key and 10 with one; the spacing is a little wider than 1000/3 and
- * 1000/10 ms so network jitter cannot push four requests into one second.
+ * 1000/10 ms to leave a small margin for network jitter.
  */
 export const NCBI_INTERVAL_MS = { anonymous: 350, withKey: 110 } as const;
 
@@ -36,10 +37,10 @@ const EFETCH_MAX_BYTES = 30_000_000;
 export interface NcbiSettings { apiKey: string; email: string }
 
 type Sleep = (ms: number, signal?: AbortSignal) => Promise<void>;
-const defaultSleep: Sleep = (ms, signal) => new Promise((resolve, reject) => {
-  const timer = setTimeout(resolve, ms);
-  signal?.addEventListener('abort', () => { clearTimeout(timer); reject(signal.reason); }, { once: true });
-});
+const defaultSleep: Sleep = async (ms, signal) => {
+  try { await sleepTimer(ms, undefined, { signal }); }
+  catch (error) { signal?.throwIfAborted(); throw error; }
+};
 
 /**
  * One queue for every request to NCBI in this process. Slots are handed out
@@ -48,16 +49,37 @@ const defaultSleep: Sleep = (ms, signal) => new Promise((resolve, reject) => {
  */
 export class NcbiRateLimiter {
   private nextAt = 0;
-  constructor(private readonly now: () => number = Date.now, private readonly sleep: Sleep = defaultSleep) {}
+  private tail: Promise<void> = Promise.resolve();
+  private readonly queued = new Set<{ intervalMs: number }>();
+  constructor(private readonly now: () => number = () => performance.now(), private readonly sleep: Sleep = defaultSleep) {}
   async acquire(intervalMs: number, signal?: AbortSignal): Promise<void> {
     signal?.throwIfAborted();
-    const now = this.now();
-    const at = Math.max(now, this.nextAt);
-    this.nextAt = at + intervalMs;
-    if (at > now) await this.sleep(at - now, signal);
+    const ticket = { intervalMs };
+    this.queued.add(ticket);
+    const slot = this.tail.then(async () => {
+      // Only the first queued request sleeps. After a delayed wakeup, space
+      // the next request from this actual grant, never from an expired slot.
+      for (;;) {
+        signal?.throwIfAborted();
+        const delay = this.nextAt - this.now();
+        if (delay <= 0) break;
+        await this.sleep(delay, signal);
+        // A 429 may have moved nextAt while this request was asleep.
+      }
+      this.nextAt = this.now() + intervalMs;
+      this.queued.delete(ticket);
+    }).finally(() => { this.queued.delete(ticket); });
+    // A canceled caller must not prevent later requests from taking a turn.
+    this.tail = slot.catch(() => {});
+    if (!signal) return slot;
+    return new Promise<void>((resolve, reject) => {
+      const abort = () => { this.queued.delete(ticket); reject(signal.reason); };
+      signal.addEventListener('abort', abort, { once: true });
+      void slot.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+    });
   }
   /** How long a request queued now would wait for its slot. */
-  backlog(): number { return Math.max(0, this.nextAt - this.now()); }
+  backlog(): number { return Math.max(0, this.nextAt - this.now()) + [...this.queued].reduce((sum, ticket) => sum + ticket.intervalMs, 0); }
   /** Moves every later slot back by at least `ms`, after NCBI answered 429. */
   pause(ms: number): void { this.nextAt = Math.max(this.nextAt, this.now() + ms); }
 }
