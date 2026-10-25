@@ -294,10 +294,12 @@ RSS 获取失败会进入既有抓取日志和失败告警流程（取决于你�
 ### 检索构建器
 
 - **检索条件**：每行包括逻辑运算（AND / OR / NOT，第一行没有）、字段和检索词，可以添加多行，按从上到下的顺序组合（与 PubMed 构建器相同，例如三行写成 `((A) AND (B)) OR (C)`）。字段有：全部字段（All Fields）、标题/摘要（Title/Abstract）、标题（Title）、作者（Author）、第一作者（Author - First）、末位作者（Author - Last）、期刊（Journal）、机构（Affiliation）、MeSH 主题词（MeSH Terms）、文献类型（Publication Type）、语言（Language），以及期刊 NLM ID（`[jid]`）。
-- **检索词自动加引号**：输入的检索词会被转义并加上英文双引号，不会因为括号、引号、`AND`、`[Title]` 之类的字符拼坏查询式（PubMed 不支持在短语里转义双引号，检索词中的双引号会变成空格）。“全部字段”中的普通词不加引号，以保留 PubMed 的自动词语映射（MeSH 和同义词扩展）；自己用双引号括起来则精确匹配短语。
+- **与 PubMed 构建器一致，默认不加引号**：每个条件写成 `(检索词[字段])`（“全部字段”不带标签），条件之间用 AND / OR / NOT 连接，检索词原样发送。这样 PubMed 会做自动词映射（ATM）：例如 `cryo electron microscopy` 会映射到 MeSH 主题词，`Sun Jin-peng[Author]` 会同时匹配 `Sun, Jin Peng` 等写法；加了引号就只匹配原样的短语，结果会少很多（实测分别是 24903 和 10997 篇）。PubMed 不区分大小写。
+- **精确短语**：每行有一个“精确短语”开关，默认关闭；打开后给这一行的检索词加上引号，只匹配原样短语并关闭自动词映射。自己输入的引号也会原样保留。
+- **只处理会破坏语法的字符**：`[`、`]` 会被当成字段标签的开头，换成空格；没有配对的括号或引号会被去掉；检索词中单独出现的大写 AND / OR / NOT 会被 PubMed 当成运算符，构建器会提示（改成小写或打开“精确短语”即可按普通词检索）。
 - **筛选**：发表日期（不限 / 最近 N 天 / 指定区间，日期写作 `YYYY`、`YYYY/MM` 或 `YYYY/MM/DD`，任一端可留空）、只看有摘要的文章（`hasabstract`），以及文章类型快捷项（综述、系统综述、Meta 分析、临床试验、随机对照试验、病例报告，多选为 OR）。
-- **查询式**：构建器下方实时显示生成的 PubMed 查询式，例如 `("cryo-EM"[Title/Abstract]) AND ("ShanghaiTech"[Affiliation])`。可以直接修改查询式：能还原成条件时构建器同步更新；还原不了（例如 `a AND (b OR c)` 这类右侧分组，或构建器没有的字段）时提示“已切换为手动编辑”，查询式按原样保存，可点“放弃手动修改”回到构建器。引号或括号不配对、AND/OR/NOT 缺少一侧时会直接指出，不会发送给 NCBI。
-- **预览**：右侧显示匹配总数和最新 5 篇（标题、期刊、日期、作者），以及 NCBI 的提示（例如“找不到带引号的短语”）和 PubMed 实际检索的查询式。输入停顿约 0.8 秒后才请求一次，相同查询一分钟内直接复用结果；所有预览与刷新共用全局的 NCBI 限流队列，队列过长时预览会提示稍后再试。点“在 PubMed 中打开”可以在 PubMed 网站上对照同一检索。
+- **查询式**：构建器下方实时显示生成的 PubMed 查询式，例如 `(cryo-EM[Title/Abstract]) AND (ShanghaiTech University[Affiliation])`。可以直接修改查询式：能还原成条件时构建器同步更新；还原不了（例如 `a AND (b OR c)` 这类右侧分组，或构建器没有的字段）时提示“已切换为手动编辑”，查询式按原样保存，可点“放弃手动修改”回到构建器。引号或括号不配对、AND/OR/NOT 缺少一侧时会直接指出，不会发送给 NCBI。
+- **预览**：右侧显示匹配总数和最新 5 篇（标题、期刊、日期、作者）、NCBI 的提示（例如“找不到带引号的短语”），以及 PubMed 实际执行的查询式（esearch 返回的 querytranslation），可以看到自动词映射展开了哪些词。输入停顿约 0.8 秒后才请求一次，相同查询一分钟内直接复用结果；所有预览与刷新共用全局的 NCBI 限流队列，队列过长时预览会提示稍后再试。点“在 PubMed 中打开”可以在 PubMed 网站上对照同一检索。
 - **订阅设置**：订阅名默认根据检索条件生成（例如“PubMed：cryo-EM · ShanghaiTech”），修改后不再自动更新；“每次抓取最新文章数”可选 10 / 20 / 50 / 100（默认 20），已存的文章不会重复加入。输出模式可选原文、仅译文或双语，沿用 RSS 翻译订阅的翻译流程、目标语言和翻译服务；刷新间隔、网络配置（代理和 DoH）、条目过滤、输出条数和保留条数、聚合订阅、通知都与其他订阅一样可用。规则失效预警只适用于网页订阅；PubMed 检索出错时按抓取失败处理，抓取日志给出可读的原因。
 - **编辑**：在订阅面板“订阅设置 → 编辑检索条件”回到同一个构建器。修改检索条件后已存文章保留（条目按 PMID 识别），新的匹配文章在下次刷新时加入。
 
@@ -305,10 +307,10 @@ RSS 获取失败会进入既有抓取日志和失败告警流程（取决于你�
 
 | 想订阅 | 查询式 |
 | --- | --- |
-| 某机构的某位作者 | `("Zhang Y"[Author]) AND ("ShanghaiTech"[Affiliation])` |
-| 某期刊里的某个主题 | `("PLoS Pathog"[Journal]) AND ("Wolbachia"[Title/Abstract])` |
-| 某机构的冷冻电镜论文，只看有摘要的 | `(("cryo-EM"[Title/Abstract]) AND ("ShanghaiTech"[Affiliation])) AND (hasabstract)` |
-| 最近 30 天某领域的综述 | `("CRISPR"[MeSH Terms]) AND ("last 30 days"[Date - Publication]) AND ("Review"[pt])` |
+| 某机构的某位作者 | `(Sun Jin-peng[Author]) AND (ShanghaiTech University[Affiliation])` |
+| 某期刊里的某个主题 | `(PLoS Pathog[Journal]) AND (Wolbachia[Title/Abstract])` |
+| 某机构的冷冻电镜论文，只看有摘要的 | `((cryo-EM[Title/Abstract]) AND (ShanghaiTech University[Affiliation])) AND (hasabstract)` |
+| 最近 30 天某领域的综述 | `(CRISPR-Cas Systems[MeSH Terms]) AND ("last 30 days"[Date - Publication]) AND ("Review"[pt])` |
 
 条目链接为 `https://pubmed.ncbi.nlm.nih.gov/<PMID>/`，正文与 PubMed RSS 的排版一致：第一行是引用信息（期刊缩写、日期、卷期页码和 DOI），随后是作者（超过 10 位时以 et al. 结尾）、摘要（分段摘要每段一行，没有摘要时显示 NO ABSTRACT）和 PMID / PMC / DOI 链接；条目时间是文章收录进 PubMed 当天纽约时间 6:00（与 PubMed RSS 相同）。翻译订阅会翻译标题和摘要。命令行和 MCP 也可以预览和创建 PubMed 检索订阅，见 [Agent CLI](agent.md)。
 
@@ -329,7 +331,15 @@ PubMed 的 RSS 地址仍可以作为普通 RSS 翻译订阅使用，FeedLantern 
 2. **对比**：用 esearch 执行还原的查询式，取最新 200 篇，看 RSS 里最新的 20 条有多少在其中（覆盖率）。至少 80% 时判定为“可直接转换”。期刊 RSS 被 NCBI 拦截读不到时，改与订阅已存的条目对比。
 3. **结果**：可直接转换时，面板显示还原的查询式和覆盖率，点“确认转换”即可；标题疑似截断、覆盖率低、RSS 读取失败或没有可对比的条目时，打开构建器并预填候选查询式，提示“未能确认与原 RSS 一致，请核对”和原因，核对后再“确认转换”。
 
-订阅很多时，可以在订阅列表顶部的提示条点“验证并转换”，或勾选订阅后用批量操作“转换为 PubMed 检索订阅”。FeedLantern 逐个验证，并把订阅名、还原的查询式、最新条目覆盖率和“可直接转换 / 需要核对”汇总成一张表；确认后只转换可直接转换的订阅，需要核对的留在表里，可点“核对”逐个在构建器中处理。所有请求严格走全局 NCBI 限流：未配置 NCBI API Key 时每个订阅约需 1 秒，填写 Key 后更快。命令行可以用 `feedlantern pubmed convert --all-verified` 先看报告，再加 `--yes` 执行，见 [Agent CLI](agent.md)。
+订阅很多时，可以在订阅列表顶部的提示条点“验证并转换”，或勾选订阅后用批量操作“转换为 PubMed 检索订阅”：
+
+- **验证在服务端后台进行**：关闭窗口或页面、甚至服务重启后都会继续；再次打开时看到当前进度和已有结果，不用重来。整体进度条显示“已完成 N / 共 M”和预计剩余时间，每一行显示排队中、验证中、可直接转换、需要核对（及原因）、失败或已转换。
+- **尽量不访问 PubMed 网页**：大多数检索式 RSS 订阅的名字就是 RSS 标题（即查询式），FeedLantern 先用订阅名还原查询式，与订阅已存的条目（链接里的 PMID）对比，每个订阅只需要一次 E-utilities 请求；只有这样确认不了时，才读取一次 RSS 地址取频道标题和最新条目。
+- **并发但不超限**：同时验证 5 个订阅，所有 NCBI 请求仍共用全局限流（不带 Key 每秒 3 个，带 Key 每秒 10 个）。未配置 Key 时界面会提示并链接到设置页；60 个订阅不带 Key 约 20 秒，带 Key 更快。
+- **结果会保存**：订阅地址和名称都没变的订阅不会重复验证（标为“沿用上次验证”），也可以点“重新验证”；验证可以停止，失败项可以重试。
+- **边验证边转换**：已经验证通过的订阅可以随时先转换，不必等全部完成；确认后只转换“可直接转换”的，需要核对的留在表里，点“核对”逐个在构建器中处理。转换是幂等的，失败项可以重试。
+
+以前的版本验证一个订阅需要先抓一次 RSS 网页、再查 E-utilities，而且逐个串行进行，60 个订阅要几分钟；现在大多只需一次 E-utilities 请求，并行等待应答。命令行可以用 `feedlantern pubmed convert --all-verified` 先看报告，再加 `--yes` 执行，用 `feedlantern pubmed checks` 查看后台任务，见 [Agent CLI](agent.md)。
 
 转换后订阅 ID、RSS 地址、已存条目和译文、翻译设置（输出模式、目标语言、翻译服务）、条目过滤、输出条数、保留条数、聚合订阅的成员资格、刷新间隔和网络配置都不变；条目身份与 PubMed RSS 相同（`pubmed:<PMID>`），已有文章不会被当成新文章重复推送。转换后的第一次抓取中，正文排版的细小差异可能让近期文章重新排队翻译一次，相同段落直接命中译文缓存。
 
@@ -339,5 +349,6 @@ NCBI 要求程序访问 E-utilities 时遵守频率限制，并在请求中注�
 
 - 所有 PubMed 检索订阅的刷新和构建器预览共用一个请求队列：不填 API Key 时每秒最多 3 个请求，填写后每秒最多 10 个。每个订阅每次刷新、每次预览各发出 2 个请求（esearch、efetch），批量刷新时依次排队，不会并发打满。NCBI 仍返回 429（请求过于频繁）时，FeedLantern 按 `Retry-After` 暂停整条队列后重试一次，仍失败则记为抓取失败，提示“NCBI E-utilities 请求过于频繁（HTTP 429）…”。
 - 管理员可以在「设置 → PubMed（NCBI）」填写 **NCBI API Key**（可选，在 NCBI 账号的 Account Settings → API Key Management 中免费申请）和**联系邮箱**（可选）。API Key 与翻译服务的 Key 一样加密保存、不回显，轻量配置导出不含 Key；勾选“保存时删除已保存的 Key”可移除。NCBI 拒绝 Key 时，抓取日志会提示检查或删除它。
+- 点“测试”可以在保存前检查当前填写的 Key 和邮箱：FeedLantern 发一个最小的 esearch 请求（`retmax=0`），给出明确结果——有效（显示 NCBI 回报的速率上限，带 Key 为每秒 10 个）、NCBI 不接受（例如 Key 已被删除，NCBI 返回 `type: invalid`）、格式不对（NCBI 返回 `API key not wellformed`）、被限流、网络不通；其他情况显示 NCBI 原始错误的摘要，不硬归类。邮箱只做基本格式检查。保存后显示“已配置 Key”和上次测试的结果与时间；Key 改动后会提示重新测试。
 - 每个请求固定带 `tool=feedlantern`；填写了联系邮箱时同时带 `email`，没填时不发送邮箱。NCBI 建议附上邮箱：请求异常时他们会先通过邮箱联系，而不是直接封禁来源 IP。共用出口 IP 的部署尤其建议填写。
 - E-utilities 请求与普通 RSS 来源一样经过网络安全策略、DNS over HTTPS 设置和订阅所选网络配置的代理与 User-Agent；网络配置中的自定义请求头只发给订阅地址所在的网站，不会发给 `eutils.ncbi.nlm.nih.gov`。

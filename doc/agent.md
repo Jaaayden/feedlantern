@@ -129,7 +129,8 @@ CLI 用令牌调用时不检查 Host，所以用内网地址（例如 Docker 网
 | `rss preview <url>` | 预览 RSS 源前 3 条 |
 | `pubmed preview [--query <查询式> \| 检索条件选项]` | 预览 PubMed 检索：实际发送的 `query`、匹配总数 `count`、NCBI 提示 `warnings` 和最新 5 篇 |
 | `pubmed create [--query … \| 检索条件选项] [--name …] [--limit 10\|20\|50\|100]` | 创建 PubMed 检索订阅（首次抓取在后台进行） |
-| `pubmed convert <id> \| --all-verified [--query …] [--yes]` | 验证并把 PubMed RSS 订阅转换为检索订阅；默认只出报告 |
+| `pubmed convert <id> \| --all-verified [--query …] [--recheck] [--yes]` | 验证并把 PubMed RSS 订阅转换为检索订阅；默认只出报告 |
+| `pubmed checks [--job id] [--wait] [--cancel] [--retry] [--start]` | 查看或管理后台验证任务：进度、预计剩余时间和每个订阅的结果 |
 | `bundles list\|get\|create\|update\|delete` | 聚合订阅；`update` 用 `--feeds` 整体替换成员，`--add-feeds` 追加 |
 | `bulk <action> <id>...` | 批量 `copy`、`pause`、`resume`、`refresh`、`delete`、`settings --settings <JSON>` |
 | `imports list\|create <url>...\|cancel <id>\|retry <id>` | 批量添加任务（后台自动识别并创建） |
@@ -168,15 +169,15 @@ feedlantern feeds items FEED_ID --limit 5
 
 ### PubMed 检索
 
-`pubmed preview` 和 `pubmed create` 接受完整的查询式 `--query`，或者用选项组合检索条件（与网页构建器生成的查询式相同，条件之间为 AND，二者只能选一种）：`--all-fields`、`--title-abstract`、`--title`、`--author`、`--first-author`、`--last-author`、`--journal`、`--affiliation`、`--mesh`、`--publication-type`、`--language`、`--nlm-id`（都可重复），以及筛选 `--days N`、`--from` / `--to`（`YYYY[/MM[/DD]]`）、`--has-abstract`、`--type Review`（可重复）。需要 OR、NOT 或括号时把整个查询式写进 `--query`。检索词会自动加引号。
+`pubmed preview` 和 `pubmed create` 接受完整的查询式 `--query`，或者用选项组合检索条件（与网页构建器生成的查询式相同，条件之间为 AND，二者只能选一种）：`--all-fields`、`--title-abstract`、`--title`、`--author`、`--first-author`、`--last-author`、`--journal`、`--affiliation`、`--mesh`、`--publication-type`、`--language`、`--nlm-id`（都可重复），以及筛选 `--days N`、`--from` / `--to`（`YYYY[/MM[/DD]]`）、`--has-abstract`、`--type Review`（可重复）。需要 OR、NOT 或括号时把整个查询式写进 `--query`。检索词与 PubMed 构建器一样写成 `(检索词[字段])`，默认不加引号（PubMed 会做自动词映射）；需要精确短语时在值里自己加引号，例如 `--title '"stem cell"'`。
 
 ```bash
 feedlantern pubmed preview --title-abstract cryo-EM --affiliation ShanghaiTech --has-abstract
 feedlantern pubmed create --journal "PLoS Pathog" --days 30 --limit 50 --translation bilingual
-feedlantern pubmed preview --query '("Zhang Y"[Author]) AND ("ShanghaiTech"[Affiliation])' --table
+feedlantern pubmed preview --query '(Sun Jin-peng[Author]) AND (ShanghaiTech University[Affiliation])' --table
 ```
 
-`pubmed convert <订阅 ID>` 验证一个 PubMed RSS 订阅（期刊 RSS 或检索式 RSS）能否转换为检索订阅：从 RSS 标题还原查询式，用 E-utilities 执行并对比最新条目，输出 `status`（`verified` 可直接转换 / `review` 需要核对）、`reason`、还原的 `query` 和覆盖率；默认只输出报告，不改动任何订阅，加 `--yes` 才转换。需要核对的订阅要用 `--query <核对后的查询式> --yes` 指定。`pubmed convert --all-verified` 检查全部 PubMed RSS 订阅，加 `--yes` 时只转换 `verified` 的。转换保留订阅 ID、RSS 地址、条目、译文和全部设置。验证请求不改变任何东西，`--dry-run` 下也会照常发出，只有转换请求被列出。
+`pubmed convert <订阅 ID>` 验证一个 PubMed RSS 订阅（期刊 RSS 或检索式 RSS）能否转换为检索订阅：从 RSS 标题还原查询式，用 E-utilities 执行并对比最新条目，输出 `status`（`verified` 可直接转换 / `review` 需要核对）、`reason`、还原的 `query` 和覆盖率；默认只输出报告，不改动任何订阅，加 `--yes` 才转换。需要核对的订阅要用 `--query <核对后的查询式> --yes` 指定。`pubmed convert --all-verified` 在服务器上开始（或沿用正在运行的）后台验证任务并等待完成，加 `--yes` 时只转换 `verified` 的。验证大多只用订阅名和已存条目，每个订阅一次 E-utilities 请求；同时验证 5 个，仍受全局 NCBI 限流约束；地址和名称都没变的订阅沿用上次结果，`--recheck` 全部重新验证。`pubmed checks` 查看最近的任务（`--job <id>`、`--wait` 等待、`--cancel` 停止、`--retry` 重试失败项、`--start [--feeds id,…]` 开始新任务）；任务在后台继续运行，与命令行是否退出无关。转换保留订阅 ID、RSS 地址、条目、译文和全部设置。验证请求不改变任何东西，`--dry-run` 下也会照常发出，只有转换请求被列出。
 
 ```bash
 feedlantern pubmed convert --all-verified --table
@@ -197,7 +198,9 @@ feedlantern pubmed convert feed_123 --query '(Hu wanlong[Author]) AND (The Unive
 | `whoami`、`health` | 当前令牌、实例状态 | read |
 | `feeds_list`、`feed_get`、`feed_items`、`feed_logs` | 查询订阅、条目和日志 | read |
 | `detect_feed`、`preview_rules`、`rss_preview`、`pubmed_preview` | 识别网页、按规则预览、预览 RSS、预览 PubMed 检索（不保存） | write |
-| `pubmed_convert_check` | 验证 PubMed RSS 订阅能否转换（不传 `feedIds` 时检查全部），返回还原的查询式、覆盖率和 status，不改动订阅 | write |
+| `pubmed_convert_check` | 在后台开始验证 PubMed RSS 订阅能否转换（不传 `feedIds` 时验证全部，`waitSeconds` 可等待），返回 jobId、进度和每个订阅的还原查询式、覆盖率和 status，不改动订阅 | write |
+| `pubmed_check_status` | 查看验证任务的进度和结果 | read |
+| `pubmed_convert_verified` | 转换任务中 verified 的订阅（可在任务运行中先转换），需要 `confirm: true` | write |
 | `pubmed_convert` | 用验证通过或用户核对过的查询式转换一个订阅，需要 `confirm: true` | write |
 | `pubmed_create` | 创建 PubMed 检索订阅：`query`，或 `conditions`（`[{field, term, op?}]`）加 `filters`（`days`、`from`、`to`、`hasAbstract`、`types`） | write |
 | `feed_create`、`feed_update`、`feed_pause`、`feed_resume`、`feed_refresh` | 创建和修改订阅 | write |
