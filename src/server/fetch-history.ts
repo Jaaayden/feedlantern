@@ -1,12 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
-import { defaultApplicationSettings, fetchSourceLabels, notificationChannelLabels, notificationChannels, type ApplicationSettings, type AlertStatus, type ChannelDelivery, type Feed, type FetchLog, type FetchLogPage, type FetchSource, type FetchStatus, type NotificationChannel, type NotificationPolicy } from '../shared/types.js';
+import { tl, translator, currentLocale, translate } from './i18n.js';
+import { ownerLocale } from './user-locale.js';
+import { defaultApplicationSettings, fetchSourceName, notificationChannelLabels, notificationChannels, type ApplicationSettings, type AlertStatus, type ChannelDelivery, type Feed, type FetchLog, type FetchLogPage, type FetchSource, type FetchStatus, type NotificationChannel, type NotificationPolicy } from '../shared/types.js';
 
 /** Stored errors and push content must never contain browser call logs or secrets. */
 export function safeDiagnostic(value: string): string {
-  return value.replace(/https?:\/\/[^\s<>"')]+/gi, '[目标页面]')
-    .replace(/(?:cookie|authorization|set-cookie|token|password|device_key|bark_url)\s*["']?\s*[:=][^\n]*/gi, '[敏感信息已隐藏]')
-    .replace(/Bearer\s+\S+/gi, '[敏感信息已隐藏]').split(/\r?\n/)[0].slice(0, 300);
+  return value.replace(/https?:\/\/[^\s<>"')]+/gi, tl('diag.targetPage'))
+    .replace(/(?:cookie|authorization|set-cookie|token|password|device_key|bark_url)\s*["']?\s*[:=][^\n]*/gi, tl('diag.hidden'))
+    .replace(/Bearer\s+\S+/gi, tl('diag.hidden')).split(/\r?\n/)[0].slice(0, 300);
 }
 
 /** Structured alert details kept beside the text body for channels such as Webhook. */
@@ -94,7 +96,7 @@ export class FetchHistory {
     const previous = this.db.prepare('SELECT a.* FROM translation_incidents i JOIN fetch_alerts a ON a.id=i.alert_id WHERE i.feed_id=?').get(feed.id);
     if (previous && !(previous.status === 'failed' && now - Number(previous.last_attempt_at) >= policy.cooldownMinutes * 60_000)) return false;
     const error = safeDiagnostic(message);
-    const body = `${safeDiagnostic(feed.name)}\nRSS 翻译失败：${error}\n未完成文章不会发布。系统最多尝试 3 次，达到上限后需手动重试。`;
+    const body = `${safeDiagnostic(feed.name)}\n${tl('notify.body.translation', { error, attempts: 3 })}`;
     const id = this.raise(feed.id, 'translation', body, { feedName: safeDiagnostic(feed.name), error, time: new Date(now).toISOString() }, channels, now);
     this.db.prepare('INSERT INTO translation_incidents(feed_id,alert_id) VALUES (?,?) ON CONFLICT(feed_id) DO UPDATE SET alert_id=excluded.alert_id').run(feed.id, id);
     return true;
@@ -112,8 +114,8 @@ export class FetchHistory {
     let host = '';
     try { host = new URL(feed.url).hostname; } catch { /* stored URLs are validated */ }
     const time = new Date(now).toISOString();
-    const error = safeDiagnostic(reasons.join('；'));
-    const body = `${safeDiagnostic(feed.name)}\n目标：${host}\n发现时间：${time}\n${reasons.map(reason => `· ${safeDiagnostic(reason)}`).join('\n')}\n抓取仍记为成功。请在订阅面板中重新识别规则，或忽略此警告。`;
+    const error = safeDiagnostic(reasons.join(tl('punctuation.semicolon')));
+    const body = `${safeDiagnostic(feed.name)}\n${tl('notify.body.target', { host })}\n${tl('notify.body.detectedAt', { time })}\n${reasons.map(reason => `· ${safeDiagnostic(reason)}`).join('\n')}\n${tl('notify.body.healthHint')}`;
     return { id: this.raise(feed.id, 'health', body, { feedName: safeDiagnostic(feed.name), error, time }, channels, now), disabled: false };
   }
 
@@ -124,7 +126,11 @@ export class FetchHistory {
   }
 
   recover(now = Date.now()): void {
-    this.db.prepare("UPDATE fetch_logs SET status='interrupted', finished_at=?, duration_ms=NULL, error='服务重启，抓取已中断' WHERE status='running'").run(new Date(now).toISOString());
+    // Each log keeps its owner's language.
+    for (const row of this.db.prepare("SELECT l.id, f.owner_id FROM fetch_logs l JOIN feeds f ON f.id=l.feed_id WHERE l.status='running'").all()) {
+      this.db.prepare("UPDATE fetch_logs SET status='interrupted', finished_at=?, duration_ms=NULL, error=? WHERE id=? AND status='running'")
+        .run(new Date(now).toISOString(), translate(ownerLocale(this.db, String(row.owner_id)), 'fetch.restartInterrupted'), Number(row.id));
+    }
     this.prune(now);
   }
 
@@ -160,7 +166,8 @@ export class FetchHistory {
     const previous = this.db.prepare(`SELECT a.* FROM fetch_incidents i JOIN fetch_alerts a ON a.id=i.alert_id WHERE i.feed_id=?`).get(feed.id);
     let alertId = previous ? String(previous.id) : null;
     if (enabled && failureCount >= policy.failureThreshold && (!previous || previous.status === 'failed' && now - Number(previous.last_attempt_at) >= policy.cooldownMinutes * 60_000)) {
-      const body = `${safeDiagnostic(feed.name)}\n目标：${new URL(feed.url).hostname}\n失败时间：${new Date(now).toISOString()}\n连续失败：${failureCount} 次\n来源：${fetchSourceLabels[source]}\n原因：${error}`;
+      const body = [safeDiagnostic(feed.name), tl('notify.body.target', { host: new URL(feed.url).hostname }), tl('notify.body.failedAt', { time: new Date(now).toISOString() }),
+        tl('notify.body.failures', { count: failureCount }), tl('notify.body.source', { source: fetchSourceName(translator(currentLocale()), source) }), tl('notify.body.reason', { error })].join('\n');
       alertId = this.raise(feed.id, 'fetch', body, { feedName: safeDiagnostic(feed.name), error, time: new Date(now).toISOString() }, channels, now);
       this.db.prepare('UPDATE fetch_incidents SET alert_id=? WHERE feed_id=?').run(alertId, feed.id);
     }
@@ -190,6 +197,7 @@ export class FetchHistory {
       notification: row.alert_status ? { status: row.alert_status as AlertStatus, error: row.alert_error as string | null, channels: deliveries.get(String(row.alert_id)) ?? [] }
         : row.notification_disabled ? { status: 'disabled', error: null } : null,
       ...(row.warning ? { warning: String(row.warning) } : {}),
+      ...(row.warning_severity === 'warning' || row.warning_severity === 'notice' ? { warningSeverity: row.warning_severity } : {}),
     }));
     return { logs, nextCursor: rows.length > limit ? String(logs.at(-1)!.id) : null, retentionDays: this.settings().logRetentionDays };
   }
@@ -241,7 +249,8 @@ export class FetchHistory {
   }
 
   interrupt(runId: number): void {
-    this.db.prepare("UPDATE fetch_logs SET status='interrupted',finished_at=?,error='账号已停用，本次抓取结果已丢弃' WHERE id=? AND status='running'").run(new Date().toISOString(), runId);
+    const owner = this.db.prepare('SELECT f.owner_id FROM fetch_logs l JOIN feeds f ON f.id=l.feed_id WHERE l.id=?').get(runId);
+    this.db.prepare("UPDATE fetch_logs SET status='interrupted',finished_at=?,error=? WHERE id=? AND status='running'").run(new Date().toISOString(), translate(ownerLocale(this.db, String(owner?.owner_id ?? '')), 'fetch.accountDisabled'), runId);
   }
 
   beginAttempt(id: string, now = Date.now()): boolean {
@@ -257,7 +266,7 @@ export class FetchHistory {
     this.db.prepare(`UPDATE fetch_alert_deliveries SET status=CASE WHEN ? THEN 'sent' WHEN attempts>=? THEN 'failed' ELSE 'pending' END,
       error=CASE WHEN ? THEN NULL ELSE ? END,
       next_attempt_at=? + CASE WHEN attempts=1 THEN ? ELSE ? END
-      WHERE id=? AND status='pending'`).run(ok ? 1 : 0, policy.maxAttempts, ok ? 1 : 0, error ?? `${notificationChannelLabels[channel] ?? channel} 推送失败，请检查网络及私有配置`, now, policy.retryDelaySeconds * 1000, policy.laterRetryDelaySeconds * 1000, id);
+      WHERE id=? AND status='pending'`).run(ok ? 1 : 0, policy.maxAttempts, ok ? 1 : 0, error ?? tl('notify.failed', { channel: notificationChannelLabels[channel] ?? channel }), now, policy.retryDelaySeconds * 1000, policy.laterRetryDelaySeconds * 1000, id);
     this.settle(id);
   }
 }

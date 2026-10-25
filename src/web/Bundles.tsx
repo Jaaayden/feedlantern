@@ -6,13 +6,14 @@ import { api } from './api';
 import { copyText } from './format';
 import { ActionMenu } from './Menu';
 import { Modal } from './Modal';
+import { fmt, t } from './i18n';
 
-const messageOf = (error: unknown) => error instanceof Error ? error.message : '操作未完成，请重试';
-const feedKind = (feed: Feed) => `${feed.sourceType === 'rss' ? 'RSS 来源' : '网页抓取'}${translationEnabled(feed) ? ' · 翻译' : ''}`;
+const messageOf = (error: unknown) => error instanceof Error ? error.message : t('common.notDone');
+const feedKind = (feed: Feed) => `${feed.sourceType === 'pubmed' ? t('feedKind.pubmed') : feed.sourceType === 'rss' ? t('feedKind.rss') : t('feedKind.website')}${translationEnabled(feed) ? ` · ${t('bundle.translated')}` : ''}`;
 
 function memberNames(feedIds: string[], feeds: Feed[]): string {
   const names = feedIds.flatMap(id => feeds.find(feed => feed.id === id)?.name ?? []);
-  return names.length > 4 ? `${names.slice(0, 4).join('、')} 等 ${names.length} 个` : names.join('、');
+  return names.length > 4 ? t('bundle.andMore', { names: fmt.list(names.slice(0, 4), 'unit'), count: names.length }) : fmt.list(names, 'unit');
 }
 
 /** Bundles on the feeds page: copy the address, edit members, rotate the key or delete. */
@@ -25,24 +26,24 @@ export function BundleSection({ bundles, feeds, create, edit, changed, notify }:
     setBusy(true); setError('');
     try { await operation(); changed(); notify(success); } catch (e) { setError(messageOf(e)); } finally { setBusy(false); }
   }
-  return <section className="bundle-section" aria-label="聚合订阅">
-    <div className="list-toolbar"><h2>聚合订阅 <span>{bundles.length}</span></h2><button className="button small" disabled={busy} onClick={create}><Plus size={14} />新建聚合</button></div>
+  return <section className="bundle-section" aria-label={t('opml.bundles')}>
+    <div className="list-toolbar"><h2>{t('opml.bundles')} <span>{bundles.length}</span></h2><button className="button small" disabled={busy} onClick={create}><Plus size={14} />{t('bundle.new')}</button></div>
     {error && <div className="error-note" role="alert">{error}</div>}
-    <div className="bundle-grid">{bundles.map(({ bundle, bundleUrl }) => <article className="bundle-card" key={bundle.id} aria-label={`聚合订阅 ${bundle.name}`}>
+    <div className="bundle-grid">{bundles.map(({ bundle, bundleUrl }) => <article className="bundle-card" key={bundle.id} aria-label={t('bundle.named', { name: bundle.name })}>
       <div className="bundle-head">
         <span className="soft-icon"><Layers size={18} /></span>
-        <div className="bundle-title"><h3 title={bundle.name}>{bundle.name}</h3><small>{bundle.feedIds.length} 个订阅 · 最多 {bundle.itemLimit} 条</small></div>
-        <ActionMenu label={`更多操作 ${bundle.name}`} trigger={<MoreHorizontal size={17} />} actions={[
-          { label: '编辑聚合', icon: <Pencil size={15} />, disabled: busy, onSelect: () => edit({ bundle, bundleUrl }) },
-          { label: '轮换密钥', icon: <KeyRound size={15} />, disabled: busy, onSelect: () => { if (confirm('轮换后，旧的聚合地址将立即失效。继续？')) void run(() => api.bundles.rotate(bundle.id), '聚合地址已更新'); } },
-          { label: '删除聚合', icon: <Trash2 size={15} />, danger: true, disabled: busy, onSelect: () => { if (confirm(`删除聚合订阅“${bundle.name}”？成员订阅不受影响。`)) void run(() => api.bundles.remove(bundle.id), '聚合订阅已删除'); } },
+        <div className="bundle-title"><h3 title={bundle.name}>{bundle.name}</h3><small>{t('bundle.summary', { count: bundle.feedIds.length, limit: bundle.itemLimit })}</small></div>
+        <ActionMenu label={t('users.more', { name: bundle.name })} trigger={<MoreHorizontal size={17} />} actions={[
+          { label: t('bundle.edit'), icon: <Pencil size={15} />, disabled: busy, onSelect: () => edit({ bundle, bundleUrl }) },
+          { label: t('bundle.rotate'), icon: <KeyRound size={15} />, disabled: busy, onSelect: () => { if (confirm(t('bundle.confirmRotate'))) void run(() => api.bundles.rotate(bundle.id), t('bundle.rotated')); } },
+          { label: t('bundle.delete'), icon: <Trash2 size={15} />, danger: true, disabled: busy, onSelect: () => { if (confirm(t('bundle.confirmDelete', { name: bundle.name }))) void run(() => api.bundles.remove(bundle.id), t('bundle.deleted')); } },
         ]} />
       </div>
-      <p className="bundle-members" title={memberNames(bundle.feedIds, feeds)}>{bundle.feedIds.length ? memberNames(bundle.feedIds, feeds) : '还没有成员，编辑聚合添加订阅。'}</p>
+      <p className="bundle-members" title={memberNames(bundle.feedIds, feeds)}>{bundle.feedIds.length ? memberNames(bundle.feedIds, feeds) : t('bundle.noMembers')}</p>
       <div className="detail-actions">
-        <button className="button small" disabled={busy} aria-label={`复制聚合地址 ${bundle.name}`} onClick={() => void copyText(bundleUrl).then(() => notify('聚合地址已复制')).catch(() => setError('无法访问剪贴板，请在聚合订阅页中手动复制地址。'))}><Copy size={14} />复制地址</button>
-        <a className="button small" href={bundleUrl} target="_blank" rel="noreferrer" aria-label={`打开聚合订阅页 ${bundle.name}`}><ExternalLink size={14} />打开</a>
-        <button className="button small" disabled={busy} aria-label={`编辑聚合 ${bundle.name}`} onClick={() => edit({ bundle, bundleUrl })}><Pencil size={14} />编辑</button>
+        <button className="button small" disabled={busy} aria-label={t('bundle.copyOf', { name: bundle.name })} onClick={() => void copyText(bundleUrl).then(() => notify(t('bundle.copied'))).catch(() => setError(t('bundle.copyFailed')))}><Copy size={14} />{t('bundle.copy')}</button>
+        <a className="button small" href={bundleUrl} target="_blank" rel="noreferrer" aria-label={t('bundle.openOf', { name: bundle.name })}><ExternalLink size={14} />{t('bundle.open')}</a>
+        <button className="button small" disabled={busy} aria-label={t('bundle.editOf', { name: bundle.name })} onClick={() => edit({ bundle, bundleUrl })}><Pencil size={14} />{t('common.edit')}</button>
       </div>
     </article>)}</div>
   </section>;
@@ -62,7 +63,7 @@ export function BundleEditor({ initial, preset = [], feeds, close, saved }: {
   async function submit(event: FormEvent) {
     event.preventDefault();
     const itemLimit = Number(limit);
-    if (!Number.isInteger(itemLimit) || itemLimit < BUNDLE_ITEM_LIMIT.min || itemLimit > BUNDLE_ITEM_LIMIT.max) { setError(`条目上限必须是 ${BUNDLE_ITEM_LIMIT.min} 到 ${BUNDLE_ITEM_LIMIT.max} 之间的整数`); return; }
+    if (!Number.isInteger(itemLimit) || itemLimit < BUNDLE_ITEM_LIMIT.min || itemLimit > BUNDLE_ITEM_LIMIT.max) { setError(t('error.integerRange', { label: t('label.bundleItemLimit'), min: String(BUNDLE_ITEM_LIMIT.min), max: String(BUNDLE_ITEM_LIMIT.max) })); return; }
     setBusy(true); setError('');
     // Members that were deleted meanwhile are dropped instead of failing the save.
     const body = { name: name.trim(), itemLimit, feedIds: members.filter(id => feeds.some(feed => feed.id === id)) };
@@ -70,19 +71,19 @@ export function BundleEditor({ initial, preset = [], feeds, close, saved }: {
     catch (e) { setError(messageOf(e)); } finally { setBusy(false); }
   }
   const toggle = (id: string, checked: boolean) => setMembers(previous => checked ? [...previous.filter(item => item !== id), id] : previous.filter(item => item !== id));
-  return <Modal title={initial ? '编辑聚合订阅' : '新建聚合订阅'} close={close}><form className="modal-body bundle-editor" onSubmit={submit}>
-    <p className="muted">把多个订阅合并成一个 RSS 地址：按时间合并各订阅已收集的内容，注明来源，相同链接只出现一次。聚合只读取已有内容，不会额外抓取。</p>
+  return <Modal title={initial ? t('bundle.editTitle') : t('bundle.newTitle')} close={close}><form className="modal-body bundle-editor" onSubmit={submit}>
+    <p className="muted">{t('bundle.lead')}</p>
     <div className="form-row">
-      <label className="field"><span>聚合名称</span><input required maxLength={200} value={name} onChange={e => setName(e.target.value)} placeholder="例如：每日科技" /></label>
-      <label className="field"><span>最多条数</span><input type="number" required min={BUNDLE_ITEM_LIMIT.min} max={BUNDLE_ITEM_LIMIT.max} step={1} value={limit} onChange={e => setLimit(e.target.value)} /></label>
+      <label className="field"><span>{t('label.bundleName')}</span><input required maxLength={200} value={name} onChange={e => setName(e.target.value)} placeholder={t('bundle.namePlaceholder')} /></label>
+      <label className="field"><span>{t('bundle.maxItems')}</span><input type="number" required min={BUNDLE_ITEM_LIMIT.min} max={BUNDLE_ITEM_LIMIT.max} step={1} value={limit} onChange={e => setLimit(e.target.value)} /></label>
     </div>
     <fieldset className="bundle-picker" disabled={busy}>
-      <legend>成员订阅 <span className="muted">已选择 {members.filter(id => feeds.some(feed => feed.id === id)).length} 个</span></legend>
-      {feeds.length > 6 && <div className="input-icon"><Search size={16} /><input aria-label="搜索成员订阅" placeholder="搜索名称或网址" value={query} onChange={e => setQuery(e.target.value)} /></div>}
-      {feeds.length ? <div className="bundle-options">{shown.map(feed => <label key={feed.id} className="bundle-option"><input type="checkbox" aria-label={`加入成员 ${feed.name}`} checked={members.includes(feed.id)} onChange={e => toggle(feed.id, e.target.checked)} /><span><strong>{feed.name}</strong><small>{feedKind(feed)}{feed.enabled ? '' : ' · 已暂停'}</small></span></label>)}{!shown.length && <p className="muted">没有匹配的订阅。</p>}</div> : <p className="muted">还没有订阅。先创建网页订阅或 RSS 翻译，再把它们加入聚合。</p>}
+      <legend>{t('bundle.members')} <span className="muted">{t('collection.selected', { count: members.filter(id => feeds.some(feed => feed.id === id)).length })}</span></legend>
+      {feeds.length > 6 && <div className="input-icon"><Search size={16} /><input aria-label={t('bundle.searchMembers')} placeholder={t('bundle.searchPlaceholder')} value={query} onChange={e => setQuery(e.target.value)} /></div>}
+      {feeds.length ? <div className="bundle-options">{shown.map(feed => <label key={feed.id} className="bundle-option"><input type="checkbox" aria-label={t('bundle.addMember', { name: feed.name })} checked={members.includes(feed.id)} onChange={e => toggle(feed.id, e.target.checked)} /><span><strong>{feed.name}</strong><small>{feedKind(feed)}{feed.enabled ? '' : ` · ${t('feed.paused')}`}</small></span></label>)}{!shown.length && <p className="muted">{t('bundle.noMatch')}</p>}</div> : <p className="muted">{t('bundle.noFeeds')}</p>}
     </fieldset>
     {error && <div className="error-note" role="alert">{error}</div>}
-    <div className="modal-actions"><button type="button" className="button" onClick={close}>取消</button><button className="button primary" disabled={busy}>{busy ? '正在保存…' : initial ? '保存聚合' : '创建聚合'}</button></div>
+    <div className="modal-actions"><button type="button" className="button" onClick={close}>{t('common.cancel')}</button><button className="button primary" disabled={busy}>{busy ? t('common.saving') : initial ? t('bundle.save') : t('bundle.create')}</button></div>
   </form></Modal>;
 }
 
@@ -97,18 +98,18 @@ export function AddToBundle({ bundles, feedIds, close, done }: {
   async function submit(event: FormEvent) {
     event.preventDefault(); setBusy(true); setError('');
     try {
-      if (target === 'new') { const created = await api.bundles.create({ name: name.trim(), feedIds }); done(`已创建聚合订阅“${created.bundle.name}”`); }
-      else { const updated = await api.bundles.addFeeds(target, feedIds); done(`已加入聚合订阅“${updated.bundle.name}”`); }
+      if (target === 'new') { const created = await api.bundles.create({ name: name.trim(), feedIds }); done(t('bundle.createdNamed', { name: created.bundle.name })); }
+      else { const updated = await api.bundles.addFeeds(target, feedIds); done(t('bundle.addedNamed', { name: updated.bundle.name })); }
     } catch (e) { setError(messageOf(e)); } finally { setBusy(false); }
   }
-  return <Modal title="加入聚合订阅" close={close}><form className="modal-body bundle-editor" onSubmit={submit}>
-    <p className="muted">把选中的 {feedIds.length} 个订阅加入聚合订阅。已在其中的订阅不会重复添加。</p>
-    <fieldset className="bundle-picker" disabled={busy}><legend>加入到</legend><div className="bundle-options">
-      {bundles.map(({ bundle }) => <label key={bundle.id} className="bundle-option"><input type="radio" name="bundle-target" checked={target === bundle.id} onChange={() => setTarget(bundle.id)} /><span><strong>{bundle.name}</strong><small>{bundle.feedIds.length} 个订阅</small></span></label>)}
-      <label className="bundle-option"><input type="radio" name="bundle-target" checked={target === 'new'} onChange={() => setTarget('new')} /><span><strong>新建聚合订阅</strong><small>用选中的订阅创建</small></span></label>
+  return <Modal title={t('bundle.addTitle')} close={close}><form className="modal-body bundle-editor" onSubmit={submit}>
+    <p className="muted">{t('bundle.addLead', { count: feedIds.length })}</p>
+    <fieldset className="bundle-picker" disabled={busy}><legend>{t('bundle.addTo')}</legend><div className="bundle-options">
+      {bundles.map(({ bundle }) => <label key={bundle.id} className="bundle-option"><input type="radio" name="bundle-target" checked={target === bundle.id} onChange={() => setTarget(bundle.id)} /><span><strong>{bundle.name}</strong><small>{t('users.feedCount', { count: bundle.feedIds.length })}</small></span></label>)}
+      <label className="bundle-option"><input type="radio" name="bundle-target" checked={target === 'new'} onChange={() => setTarget('new')} /><span><strong>{t('bundle.newTitle')}</strong><small>{t('bundle.fromSelected')}</small></span></label>
     </div></fieldset>
-    {target === 'new' && <label className="field"><span>聚合名称</span><input required maxLength={200} autoFocus value={name} onChange={e => setName(e.target.value)} placeholder="例如：每日科技" /></label>}
+    {target === 'new' && <label className="field"><span>{t('label.bundleName')}</span><input required maxLength={200} autoFocus value={name} onChange={e => setName(e.target.value)} placeholder={t('bundle.namePlaceholder')} /></label>}
     {error && <div className="error-note" role="alert">{error}</div>}
-    <div className="modal-actions"><button type="button" className="button" onClick={close}>取消</button><button className="button primary" disabled={busy}>{busy ? '正在保存…' : '加入聚合'}</button></div>
+    <div className="modal-actions"><button type="button" className="button" onClick={close}>{t('common.cancel')}</button><button className="button primary" disabled={busy}>{busy ? t('common.saving') : t('collection.addToBundle')}</button></div>
   </form></Modal>;
 }

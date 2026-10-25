@@ -8,6 +8,11 @@ import type {
   SelectionRules,
 } from '../shared/types';
 import { extractPage } from './extraction';
+import { lt, tl } from './i18n.js';
+import { isMessageKey } from '../shared/i18n.js';
+
+/** The page script reports warnings as message keys. */
+const localWarning = (key: string) => isMessageKey(key) ? lt({ key }) : key;
 
 const MAX_DISCOVERY_NODES = 2_000;
 const MAX_ITEMS = 200;
@@ -478,13 +483,14 @@ export async function detectPage(page: Page): Promise<DetectionResult> {
           semanticScore * 0.1,
         );
         const firstTitle = title.selector ? text(matched[0].querySelector(title.selector)?.textContent) : '';
-        const label = firstTitle ? firstTitle.slice(0, 80) : `${matched[0].tagName.toLowerCase()} 列表`;
+        // Without a title, the server names the list after its element ("ul list").
+        const label = firstTitle ? firstTitle.slice(0, 80) : `\u0000${matched[0].tagName.toLowerCase()}`;
         const warnings: string[] = [];
-        if (title.coverage < 0.8) warnings.push('标题字段只在部分条目中匹配');
-        if (link.coverage < 0.8) warnings.push('链接字段只在部分条目中匹配');
-        if (!description.selector || description.coverage < 0.5) warnings.push('未稳定识别摘要字段');
-        if (!image.selector || image.coverage < 0.5) warnings.push('未稳定识别图片字段');
-        if (!date.selector || date.coverage < 0.5) warnings.push('未稳定识别日期字段');
+        if (title.coverage < 0.8) warnings.push('detect.titlePartial');
+        if (link.coverage < 0.8) warnings.push('detect.linkPartial');
+        if (!description.selector || description.coverage < 0.5) warnings.push('detect.noDescription');
+        if (!image.selector || image.coverage < 0.5) warnings.push('detect.noImage');
+        if (!date.selector || date.coverage < 0.5) warnings.push('detect.noDate');
         const rects = matched.slice(0, limits.maxItems).map((element) => {
           const rect = element.getBoundingClientRect();
           // Document pixels, matching the editor's full-page screenshot.
@@ -538,7 +544,7 @@ export async function detectPage(page: Page): Promise<DetectionResult> {
     return {
       candidates: [],
       recommendedId: null,
-      warnings: [`无法分析当前页面：${error instanceof Error ? error.message : '页面已关闭或不可用'}`],
+      warnings: [tl('detect.analyzeFailed', { detail: error instanceof Error ? error.message : tl('detect.pageGone') })],
     };
   }
 
@@ -546,10 +552,15 @@ export async function detectPage(page: Page): Promise<DetectionResult> {
     return {
       candidates: [],
       recommendedId: null,
-      warnings: ['未找到包含重复条目、标题和链接的内容列表；可以使用手动选择器调整。'],
+      warnings: [tl('detect.noList')],
     };
   }
 
+  discovered = discovered.map(candidate => ({
+    ...candidate,
+    label: candidate.label.startsWith('\u0000') ? tl('detect.tagList', { tag: candidate.label.slice(1) }) : candidate.label,
+    warnings: candidate.warnings.map(localWarning),
+  }));
   const evaluated: Array<{ discovery: DiscoveredCandidate; items: ExtractedItem[]; score: number; warnings: string[] }> = [];
   for (const discovery of discovered) {
     let items: ExtractedItem[] = [];
@@ -560,7 +571,7 @@ export async function detectPage(page: Page): Promise<DetectionResult> {
         discovery,
         items: [],
         score: discovery.score * 0.25,
-        warnings: [...discovery.warnings, '按当前规则无法提取条目，请手动调整选择器'],
+        warnings: [...discovery.warnings, tl('detect.extractFailed')],
       });
       continue;
     }
@@ -593,11 +604,11 @@ export async function detectPage(page: Page): Promise<DetectionResult> {
       repetitionPenalty - bareLinksPenalty,
     ));
     const warnings = [...discovery.warnings];
-    if (items.length < 3) warnings.push('匹配条目少于 3 个，建议人工确认');
-    if (titleCoverage < 0.8) warnings.push('标题覆盖率不足 80%');
-    if (linkCoverage < 0.8) warnings.push('有效链接覆盖率不足 80%');
-    if (uniqueRatio < 0.8) warnings.push('链接重复较多，可能匹配到了导航或操作按钮');
-    if (discovery.count >= 3 && titleValues.length >= 2 && titleDistinctRatio <= 0.5) warnings.push('标题重复较多，可能匹配到了日期或分类元信息');
+    if (items.length < 3) warnings.push(tl('detect.fewItems', { count: 3 }));
+    if (titleCoverage < 0.8) warnings.push(tl('detect.titleCoverage', { percent: '80%' }));
+    if (linkCoverage < 0.8) warnings.push(tl('detect.linkCoverage', { percent: '80%' }));
+    if (uniqueRatio < 0.8) warnings.push(tl('detect.duplicateLinks'));
+    if (discovery.count >= 3 && titleValues.length >= 2 && titleDistinctRatio <= 0.5) warnings.push(tl('detect.duplicateTitles'));
     evaluated.push({ discovery, items, score, warnings: Array.from(new Set(warnings)) });
   }
 
@@ -614,7 +625,7 @@ export async function detectPage(page: Page): Promise<DetectionResult> {
     const medium = entry.items.length >= 3 && titleCoverage >= 0.5 && linkCoverage >= 0.5;
     return {
       id: `candidate-${index + 1}`,
-      label: entry.discovery.label || `候选列表 ${index + 1}`,
+      label: entry.discovery.label || tl('detect.candidate', { n: index + 1 }),
       rules: entry.discovery.rules,
       confidence: high ? 'high' : medium ? 'medium' : 'low',
       score: Number(entry.score.toFixed(4)),
@@ -632,8 +643,8 @@ export async function detectPage(page: Page): Promise<DetectionResult> {
   const recommendedId = top && topIsHigh && clearlyAhead ? top.id : null;
   const warnings: string[] = [];
   if (!recommendedId) {
-    if (candidates.length > 1) warnings.push('存在多个相近的内容列表，请选择要生成订阅的候选。');
-    else warnings.push('未达到自动推荐的可信度，请确认或调整匹配规则。');
+    if (candidates.length > 1) warnings.push(tl('detect.several'));
+    else warnings.push(tl('detect.lowConfidence'));
   }
 
   return { candidates, recommendedId, warnings };

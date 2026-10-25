@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto';
+import { msg, tl } from './i18n.js';
 import type { DatabaseSync } from 'node:sqlite';
-import { defaultApplicationSettings, type ApplicationSettings, type ExtractedItem, type Feed, type RuleHealthField, type RuleHealthReason, type RuleHealthWarning } from '../shared/types.js';
+import { defaultApplicationSettings, isFeedSource, type ApplicationSettings, type ExtractedItem, type Feed, type RuleHealthField, type RuleHealthReason, type RuleHealthWarning } from '../shared/types.js';
 import { safeDiagnostic, type FetchHistory } from './fetch-history.js';
+import { ruleHealthSeverity } from '../shared/rule-health.js';
 
 /**
  * Thresholds are deliberately conservative: a feed is only judged once it has
@@ -36,7 +38,6 @@ export interface RuleHealthSample {
   rates: Record<RuleHealthField, number>;
 }
 
-const fieldLabels: Record<RuleHealthField, string> = { title: '标题', link: '链接', date: '日期', image: '图片', description: '摘要' };
 const percent = (value: number) => `${Math.round(value * 100)}%`;
 
 function linkKey(link: string): string {
@@ -73,18 +74,18 @@ export function evaluateHealth(sample: RuleHealthSample, history: RuleHealthSamp
   const reasons: RuleHealthReason[] = [];
   const count = median(recent.map(s => s.itemCount));
   if (count >= RULE_HEALTH.minBaselineItems && sample.itemCount < count * RULE_HEALTH.itemDropRatio) {
-    reasons.push({ code: 'item-count', baseline: count, current: sample.itemCount, message: `条目数从约 ${Math.round(count)} 条降到 ${sample.itemCount} 条` });
+    reasons.push({ code: 'item-count', baseline: count, current: sample.itemCount, message: tl('health.itemCount', { baseline: Math.round(count), current: sample.itemCount }) });
   }
   if (sample.itemCount < RULE_HEALTH.minItemsForRates) return reasons;
   const links = median(recent.map(s => s.rates.link));
   if (links >= RULE_HEALTH.fieldBaseline) {
-    if (sample.distinctLinks === 1) reasons.push({ code: 'same-link', baseline: links, current: sample.rates.link, message: `${sample.itemCount} 条内容的链接全部相同` });
-    else if (sample.rates.link < RULE_HEALTH.duplicateRatio) reasons.push({ code: 'duplicate-links', baseline: links, current: sample.rates.link, message: `链接大面积重复：不重复的链接从约 ${percent(links)} 降到 ${percent(sample.rates.link)}` });
+    if (sample.distinctLinks === 1) reasons.push({ code: 'same-link', baseline: links, current: sample.rates.link, message: tl('health.sameLink', { count: sample.itemCount }) });
+    else if (sample.rates.link < RULE_HEALTH.duplicateRatio) reasons.push({ code: 'duplicate-links', baseline: links, current: sample.rates.link, message: tl('health.duplicateLinks', { baseline: percent(links), current: percent(sample.rates.link) }) });
   }
   for (const field of ['title', 'date', 'image', 'description'] as const) {
     const base = median(recent.map(s => s.rates[field]));
     if (base >= RULE_HEALTH.fieldBaseline && sample.rates[field] <= RULE_HEALTH.fieldFloor) {
-      reasons.push({ code: 'field-rate', field, baseline: base, current: sample.rates[field], message: `${fieldLabels[field]}有效率从约 ${percent(base)} 降到 ${percent(sample.rates[field])}` });
+      reasons.push({ code: 'field-rate', field, baseline: base, current: sample.rates[field], message: tl('health.fieldRate', { field: msg(`field.${field}` as const), baseline: percent(base), current: percent(sample.rates[field]) }) });
     }
   }
   return reasons;
@@ -98,7 +99,11 @@ export function ruleSignature(feed: Pick<Feed, 'url' | 'rules'>): string {
 
 function parseWarning(value: unknown): RuleHealthWarning | undefined {
   if (typeof value !== 'string') return undefined;
-  try { return JSON.parse(value) as RuleHealthWarning; } catch { return undefined; }
+  try {
+    const warning = JSON.parse(value) as RuleHealthWarning;
+    if (!Array.isArray(warning?.reasons)) return undefined;
+    return { ...warning, severity: ruleHealthSeverity(warning.reasons) };
+  } catch { return undefined; }
 }
 
 /**
@@ -108,6 +113,20 @@ function parseWarning(value: unknown): RuleHealthWarning | undefined {
 export class RuleHealth {
   constructor(private db: DatabaseSync, private settings: () => ApplicationSettings, private history: FetchHistory) {
     if (!db.prepare('PRAGMA table_info(fetch_logs)').all().some(row => row.name === 'warning')) db.exec('ALTER TABLE fetch_logs ADD COLUMN warning TEXT');
+    // Fetch logs are derived diagnostics, like the existing warning column.
+    if (!db.prepare('PRAGMA table_info(fetch_logs)').all().some(row => row.name === 'warning_severity')) db.exec('ALTER TABLE fetch_logs ADD COLUMN warning_severity TEXT');
+    // Classify existing episodes before notification workers start. A metadata
+    // notice must not keep an old queued warning or consume its cooldown.
+    for (const row of db.prepare('SELECT feed_id, warning_json FROM feed_health WHERE warning_json IS NOT NULL').all()) {
+      const warning = parseWarning(row.warning_json);
+      if (!warning) continue;
+      const feedId = String(row.feed_id);
+      if (JSON.parse(String(row.warning_json)).severity !== warning.severity) {
+        db.prepare("UPDATE feed_health SET warning_json=?, alerted_at=CASE WHEN ?='notice' THEN NULL ELSE alerted_at END WHERE feed_id=?")
+          .run(JSON.stringify(warning), warning.severity, feedId);
+      }
+      if (warning.severity === 'notice') this.cancelAlerts(feedId);
+    }
   }
 
   warning(feedId: string): RuleHealthWarning | undefined {
@@ -116,7 +135,7 @@ export class RuleHealth {
 
   /** Record a successful website fetch and return the active warning, if any. */
   record(feed: Feed, logId: number, items: ExtractedItem[], now = Date.now()): RuleHealthWarning | null {
-    if (feed.sourceType === 'rss') return null;
+    if (isFeedSource(feed)) return null;
     const signature = ruleSignature(feed);
     const sample = measureItems(items);
     const state = this.db.prepare('SELECT * FROM feed_health WHERE feed_id=?').get(feed.id);
@@ -141,12 +160,17 @@ export class RuleHealth {
       this.cancelAlerts(feed.id);
       return null;
     }
-    const warning: RuleHealthWarning = { detectedAt: previous?.detectedAt ?? recordedAt, checkedAt: recordedAt, itemCount: sample.itemCount, baselineSamples: verdict ? history.length : previous?.baselineSamples ?? 0, reasons };
-    // One notification per warning episode, separate from failure alerts.
-    const alert = previous ? { id: null, disabled: false } : this.history.ruleHealthAlert(feed, reasons.map(reason => reason.message), alertedAt, now);
+    const severity = ruleHealthSeverity(reasons);
+    const warning: RuleHealthWarning = { severity, detectedAt: previous?.severity === severity ? previous.detectedAt : recordedAt, checkedAt: recordedAt, itemCount: sample.itemCount, baselineSamples: verdict ? history.length : previous?.baselineSamples ?? 0, reasons };
+    // Optional metadata stays visible without pushing a notification. Moving
+    // from a notice to a warning starts a warning episode of its own.
+    if (severity === 'notice') this.cancelAlerts(feed.id);
+    const alert = severity === 'notice' || previous?.severity === 'warning'
+      ? { id: null, disabled: false }
+      : this.history.ruleHealthAlert(feed, reasons.map(reason => reason.message), alertedAt, now);
     this.save(feed.id, signature, warning, alert.id ? now : alertedAt);
-    this.db.prepare('UPDATE fetch_logs SET warning=?, alert_id=COALESCE(?, alert_id), notification_disabled=? WHERE id=?')
-      .run(safeDiagnostic(reasons.map(reason => reason.message).join('；')), alert.id, alert.disabled ? 1 : 0, logId);
+    this.db.prepare('UPDATE fetch_logs SET warning=?, warning_severity=?, alert_id=COALESCE(?, alert_id), notification_disabled=? WHERE id=?')
+      .run(safeDiagnostic(reasons.map(reason => reason.message).join('；')), severity, alert.id, alert.disabled ? 1 : 0, logId);
     return warning;
   }
 

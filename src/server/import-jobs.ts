@@ -7,10 +7,11 @@ import type { DetectionResult, Feed, FeedInput, ImportEntry, ImportJob, Translat
 const translationMode = (entry: Pick<ImportEntry, 'translationMode'>): TranslationMode => (entry.translationMode as string) === 'chinese' ? 'translated' : entry.translationMode ?? 'bilingual';
 import type { Store } from './store.js';
 import { AppError } from './auth.js';
+import { LocalizedError, msg, tl, withLocale } from './i18n.js';
 
 export function normalizeSource(value: string): string {
   const url = new URL(value.trim());
-  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('只支持不含账号密码的 HTTP(S) 网址');
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new LocalizedError(msg('error.sourceUrlInvalid'));
   url.hash = '';
   return url.href;
 }
@@ -23,7 +24,7 @@ export class ImportJobs {
   constructor(private store: Store, private enqueue: <T>(fn: () => Promise<T>, keys?: string[]) => Promise<T>,
     private discover: (entry: ImportEntry, signal?: AbortSignal) => Promise<{ title: string; detection: DetectionResult }>,
     private scrape: (input: FeedInput, signal?: AbortSignal) => Promise<import('../shared/types.js').ExtractedItem[]>,
-    private describeError: (error: unknown) => string = () => '识别失败：请检查网址、网络或 Cookie，然后重试或手动调整。',
+    private describeError: (error: unknown) => string = () => tl('error.detectFailed'),
     private concurrency = 1,
     private loadRss?: (entry: ImportEntry, signal?: AbortSignal) => Promise<SourceResult>, private wakeTranslation?: () => void) {}
 
@@ -39,7 +40,7 @@ export class ImportJobs {
   stop() { this.stopped = true; }
   setConcurrency(value: number) { this.concurrency = value; }
   create(entries: Array<Pick<ImportEntry, 'url' | 'credentialId' | 'networkProfileId' | 'intervalMinutes' | 'sourceType' | 'translationMode' | 'targetLanguage' | 'translationProvider'>>, ownerId = 'admin', actorId = ownerId): ImportJob {
-    if (this.store.listImportJobs().filter(j => j.entries.some(e => ['queued', 'running'].includes(e.state))).length >= 10) throw new AppError(429, '请等待现有批量任务完成');
+    if (this.store.listImportJobs().filter(j => j.entries.some(e => ['queued', 'running'].includes(e.state))).length >= 10) throw new AppError(429, 'error.importBusy');
     const job: ImportJob = { actorId, ownerId, id: randomUUID(), createdAt: new Date().toISOString(), entries: [] };
     const seen = new Set<string>();
     for (const input of entries) {
@@ -53,7 +54,7 @@ export class ImportJobs {
   }
   get(id: string) {
     const job = this.store.listImportJobs().find(j => j.id === id);
-    if (!job) throw new AppError(404, '批量任务不存在');
+    if (!job) throw new AppError(404, 'error.importJobNotFound');
     return job;
   }
   update(id: string, action: 'cancel' | 'retry', entryId?: string, actorId?: string) {
@@ -71,24 +72,24 @@ export class ImportJobs {
       authorize?.();
       const job = this.get(id);
       if (actorId) job.actorId = actorId;
-      if (!this.authorized(job)) throw new AppError(401, '账号已停用');
+      if (!this.authorized(job)) throw new AppError(401, 'error.accountDisabled');
       const generation = this.store.userGeneration(job.ownerId);
       const actionSignal = this.signal(job);
-      if (input.credentialId && !this.store.owns('credentials', input.credentialId, job.ownerId ?? 'admin')) throw new AppError(404, 'Cookie 凭据不存在');
-      if (input.networkProfileId && !this.store.owns('network_profiles', input.networkProfileId, job.ownerId ?? 'admin')) throw new AppError(404, '网络配置不存在');
+      if (input.credentialId && !this.store.owns('credentials', input.credentialId, job.ownerId ?? 'admin')) throw new AppError(404, 'error.credentialNotFound');
+      if (input.networkProfileId && !this.store.owns('network_profiles', input.networkProfileId, job.ownerId ?? 'admin')) throw new AppError(404, 'error.networkProfileNotFound');
       const entry = job.entries.find(e => e.id === entryId);
-      if (!entry) throw new AppError(404, '任务条目不存在');
-      if (entry.sourceType === 'rss') throw new AppError(400, 'RSS 翻译请使用重试，不支持网页规则确认');
+      if (!entry) throw new AppError(404, 'error.importEntryNotFound');
+      if (entry.sourceType === 'rss') throw new AppError(400, 'error.importRssRetry');
       if (entry.feedId) return this.store.getFeed(entry.feedId);
-      if (!['review', 'failed'].includes(entry.state)) throw new AppError(409, '该任务当前不能确认');
-      if (normalizeSource(input.url) !== entry.url) throw new AppError(400, '确认时不能更改来源网址');
+      if (!['review', 'failed'].includes(entry.state)) throw new AppError(409, 'error.importEntryNotReady');
+      if (normalizeSource(input.url) !== entry.url) throw new AppError(400, 'error.importUrlChanged');
       const existing = this.existing(entry.url, entry, job.ownerId);
       if (existing) { entry.state = 'existing'; entry.feedId = existing.id; this.store.saveImportJob(job); return existing; }
       const startedAt = new Date().toISOString(), started = performance.now();
       const items = await this.scrape(input, this.signal(job));
       authorize?.();
-      if (actionSignal.aborted || !this.authorized(job) || generation !== this.store.userGeneration(job.ownerId)) throw new AppError(401, '账号已停用');
-      if (!items.length) throw new AppError(400, '未匹配到有效条目，请调整规则');
+      if (actionSignal.aborted || !this.authorized(job) || generation !== this.store.userGeneration(job.ownerId)) throw new AppError(401, 'error.accountDisabled');
+      if (!items.length) throw new AppError(400, 'error.noItemsMatched');
       return this.complete(job, entry, input, items, startedAt, performance.now() - started);
     }, [siteKey(input.url)]);
   }
@@ -110,7 +111,7 @@ export class ImportJobs {
         Object.assign(counts, this.store.translations.upsert(feed, this.store.translations.incoming(feed.id, rss.items)));
         this.store.translations.saveSource(feed.id, rss);
       } else this.store.upsertItems(feed, items, counts);
-      if (!rss && !counts.itemCount) throw new AppError(400, '未匹配到有效条目，请调整规则');
+      if (!rss && !counts.itemCount) throw new AppError(400, 'error.noItemsMatched');
       this.store.markFetchStart(feed.id, feed.nextFetchAt);
       this.store.markFetchSuccess(feed.id, feed.nextFetchAt);
       this.store.history.succeed(runId, feed.id, durationMs, counts);
@@ -151,7 +152,8 @@ export class ImportJobs {
         const pending = job?.entries.find(e => e.state === 'queued' && !this.claimed.has(e.id));
         if (!job || !pending) break;
         this.claimed.add(pending.id);
-        try { await this.enqueue(async () => {
+        // Results and errors are stored in the language of the job's owner.
+        try { await this.enqueue(() => withLocale(() => this.store.ownerLocale(job.ownerId), async () => {
           if (this.stopped || !this.authorized(job)) return;
           const generation = this.store.userGeneration(job.ownerId);
           const signal = this.signal(job);
@@ -164,7 +166,7 @@ export class ImportJobs {
           try {
             const startedAt = new Date().toISOString(), started = performance.now();
             if (entry.sourceType === 'rss') {
-              if (!this.loadRss) throw new AppError(501, 'RSS 批量导入不可用');
+              if (!this.loadRss) throw new AppError(501, 'error.rssImportUnavailable');
               const rss = await this.loadRss(entry, this.signal(job));
               if (!stillActive()) { this.requeue(job.id, entry.id); return; }
               entry.title = rss.title;
@@ -185,7 +187,7 @@ export class ImportJobs {
           const latest = this.get(job.id);
           latest.entries = latest.entries.map(e => e.id === entry.id ? entry : e);
           this.store.saveImportJob(latest);
-        }, [siteKey(pending.url)]);
+        }), [siteKey(pending.url)]);
         } finally { this.claimed.delete(pending.id); }
       }
   }

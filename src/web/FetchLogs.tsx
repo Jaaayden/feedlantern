@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { fetchSourceLabels, notificationChannelLabels, type AlertStatus, type FetchLog, type FetchStatus } from '../shared/types';
+import { fetchSourceName, notificationChannelLabels, type AlertStatus, type FetchLog, type FetchStatus } from '../shared/types';
 import { api } from './api';
+import { fmt, t } from './i18n';
 
-const statusLabels: Record<FetchStatus, string> = { running: '执行中', success: '成功', failure: '失败', interrupted: '中断' };
-const alertLabels: Record<AlertStatus, string> = { pending: '待发送', sent: '已发送', failed: '发送失败', canceled: '已取消', disabled: '未启用' };
-/** One entry per channel the alert went to, e.g. "Bark 已发送 · Webhook 待重试（…）". */
+const fetchStatuses: FetchStatus[] = ['running', 'success', 'failure', 'interrupted'];
+const statusLabel = (status: FetchStatus) => t(`fetchLog.status.${status}`);
+const alertLabel = (status: AlertStatus) => t(`fetchLog.alert.${status}`);
+/** One entry per channel the alert went to, e.g. "Bark sent · Webhook retrying (…)". */
 function notificationText(notification: NonNullable<FetchLog['notification']>): string {
-  if (!notification.channels?.length) return `${alertLabels[notification.status]}${notification.error ? ` · ${notification.error}` : ''}`;
-  return notification.channels.map(c => `${notificationChannelLabels[c.channel] ?? c.channel} ${c.status === 'pending' && c.error ? '待重试' : alertLabels[c.status]}${c.error ? `（${c.error}）` : ''}`).join(' · ');
+  if (!notification.channels?.length) return `${alertLabel(notification.status)}${notification.error ? ` · ${notification.error}` : ''}`;
+  return notification.channels.map(c => t(c.error ? 'fetchLog.channelError' : 'fetchLog.channel', { channel: notificationChannelLabels[c.channel] ?? c.channel, status: c.status === 'pending' && c.error ? t('fetchLog.alert.retrying') : alertLabel(c.status), error: c.error ?? '' })).join(' · ');
 }
 
 export function FetchLogs({ id, revision }: { id: string; revision: number }) {
@@ -32,7 +34,7 @@ export function FetchLogs({ id, revision }: { id: string; revision: number }) {
       setRetention(page.retentionDays ?? 30);
       setCursor(page.nextCursor); setError('');
     } catch (e) {
-      if (generation.current === current) setError(e instanceof Error ? e.message : '日志加载失败');
+      if (generation.current === current) setError(e instanceof Error ? e.message : t('fetchLog.loadFailed'));
     } finally {
       if (generation.current === current) { pending.current = false; setLoading(false); }
     }
@@ -52,31 +54,31 @@ export function FetchLogs({ id, revision }: { id: string; revision: number }) {
     return () => clearInterval(timer);
   }, [expanded, load]);
 
-  return <section aria-label="抓取日志" className="fetch-logs">
+  return <section aria-label={t('fetchLog.title')} className="fetch-logs">
     <div className="collection-toolbar">
-      <label className="inline">执行状态<select aria-label="日志状态" value={status} onChange={e => setStatus(e.target.value as FetchStatus | '')}>
-        <option value="">全部状态</option>{Object.entries(statusLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+      <label className="inline">{t('fetchLog.statusFilter')}<select aria-label={t('fetchLog.statusFilterLabel')} value={status} onChange={e => setStatus(e.target.value as FetchStatus | '')}>
+        <option value="">{t('fetchLog.allStatuses')}</option>{fetchStatuses.map(key => <option key={key} value={key}>{statusLabel(key)}</option>)}
       </select></label>
-      <button className="button small" onClick={() => setRetry(v => v + 1)}>刷新日志</button>
+      <button className="button small" onClick={() => setRetry(v => v + 1)}>{t('fetchLog.refresh')}</button>
     </div>
-    <p className="hint">仅保留最近 {retention} 天。{expanded ? '查看历史时暂停自动更新。' : '最新日志每 5 秒自动更新。'}</p>
-    {error && <div className="error-note" role="alert">{error}<button className="button small" onClick={() => setRetry(v => v + 1)}>重试</button></div>}
-    {loading && <p role="status">正在加载日志…</p>}
-    {!loading && !error && logs.length === 0 && <p className="muted">暂无抓取日志</p>}
+    <p className="hint">{t('fetchLog.retention', { count: retention })} {expanded ? t('fetchLog.paused') : t('fetchLog.auto')}</p>
+    {error && <div className="error-note" role="alert">{error}<button className="button small" onClick={() => setRetry(v => v + 1)}>{t('common.retry')}</button></div>}
+    {loading && <p role="status">{t('fetchLog.loading')}</p>}
+    {!loading && !error && logs.length === 0 && <p className="muted">{t('fetchLog.empty')}</p>}
     <div className="fetch-log-list">{logs.map(log => <article className="fetch-log" key={log.id}>
-      <div className="fetch-log-heading"><time dateTime={log.startedAt}>{new Date(log.startedAt).toLocaleString('zh-CN', { hour12: false })}</time>
-        <span>{fetchSourceLabels[log.source]}</span><span className={`badge ${log.status === 'success' ? 'good' : log.status === 'failure' || log.status === 'interrupted' ? 'bad' : ''}`}>{statusLabels[log.status]}</span>{log.warning && <span className="badge warn">规则可能失效</span>}
+      <div className="fetch-log-heading"><div className="fetch-log-meta"><time dateTime={log.startedAt}>{new Date(log.startedAt).toLocaleString('zh-CN', { hour12: false })}</time><span>{fetchSourceName(t, log.source)}</span></div>
+        <div className="fetch-log-statuses"><span className={`badge ${log.status === 'success' ? 'good' : log.status === 'failure' || log.status === 'interrupted' ? 'bad' : ''}`}>{statusLabel(log.status)}</span>{log.warning && <span className={`badge ${log.warningSeverity === 'warning' ? 'warn' : ''}`}>{t(log.warningSeverity === 'notice' ? 'health.noticeBadge' : log.warningSeverity === 'warning' ? 'health.badge' : 'health.checkRecord')}</span>}</div>
       </div>
-      <p className="muted">耗时：{log.durationMs === null ? log.status === 'running' ? '执行中' : '未知' : `${(log.durationMs / 1000).toFixed(2)} 秒`}
-        {log.itemCount !== null && ` · 有效 ${log.itemCount} 条 · 新增 ${log.newItemCount} 条`}</p>
-      {log.note && <p className="fetch-log-note muted">翻页：{log.note}</p>}
+      <p className="muted">{t('fetchLog.duration', { value: log.durationMs === null ? log.status === 'running' ? statusLabel('running') : t('fetchLog.unknown') : t('fetchLog.seconds', { value: fmt.number(log.durationMs / 1000, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }) })}
+        {log.itemCount !== null && ` · ${t('fetchLog.counts', { valid: log.itemCount, added: log.newItemCount ?? 0 })}`}</p>
+      {log.note && <p className="fetch-log-note muted">{t('fetchLog.pages', { note: log.note })}</p>}
       {log.error && <p className="card-error">{log.error}</p>}
-      {log.warning && <p className="card-warning">{log.warning}</p>}
-      {log.notification && <p className="fetch-log-notification">通知：{notificationText(log.notification)}</p>}
+      {log.warning && <p className={log.warningSeverity === 'warning' ? 'card-warning' : 'card-notice'}>{log.warning}</p>}
+      {log.notification && <p className="fetch-log-notification">{t('fetchLog.notification', { text: notificationText(log.notification) })}</p>}
     </article>)}</div>
     {cursor && <button className="button small" disabled={loading} onClick={() => {
       if (pending.current) return;
       setExpanded(true); setLoading(true); void load(cursor);
-    }}>加载更多</button>}
+    }}>{t('common.loadMore')}</button>}
   </section>;
 }

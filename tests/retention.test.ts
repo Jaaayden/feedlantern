@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { lt, rawText } from '../src/server/i18n.js';
 import { createApp, Store, type BrowserServiceLike } from '../src/server/app.js';
 import { backupTables } from '../src/server/backups.js';
 import { retentionProblem, storedItemLimit } from '../src/server/feed-output.js';
@@ -20,10 +21,10 @@ test('保留条数：留空为自动，不少于输出条数，范围 10–1000'
   assert.equal(storedItemLimit({ sourceType: 'website', outputLimit: 100, retentionLimit: 30 }), 100);
   assert.equal(retentionProblem(null, 100), null);
   assert.equal(retentionProblem(100, 100), null);
-  assert.match(retentionProblem(99, 100)!, /不能少于输出条数（100）/);
-  assert.match(retentionProblem(5, 10)!, /10 到 1000/);
-  assert.match(retentionProblem(1001, 10)!, /10 到 1000/);
-  assert.match(retentionProblem(50.5, 10)!, /10 到 1000/);
+  assert.match(lt(retentionProblem(99, 100)!), /不能少于输出条数（100）/);
+  assert.match(lt(retentionProblem(5, 10)!), /10 到 1000/);
+  assert.match(lt(retentionProblem(1001, 10)!), /10 到 1000/);
+  assert.match(lt(retentionProblem(50.5, 10)!), /10 到 1000/);
 });
 
 test('网页订阅：调小保留条数不立即删除；网页上仍能看到的条目总会保留，不会被当作新条目重复推送', () => {

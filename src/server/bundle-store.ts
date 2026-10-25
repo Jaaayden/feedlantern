@@ -2,6 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { BUNDLE_ITEM_LIMIT, BUNDLE_MAX_FEEDS, type Bundle, type BundleInput } from '../shared/types.js';
 import { AppError } from './auth.js';
+import { msg } from './i18n.js';
 
 /** Bundles and their members. Members are feeds of the same owner; deleting a feed removes it from every bundle (ON DELETE CASCADE). */
 export const BUNDLE_SCHEMA = `
@@ -58,9 +59,9 @@ export class BundleStore {
   /** Only the owner's own feeds can be members; order is kept and duplicates dropped. */
   private checkMembers(ownerId: string, feedIds: string[]): string[] {
     const unique = [...new Set(feedIds)];
-    if (unique.length > BUNDLE_MAX_FEEDS) throw new AppError(400, `一个聚合订阅最多包含 ${BUNDLE_MAX_FEEDS} 个订阅`);
+    if (unique.length > BUNDLE_MAX_FEEDS) throw new AppError(400, msg('error.bundleTooManyFeeds', { max: BUNDLE_MAX_FEEDS }));
     const owned = this.db.prepare('SELECT 1 FROM feeds WHERE id=? AND owner_id=?');
-    if (unique.some(id => !owned.get(id, ownerId))) throw new AppError(400, '所选订阅不存在');
+    if (unique.some(id => !owned.get(id, ownerId))) throw new AppError(400, 'error.selectedFeedMissing');
     return unique;
   }
 

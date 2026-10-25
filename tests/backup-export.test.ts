@@ -66,7 +66,7 @@ test('导出接口在缓存超限时仍成功；数据不合规时返回具体�
     const message = bad.json().error as string;
     assert.match(message, /备份数据校验失败/);
     assert.match(message, /tables\.settings/);
-    assert.ok(errors.some(line => line.includes('备份导出校验失败')));
+    assert.ok(errors.some(line => line.includes('Backup export validation failed')));
   } finally {
     console.error = original;
     await app.close();
