@@ -5,7 +5,7 @@ import type { Feed } from '../../src/shared/types';
 
 test('条数仍为 6 条：日期缺失仅轻提示，独立筛选、日志标签相邻，重新识别只默认替换日期', async ({ page }) => {
   const auth = await loginAsAdmin(page.request), headers = protocolHeaders(auth.csrfToken);
-  await setFixtureState({ movedDate: false });
+  await setFixtureState({ movedDate: false, absentDate: false });
   const created = await page.request.post('/api/feeds', { headers, data: { name: '日期缺失验收', url: FIXTURE_URLS.optionalFields, rules: STATIC_RULES, ruleOrigins: { item: 'auto', title: 'manual', link: 'auto', description: 'auto', image: 'auto', date: 'auto' }, waitMs: 0 } });
   expect(created.ok()).toBeTruthy();
   const { feed } = await created.json() as { feed: Feed };
@@ -51,6 +51,14 @@ test('条数仍为 6 条：日期缺失仅轻提示，独立筛选、日志标�
       expect(boxes[1].x - boxes[0].x - boxes[0].width).toBeLessThanOrEqual(12);
     }
     await page.setViewportSize({ width: 1280, height: 900 });
+    // A missing candidate must not silently propose removing the saved rule.
+    await setFixtureState({ absentDate: true });
+    await notice.getByRole('button', { name: '重新识别缺失字段' }).click();
+    await expect(notice.getByLabel('替换日期')).toBeVisible({ timeout: 30_000 });
+    await expect(notice.getByLabel('替换日期')).not.toBeChecked();
+    await expect(notice.getByRole('button', { name: '替换所选字段' })).toBeDisabled();
+    expect((await (await page.request.get(`/api/feeds/${feed.id}`)).json()).feed.rules).toEqual(STATIC_RULES);
+    await setFixtureState({ absentDate: false });
     await notice.getByRole('button', { name: '重新识别缺失字段' }).click();
     await expect(notice.getByLabel('替换日期')).toBeChecked({ timeout: 30_000 });
     const selected = await notice.locator('input[type="checkbox"]:checked').evaluateAll(inputs => inputs.map(input => input.getAttribute('aria-label')));
@@ -67,7 +75,7 @@ test('条数仍为 6 条：日期缺失仅轻提示，独立筛选、日志标�
     expect(saved.ruleHealth).toBeUndefined();
   } finally {
     await page.request.delete(`/api/feeds/${feed.id}`, { headers });
-    await setFixtureState({ movedDate: false });
+    await setFixtureState({ movedDate: false, absentDate: false });
   }
 });
 

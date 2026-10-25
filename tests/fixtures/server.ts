@@ -16,9 +16,10 @@ type FixtureState = {
   redesigned: boolean;
   /** /optional-fields: the six articles stay unchanged, only their date selector moves. */
   movedDate: boolean;
+  absentDate: boolean;
 };
 
-const state: FixtureState = { failure: false, version: 1, redesigned: false, movedDate: false };
+const state: FixtureState = { failure: false, version: 1, redesigned: false, movedDate: false, absentDate: false };
 
 type Article = {
   title: string;
@@ -193,11 +194,12 @@ function versionedPage(): string {
 }
 
 function optionalFieldsPage(): string {
-  const cards = Array.from({ length: 6 }, (_, i) => articleCard({
+  let cards = Array.from({ length: 6 }, (_, i) => articleCard({
     title: `Optional fields story ${i + 1}`, slug: `optional-${i + 1}`,
     description: `Summary of optional fields story ${i + 1}.`, image: '/assets/fixture-one.svg',
     date: `2026-02-${String(10 - i).padStart(2, '0')}T08:00:00.000Z`,
   }, 'optional-')).join('');
+  if (state.absentDate) cards = cards.replaceAll(/<time\b[^>]*>[^<]*<\/time>/g, '');
   return page('Optional fields fixture', `<h1>Optional fields fixture</h1><section class="article-list">${state.movedDate ? cards.replaceAll('class="article-date"', 'class="release-date"') : cards}</section>`);
 }
 
@@ -261,6 +263,7 @@ const server = createServer(async (request, response) => {
       if (typeof payload.version === 'number' && Number.isInteger(payload.version)) state.version = payload.version;
       if (typeof payload.redesigned === 'boolean') state.redesigned = payload.redesigned;
       if (typeof payload.movedDate === 'boolean') state.movedDate = payload.movedDate;
+      if (typeof payload.absentDate === 'boolean') state.absentDate = payload.absentDate;
       sendJson(response, 200, { ...state });
     } catch {
       sendJson(response, 400, { error: 'invalid JSON' });

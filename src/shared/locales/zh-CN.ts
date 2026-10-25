@@ -861,6 +861,7 @@ const messages: LocaleMessages = {
   'health.noticeSummary': '部分字段缺失：{reasons}',
   'health.noticeImpact': '本次仍提取到 {count} 条内容，订阅继续输出；{fields}可能缺失。',
   'health.redetectFields': '重新识别缺失字段',
+  'health.noticeReplaceHint': '仅默认勾选重新找到的缺失字段；未找到的字段和手动规则保留。预览并确认后才会替换，并重新积累基线。',
   'health.sameFields': '新识别的规则与当前规则相同。可以在「编辑匹配规则」中检查缺失字段，或接受当前结果并忽略提示。',
   'health.count': '{count} 条',
   'health.noContent': '没有内容',

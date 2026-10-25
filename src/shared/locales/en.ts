@@ -864,6 +864,7 @@ const messages = {
   'health.noticeSummary': 'Some fields are missing: {reasons}',
   'health.noticeImpact': { one: '{count} item was still extracted and the feed continues to publish; these fields may be missing: {fields}.', other: '{count} items were still extracted and the feed continues to publish; these fields may be missing: {fields}.' },
   'health.redetectFields': 'Detect missing fields again',
+  'health.noticeReplaceHint': 'Only missing fields found again are checked by default. Fields not found and hand-picked rules are kept. Preview and confirm before replacing; a new baseline then builds up.',
   'health.sameFields': 'The newly detected rules match the current ones. Check the missing fields in “Edit rules”, or accept the current result and ignore this notice.',
   'health.count': { one: '{count} item', other: '{count} items' },
   'health.noContent': 'Nothing extracted',

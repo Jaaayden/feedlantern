@@ -97,7 +97,7 @@ export async function loginAsAdmin(api: APIRequestContext): Promise<AuthState> {
   return (await loginResponse.json()) as AuthState;
 }
 
-export async function setFixtureState(patch: { failure?: boolean; version?: number; redesigned?: boolean; movedDate?: boolean }): Promise<void> {
+export async function setFixtureState(patch: { failure?: boolean; version?: number; redesigned?: boolean; movedDate?: boolean; absentDate?: boolean }): Promise<void> {
   const response = await fetch(`${fixtureBaseUrl}/__control`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

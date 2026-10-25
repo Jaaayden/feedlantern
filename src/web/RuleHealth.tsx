@@ -66,7 +66,7 @@ export function RuleHealthNotice({ feed, updated, notify }: { feed: Feed; update
     setCandidateId(candidate?.id ?? ''); setPreview(null);
     // Changed fields are offered for replacement; manually chosen ones stay unless ticked.
     const next: Partial<Record<RuleKey, boolean>> = {};
-    if (candidate) for (const key of ruleKeys) if ((candidate.rules[key] ?? '') !== (feed.rules[key] ?? '')) next[key] = feed.ruleOrigins?.[key] !== 'manual' && (!notice || key !== 'item' && affectedFields.has(key));
+    if (candidate) for (const key of ruleKeys) if ((candidate.rules[key] ?? '') !== (feed.rules[key] ?? '')) next[key] = feed.ruleOrigins?.[key] !== 'manual' && (!notice || key !== 'item' && affectedFields.has(key) && !!candidate.rules[key]);
     setReplace(next);
   };
   async function run(label: string, task: () => Promise<void>) {
@@ -123,7 +123,7 @@ export function RuleHealthNotice({ feed, updated, notify }: { feed: Feed; update
             <td><code>{feed.rules[key] || t('common.none')}</code></td><td><code>{candidate.rules[key] || t('common.none')}</code></td>
           </tr>)}
         </tbody></table>
-        <p className="hint">{t('health.replaceHint')}</p>
+        <p className="hint">{t(notice ? 'health.noticeReplaceHint' : 'health.replaceHint')}</p>
         {anyReplaced && (mergedPreview ? <Sample heading={t('health.mergedPreview')} preview={mergedPreview} /> : <button type="button" className="button small" disabled={!!busy} onClick={() => void previewMerged()}>{t('health.previewMerged')}</button>)}
         <div className="inline">
           <button type="button" className="button small primary" disabled={!!busy || !anyReplaced || !mergedPreview || !mergedPreview.count} onClick={() => void apply()}>{t('health.replaceSelected')}</button>
