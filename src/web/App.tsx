@@ -812,7 +812,7 @@ export default function App() {
   const [settingsSection, setSettingsSection] = useState<string | null>(null);
   const settingsDirty = useRef(false);
   const showRoute = useCallback((route: Route) => {
-    setPage(route.page); setPanel(route.panel); setEditorReturnId(null); setSettingsSection(route.section ?? null);
+    setPage(route.page); setPanel(route.panel); setEditorReturnId(null); setPubmedBatch(null); setSettingsSection(route.section ?? null);
     if (route.create) { setEditorSource(route.create); setEditor(null); } else setEditor(undefined);
   }, []);
   // Switch the workspace (null = my own) and show the given screen inside it.
@@ -900,7 +900,7 @@ export default function App() {
   function navigate(next: Page) {
     if (page === 'settings' && next !== 'settings' && settingsDirty.current && !confirm(t('settings.discardLeave'))) return;
     if (next !== 'settings') settingsDirty.current = false;
-    setPage(next); setEditor(undefined); setPanel(null); setEditorReturnId(null);
+    setPage(next); setEditor(undefined); setPanel(null); setEditorReturnId(null); setPubmedBatch(null);
   }
   function create(source: NewSource) { setEditorSource(source); setEditorConvert(false); setEditor(null); }
   return <div className={`app-layout ${target ? 'managing' : ''}`}><aside className="sidebar"><Brand />{auth.role === 'admin' ? <WorkspaceSwitcher me={{ id: auth.userId!, username: auth.username! }} users={users} target={target} open={user => changeWorkspace(user)} manageUsers={() => navigate('users')} refresh={refreshUsers} /> : <div className="workspace-label">{t('nav.personal')}</div>}<nav aria-label={t('nav.main')}><button className={page === 'feeds' || page === 'batch' ? 'selected' : ''} onClick={() => navigate('feeds')}><Rss size={19} />{t('nav.feeds')}<span>{feeds.length}</span></button><button className={page === 'settings' ? 'selected' : ''} onClick={() => navigate('settings')}><Settings2 size={19} />{t('settings.title')}</button>{auth.role === 'admin' && <button className={page === 'users' ? 'selected' : ''} onClick={() => navigate('users')}><ShieldCheck size={19} />{t('users.title')}</button>}</nav><div className="sidebar-bottom"><div className="local-label"><span /> {t('nav.selfHosted')}</div><div className="account"><span className="avatar">{auth.username?.slice(0, 1).toUpperCase()}</span><div><strong>{auth.username}</strong><small>{auth.role === 'admin' ? t('role.admin') : t('role.user')}</small></div><button className="icon-button" aria-label={t('nav.signOut')} onClick={() => void logout()}><LogOut size={17} /></button></div><span className="version">{auth.version}</span></div></aside><div className="main-shell"><header className="topbar"><span><span className="muted">{t('nav.workspace')}</span><span className="slash">/</span>{crumb}</span><span className="topbar-actions">{target && <span className="managing-chip" title={t('nav.managingTitle')}>{t('nav.managing', { name: target.username })}</span>}<LanguageSelect compact account={auth} onSaved={setAuth} onError={setToast} /><ThemeToggle /><span className="topbar-status"><ShieldCheck size={14} /> <span className="topbar-status-text">{t('nav.signedIn')}</span> <button className="icon-button mobile-logout" aria-label={t('nav.signOut')} onClick={() => void logout()}><LogOut size={15} /></button></span></span></header><main className="main-content" key={target?.id ?? auth.userId}>
