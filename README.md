@@ -4,6 +4,8 @@
 
 **English** · [简体中文](README.zh-CN.md)
 
+[Website & documentation](https://jaaayden.github.io/feedlantern/en/) · [Releases](https://github.com/Jaaayden/feedlantern/releases)
+
 [![CI](https://github.com/Jaaayden/feedlantern/actions/workflows/ci.yml/badge.svg)](https://github.com/Jaaayden/feedlantern/actions/workflows/ci.yml)
 
 **Turn any web page into an RSS feed.** Self-hosted and visual, with your data on your own server.

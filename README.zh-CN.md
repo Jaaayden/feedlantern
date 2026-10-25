@@ -4,6 +4,8 @@
 
 [English](README.md) · **简体中文**
 
+[网站与文档](https://jaaayden.github.io/feedlantern/) · [下载版本](https://github.com/Jaaayden/feedlantern/releases)
+
 [![CI](https://github.com/Jaaayden/feedlantern/actions/workflows/ci.yml/badge.svg)](https://github.com/Jaaayden/feedlantern/actions/workflows/ci.yml)
 
 **把任意网页变成你的 RSS 订阅。** 自托管、可视化，数据留在自己的服务器上。
