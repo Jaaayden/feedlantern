@@ -22,6 +22,7 @@ export const FIXTURE_URLS = {
   ambiguous: `${fixtureBaseUrl}/ambiguous`,
   versioned: `${fixtureBaseUrl}/versioned`,
   redesign: `${fixtureBaseUrl}/redesign`,
+  optionalFields: `${fixtureBaseUrl}/optional-fields`,
   redirect: `${fixtureBaseUrl}/redirect-malicious`,
   paged: `${fixtureBaseUrl}/paged`,
   pagedInternal: `${fixtureBaseUrl}/paged-internal`,
@@ -96,7 +97,7 @@ export async function loginAsAdmin(api: APIRequestContext): Promise<AuthState> {
   return (await loginResponse.json()) as AuthState;
 }
 
-export async function setFixtureState(patch: { failure?: boolean; version?: number; redesigned?: boolean }): Promise<void> {
+export async function setFixtureState(patch: { failure?: boolean; version?: number; redesigned?: boolean; movedDate?: boolean }): Promise<void> {
   const response = await fetch(`${fixtureBaseUrl}/__control`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

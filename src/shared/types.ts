@@ -135,13 +135,14 @@ export interface Feed extends FeedInput {
   lastError: string | null;
   itemCount: number;
   translation?: { pending: number; success: number; failed: number };
-  /** Present while the latest successful fetches look like the rules stopped matching the page. */
+  /** A warning about article extraction, or a quiet notice about optional metadata. */
   ruleHealth?: RuleHealthWarning;
 }
 export type RuleHealthField = 'title' | 'link' | 'date' | 'image' | 'description';
+export type RuleHealthSeverity = 'warning' | 'notice';
 /** One reason a successful fetch looks broken, compared with the feed's recent median. */
 export interface RuleHealthReason { code: 'item-count' | 'field-rate' | 'duplicate-links' | 'same-link'; field?: RuleHealthField; baseline: number; current: number; message: string }
-export interface RuleHealthWarning { detectedAt: string; checkedAt: string; itemCount: number; baselineSamples: number; reasons: RuleHealthReason[] }
+export interface RuleHealthWarning { severity: RuleHealthSeverity; detectedAt: string; checkedAt: string; itemCount: number; baselineSamples: number; reasons: RuleHealthReason[] }
 /** Re-detection on the feed's page: what the saved rules extract now, beside fresh candidates. */
 export interface RuleRedetectResult { current: RulePreview; detection: DetectionResult }
 export interface RulePreview { count: number; items: ExtractedItem[]; error?: string }
@@ -174,6 +175,8 @@ export interface FetchLog {
   notification: { status: AlertStatus; error: string | null; channels?: ChannelDelivery[] } | null;
   /** Rules-health warning recorded on an otherwise successful fetch. */
   warning?: string | null;
+  /** Missing on older log entries whose severity was not recorded. */
+  warningSeverity?: RuleHealthSeverity;
 }
 export type NotificationChannel = 'bark' | 'webhook' | 'ntfy' | 'telegram';
 export const notificationChannels: NotificationChannel[] = ['bark', 'webhook', 'ntfy', 'telegram'];

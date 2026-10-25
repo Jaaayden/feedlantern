@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { AlertTriangle, LoaderCircle, RefreshCw } from 'lucide-react';
+import { AlertTriangle, Info, LoaderCircle, RefreshCw } from 'lucide-react';
 import type { DetectionCandidate, ExtractedItem, Feed, FieldName, RuleHealthReason, RulePreview, RuleRedetectResult, SelectionRules } from '../shared/types';
+import { isRuleHealthNotice, optionalFieldReason } from '../shared/rule-health';
 import { fmt, t } from './i18n';
 import { api } from './api';
 import { absoluteTime, relativeTime } from './format';
@@ -22,12 +23,12 @@ export function reasonText(reason: RuleHealthReason, itemCount: number): string 
 }
 
 /** A feed needs checking when the last fetch failed or its rules may have stopped matching. */
-export function needsAttention(feed: Feed): boolean { return !!feed.lastError || !!feed.ruleHealth; }
+export function needsAttention(feed: Feed): boolean { return !!feed.lastError || !!feed.ruleHealth && !isRuleHealthNotice(feed.ruleHealth); }
 
 /** Short text for lists: the first reason of the active warning. */
 export function ruleHealthSummary(feed: Feed): string {
   const warning = feed.ruleHealth;
-  return warning ? t('health.summary', { reasons: warning.reasons.map(reason => reasonText(reason, warning.itemCount)).join(t('punctuation.semicolon')) }) : '';
+  return warning ? t(isRuleHealthNotice(warning) ? 'health.noticeSummary' : 'health.summary', { reasons: warning.reasons.map(reason => reasonText(reason, warning.itemCount)).join(t('punctuation.semicolon')) }) : '';
 }
 
 function merge(current: SelectionRules, candidate: SelectionRules, replace: Partial<Record<RuleKey, boolean>>): SelectionRules {
@@ -57,12 +58,15 @@ export function RuleHealthNotice({ feed, updated, notify }: { feed: Feed; update
   const [preview, setPreview] = useState<{ signature: string; value: RulePreview } | null>(null);
   const warning = feed.ruleHealth;
   if (!warning || feed.sourceType !== 'website' && feed.sourceType !== undefined) return null;
+  const notice = isRuleHealthNotice(warning);
+  const affectedFields = new Set(warning.reasons.filter(optionalFieldReason).map(reason => reason.field!));
+  const badge = t(notice ? 'health.noticeBadge' : 'health.badge');
 
   const choose = (candidate: DetectionCandidate | undefined) => {
     setCandidateId(candidate?.id ?? ''); setPreview(null);
     // Changed fields are offered for replacement; manually chosen ones stay unless ticked.
     const next: Partial<Record<RuleKey, boolean>> = {};
-    if (candidate) for (const key of ruleKeys) if ((candidate.rules[key] ?? '') !== (feed.rules[key] ?? '')) next[key] = feed.ruleOrigins?.[key] !== 'manual';
+    if (candidate) for (const key of ruleKeys) if ((candidate.rules[key] ?? '') !== (feed.rules[key] ?? '')) next[key] = feed.ruleOrigins?.[key] !== 'manual' && (!notice || key !== 'item' && affectedFields.has(key));
     setReplace(next);
   };
   async function run(label: string, task: () => Promise<void>) {
@@ -93,14 +97,14 @@ export function RuleHealthNotice({ feed, updated, notify }: { feed: Feed; update
     setResult(null); updated(); notify(t('health.replaced'));
   });
 
-  return <section className="rule-health" aria-label={t('health.badge')}>
-    <div className="rule-health-head"><AlertTriangle size={17} /><div>
-      <strong>{t('health.badge')}</strong>
+  return <section className="rule-health" data-severity={notice ? 'notice' : 'warning'} aria-label={badge}>
+    <div className="rule-health-head">{notice ? <Info size={17} /> : <AlertTriangle size={17} />}<div>
+      <strong>{badge}</strong>
       <ul>{warning.reasons.map(reason => <li key={`${reason.code}-${reason.field ?? ''}`}>{reasonText(reason, warning.itemCount)}</li>)}</ul>
-      <p className="hint">{t('health.stillSuccess')} <span title={absoluteTime(warning.detectedAt)}>{t('health.detected', { time: relativeTime(warning.detectedAt) })}</span>{t('health.compared', { count: warning.baselineSamples })}</p>
+      <p className="hint">{notice ? t('health.noticeImpact', { count: warning.itemCount, fields: [...affectedFields].map(label).join(t('punctuation.semicolon')) }) : t('health.stillSuccess')} <span title={absoluteTime(warning.detectedAt)}>{t('health.detected', { time: relativeTime(warning.detectedAt) })}</span>{t('health.compared', { count: warning.baselineSamples })}</p>
     </div></div>
     <div className="inline rule-health-actions">
-      <button type="button" className="button small primary" disabled={!!busy} onClick={() => void redetect()}><RefreshCw size={14} />{t('health.redetect')}</button>
+      <button type="button" className="button small primary" disabled={!!busy} onClick={() => void redetect()}><RefreshCw size={14} />{t(notice ? 'health.redetectFields' : 'health.redetect')}</button>
       <button type="button" className="button small" disabled={!!busy} onClick={() => void ignore()}>{t('health.ignore')}</button>
       {busy && <span className="inline muted" role="status"><LoaderCircle size={14} className="spin" />{busy}</span>}
     </div>
@@ -125,7 +129,7 @@ export function RuleHealthNotice({ feed, updated, notify }: { feed: Feed; update
           <button type="button" className="button small primary" disabled={!!busy || !anyReplaced || !mergedPreview || !mergedPreview.count} onClick={() => void apply()}>{t('health.replaceSelected')}</button>
           <button type="button" className="button small" disabled={!!busy} onClick={() => setResult(null)}>{t('common.cancel')}</button>
         </div>
-      </> : <p className="muted">{t('health.same')}</p>)}
+      </> : <p className="muted">{t(notice ? 'health.sameFields' : 'health.same')}</p>)}
     </div>}
   </section>;
 }

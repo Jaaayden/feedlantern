@@ -197,6 +197,7 @@ export class FetchHistory {
       notification: row.alert_status ? { status: row.alert_status as AlertStatus, error: row.alert_error as string | null, channels: deliveries.get(String(row.alert_id)) ?? [] }
         : row.notification_disabled ? { status: 'disabled', error: null } : null,
       ...(row.warning ? { warning: String(row.warning) } : {}),
+      ...(row.warning_severity === 'warning' || row.warning_severity === 'notice' ? { warningSeverity: row.warning_severity } : {}),
     }));
     return { logs, nextCursor: rows.length > limit ? String(logs.at(-1)!.id) : null, retentionDays: this.settings().logRetentionDays };
   }

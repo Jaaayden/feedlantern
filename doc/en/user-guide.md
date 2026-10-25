@@ -214,20 +214,25 @@ With at least one channel enabled in Settings → Notifications (Bark, webhook, 
 
 After a redesign, old rules often still extract a few items and fetches don't fail — but items drop from 20 to 3, every title becomes “Read more”, or every link points to the same address. To catch this, each successful fetch of a web page feed records the item count and how often each field is present, and compares them with the feed's recent healthy fetches:
 
-| Check | When the rules may have stopped working |
+| Check | Conditions and severity |
 |---|---|
 | Item count | The baseline median is at least 5 and this fetch has less than 30% of it (for example from 20 items to 5 or fewer) |
 | Title | At least 80% of baseline items had distinct titles and this fetch has 30% or fewer (for example all the same text) |
-| Date, image, summary | At least 80% of baseline items had the field and this fetch has 30% or fewer; fields without a rule aren't checked |
+| Date, image, summary | At least 80% of baseline items had the field and this fetch has 30% or fewer; fields without a rule aren't checked. Missing only these fields produces a quiet “Some fields are missing” notice |
 | Link | At least 80% of baseline links were distinct and this fetch's links are all the same, or less than 50% distinct |
 
 The baseline is the median of the last 10 healthy fetches (same URL, same rules) and needs at least 5 before judging, so new feeds and feeds with freshly changed rules never warn in their first 5 fetches. Title, link, date and similar rates are only checked when the fetch has at least 3 items. Items without a title or link are never stored, so losing them shows up as a lower item count. RSS feeds aren't checked.
 
 When a warning appears, the fetch still counts as successful, items are saved as usual and the RSS output is unaffected. The feed shows “Rules may have stopped working” in the list and counts toward “Needs attention”; the feed panel lists the reasons at the top, and the fetch log entry is marked. Suspicious results don't join the baseline, and the warning clears after the next healthy fetch. Feeds with pagination use only page 1 for statistics and for the re-detect comparison: how many pages a run fetches changes with the early stop and the page limit, so changing the maximum pages isn't mistaken for a jump or drop in items.
 
+When only dates, images or summaries are missing, and item counts, titles and links have not triggered a warning, the feed shows “Some fields are missing”. The notice explains how many items were still extracted and which fields may be missing. Output continues, no notification is pushed, and the feed is excluded from “Needs attention” and “Rules may have stopped working” filters. Use “Status → Some fields are missing” to find these feeds. A later problem with counts, titles or links raises a warning under the normal notification policy and cooldown. A healthy fetch clears the notice.
+
+On upgrade, existing optional-field warnings are downgraded and their unsent notifications are canceled. Historical logs without severity information use the neutral “Rule check record” label; past notification delivery states are preserved.
+
 In the feed panel you can:
 
 - **Detect again**: open the page with the feed's saved cookies and wait settings, extract with the current rules and run automatic detection, and show both side by side with item counts and the first few items. Below, the changed selectors are listed by field: fields from automatic detection are checked by default; fields you picked by hand aren't, and are only replaced when you check them. When the checked combination differs from the new detection, first “Preview the selected combination”; “Replace selected fields” needs a preview with at least 1 item. Replacing fetches once with the new rules right away and a new baseline builds up. Until you confirm, the saved rules don't change.
+- **Detect missing fields again**: for optional-field notices, only affected automatically detected fields are checked by default. The item container, title, link and other working rules are kept. Hand-picked fields still need an explicit check, and changes are saved only after preview and confirmation.
 - **Ignore this warning**: when the page really has less now (for example the site kept only some sections), ignoring makes this fetch the new baseline, and judging starts again after 5 more fetches.
 
 With any channel enabled, each warning is sent to every enabled channel once (title “FeedLantern: rules may have stopped working”, webhook event `rules.warning`), not repeated while it lasts, and counted separately from fetch failure alerts. To turn just these off, uncheck “Notify when rules may have stopped working” in Settings → Notifications → Alert policy. Health statistics keep at most 20 samples per feed and are cleaned up by the log retention days like fetch logs.

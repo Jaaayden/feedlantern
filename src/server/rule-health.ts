@@ -3,6 +3,7 @@ import { msg, tl } from './i18n.js';
 import type { DatabaseSync } from 'node:sqlite';
 import { defaultApplicationSettings, isFeedSource, type ApplicationSettings, type ExtractedItem, type Feed, type RuleHealthField, type RuleHealthReason, type RuleHealthWarning } from '../shared/types.js';
 import { safeDiagnostic, type FetchHistory } from './fetch-history.js';
+import { ruleHealthSeverity } from '../shared/rule-health.js';
 
 /**
  * Thresholds are deliberately conservative: a feed is only judged once it has
@@ -98,7 +99,11 @@ export function ruleSignature(feed: Pick<Feed, 'url' | 'rules'>): string {
 
 function parseWarning(value: unknown): RuleHealthWarning | undefined {
   if (typeof value !== 'string') return undefined;
-  try { return JSON.parse(value) as RuleHealthWarning; } catch { return undefined; }
+  try {
+    const warning = JSON.parse(value) as RuleHealthWarning;
+    if (!Array.isArray(warning?.reasons)) return undefined;
+    return { ...warning, severity: ruleHealthSeverity(warning.reasons) };
+  } catch { return undefined; }
 }
 
 /**
@@ -108,6 +113,20 @@ function parseWarning(value: unknown): RuleHealthWarning | undefined {
 export class RuleHealth {
   constructor(private db: DatabaseSync, private settings: () => ApplicationSettings, private history: FetchHistory) {
     if (!db.prepare('PRAGMA table_info(fetch_logs)').all().some(row => row.name === 'warning')) db.exec('ALTER TABLE fetch_logs ADD COLUMN warning TEXT');
+    // Fetch logs are derived diagnostics, like the existing warning column.
+    if (!db.prepare('PRAGMA table_info(fetch_logs)').all().some(row => row.name === 'warning_severity')) db.exec('ALTER TABLE fetch_logs ADD COLUMN warning_severity TEXT');
+    // Classify existing episodes before notification workers start. A metadata
+    // notice must not keep an old queued warning or consume its cooldown.
+    for (const row of db.prepare('SELECT feed_id, warning_json FROM feed_health WHERE warning_json IS NOT NULL').all()) {
+      const warning = parseWarning(row.warning_json);
+      if (!warning) continue;
+      const feedId = String(row.feed_id);
+      if (JSON.parse(String(row.warning_json)).severity !== warning.severity) {
+        db.prepare("UPDATE feed_health SET warning_json=?, alerted_at=CASE WHEN ?='notice' THEN NULL ELSE alerted_at END WHERE feed_id=?")
+          .run(JSON.stringify(warning), warning.severity, feedId);
+      }
+      if (warning.severity === 'notice') this.cancelAlerts(feedId);
+    }
   }
 
   warning(feedId: string): RuleHealthWarning | undefined {
@@ -141,12 +160,17 @@ export class RuleHealth {
       this.cancelAlerts(feed.id);
       return null;
     }
-    const warning: RuleHealthWarning = { detectedAt: previous?.detectedAt ?? recordedAt, checkedAt: recordedAt, itemCount: sample.itemCount, baselineSamples: verdict ? history.length : previous?.baselineSamples ?? 0, reasons };
-    // One notification per warning episode, separate from failure alerts.
-    const alert = previous ? { id: null, disabled: false } : this.history.ruleHealthAlert(feed, reasons.map(reason => reason.message), alertedAt, now);
+    const severity = ruleHealthSeverity(reasons);
+    const warning: RuleHealthWarning = { severity, detectedAt: previous?.severity === severity ? previous.detectedAt : recordedAt, checkedAt: recordedAt, itemCount: sample.itemCount, baselineSamples: verdict ? history.length : previous?.baselineSamples ?? 0, reasons };
+    // Optional metadata stays visible without pushing a notification. Moving
+    // from a notice to a warning starts a warning episode of its own.
+    if (severity === 'notice') this.cancelAlerts(feed.id);
+    const alert = severity === 'notice' || previous?.severity === 'warning'
+      ? { id: null, disabled: false }
+      : this.history.ruleHealthAlert(feed, reasons.map(reason => reason.message), alertedAt, now);
     this.save(feed.id, signature, warning, alert.id ? now : alertedAt);
-    this.db.prepare('UPDATE fetch_logs SET warning=?, alert_id=COALESCE(?, alert_id), notification_disabled=? WHERE id=?')
-      .run(safeDiagnostic(reasons.map(reason => reason.message).join('；')), alert.id, alert.disabled ? 1 : 0, logId);
+    this.db.prepare('UPDATE fetch_logs SET warning=?, warning_severity=?, alert_id=COALESCE(?, alert_id), notification_disabled=? WHERE id=?')
+      .run(safeDiagnostic(reasons.map(reason => reason.message).join('；')), severity, alert.id, alert.disabled ? 1 : 0, logId);
     return warning;
   }
 
