@@ -837,8 +837,9 @@ section.feed-collection > p.muted { padding: 30px; text-align: center; border: 1
 .fetch-log { display: grid; gap: 6px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-2); }
 .fetch-log-heading { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13px; font-weight: 600; }
 .fetch-log-heading time { font-family: var(--font-mono); font-size: 12.5px; color: var(--ink); }
-.fetch-log-heading > span:not(.badge) { color: var(--muted); font-weight: 500; }
-.fetch-log-heading .badge { margin-left: auto; }
+.fetch-log-meta, .fetch-log-statuses { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.fetch-log-meta > span { color: var(--muted); font-weight: 500; }
+.fetch-log-statuses { margin-left: auto; }
 .fetch-log > p { font-size: 12.5px; }
 .fetch-log-notification { color: var(--muted); overflow-wrap: anywhere; }
 .fetch-logs > .button { justify-self: center; }
@@ -1726,12 +1727,16 @@ button.user-failing:hover { text-decoration: underline; text-underline-offset: 3
 
 /* Rule health: "rules may be broken" is a warning, not a failure. */
 .badge.warn { background: var(--warning-soft); color: var(--warning); border-color: transparent; }
-.card-warning { color: var(--warning); font-size: 12.5px; line-height: 1.5; overflow-wrap: anywhere; }
-button.card-warning { display: block; max-width: 100%; padding: 0; border: 0; background: none; text-align: left; cursor: pointer; font-family: inherit; }
-button.card-warning:hover { text-decoration: underline; text-underline-offset: 3px; }
-.feed-identity .card-warning { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-warning, .card-notice { font-size: 12.5px; line-height: 1.5; overflow-wrap: anywhere; }
+.card-warning { color: var(--warning); }
+.card-notice { color: var(--muted); }
+button.card-warning, button.card-notice { display: block; max-width: 100%; padding: 0; border: 0; background: none; text-align: left; cursor: pointer; font-family: inherit; }
+button.card-warning:hover, button.card-notice:hover { text-decoration: underline; text-underline-offset: 3px; }
+.feed-identity .card-warning, .feed-identity .card-notice { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rule-health { display: grid; gap: 10px; padding: 12px 14px; border-radius: var(--r-md); background: var(--warning-soft); border: 1px solid var(--warning-line); }
 .rule-health-head { display: flex; gap: 10px; align-items: flex-start; color: var(--warning); }
+.rule-health[data-severity="notice"] { background: var(--surface-2); border-color: var(--line); --warning-line: var(--line); }
+.rule-health[data-severity="notice"] .rule-health-head { color: var(--muted); }
 .rule-health-head > svg { flex: none; margin-top: 2px; }
 .rule-health-head strong { font-size: 14px; }
 .rule-health-head ul { margin: 4px 0; padding-left: 18px; color: var(--ink); font-size: 13.5px; line-height: 1.6; }

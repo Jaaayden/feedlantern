@@ -14,9 +14,12 @@ type FixtureState = {
   version: number;
   /** /redesign: false serves the original list, true a redesigned page where the old rules match only two leftovers. */
   redesigned: boolean;
+  /** /optional-fields: the six articles stay unchanged, only their date selector moves. */
+  movedDate: boolean;
+  absentDate: boolean;
 };
 
-const state: FixtureState = { failure: false, version: 1, redesigned: false };
+const state: FixtureState = { failure: false, version: 1, redesigned: false, movedDate: false, absentDate: false };
 
 type Article = {
   title: string;
@@ -190,6 +193,16 @@ function versionedPage(): string {
   );
 }
 
+function optionalFieldsPage(): string {
+  let cards = Array.from({ length: 6 }, (_, i) => articleCard({
+    title: `Optional fields story ${i + 1}`, slug: `optional-${i + 1}`,
+    description: `Summary of optional fields story ${i + 1}.`, image: '/assets/fixture-one.svg',
+    date: `2026-02-${String(10 - i).padStart(2, '0')}T08:00:00.000Z`,
+  }, 'optional-')).join('');
+  if (state.absentDate) cards = cards.replaceAll(/<time\b[^>]*>[^<]*<\/time>/g, '');
+  return page('Optional fields fixture', `<h1>Optional fields fixture</h1><section class="article-list">${state.movedDate ? cards.replaceAll('class="article-date"', 'class="release-date"') : cards}</section>`);
+}
+
 function redesignPage(): string {
   const articles = Array.from({ length: 10 }, (_, i) => ({
     title: `Redesign fixture story ${i + 1}`,
@@ -249,6 +262,8 @@ const server = createServer(async (request, response) => {
       if (typeof payload.failure === 'boolean') state.failure = payload.failure;
       if (typeof payload.version === 'number' && Number.isInteger(payload.version)) state.version = payload.version;
       if (typeof payload.redesigned === 'boolean') state.redesigned = payload.redesigned;
+      if (typeof payload.movedDate === 'boolean') state.movedDate = payload.movedDate;
+      if (typeof payload.absentDate === 'boolean') state.absentDate = payload.absentDate;
       sendJson(response, 200, { ...state });
     } catch {
       sendJson(response, 400, { error: 'invalid JSON' });
@@ -288,6 +303,11 @@ const server = createServer(async (request, response) => {
 
   if (requestUrl.pathname === '/redesign') {
     sendHtml(response, 200, redesignPage());
+    return;
+  }
+
+  if (requestUrl.pathname === '/optional-fields') {
+    sendHtml(response, 200, optionalFieldsPage());
     return;
   }
 

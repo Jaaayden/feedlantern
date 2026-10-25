@@ -107,7 +107,7 @@ PubMed 检索订阅的来源类型是 `sourceType: 'pubmed'`。`src/shared/pubme
 | `/feeds/:id/:token.xml` | 无管理员登录的密钥授权 RSS 2.0 |
 | `POST /api/feeds/:id/health/redetect` | 网页订阅：后台按当前规则抽取并运行自动识别，返回 `{current:{count,items,error?}, detection}`（每个候选最多 5 条预览），不保存规则 |
 | `POST /api/feeds/:id/health/preview` | `{rules}`，在订阅网页上预览字段组合，返回 `{count,items,error?}` |
-| `POST /api/feeds/:id/health/ignore` | 清除“规则可能失效”并以最新样本作为新基线，返回 `{feed,feedUrl}` |
+| `POST /api/feeds/:id/health/ignore` | 清除规则告警或字段缺失提示，并以最新样本作为新基线，返回 `{feed,feedUrl}` |
 | `/feeds/:id/:token.atom`、`.json` | 同一密钥授权的 Atom 1.0、JSON Feed 1.1 |
 | `PATCH /api/feeds/:id` | 名称、间隔、翻译模式，以及 `itemFilter`（`null` 清除）和 `outputLimit` |
 | `POST /api/feeds/:id/output-preview` | `{itemFilter?,outputLimit?}` 预览未保存设置下每个条目的输出状态 |

@@ -146,12 +146,13 @@ const schemas: Record<string, Schema> = {
     translatedTitle: str({ description: 'When translated: the translated title' }), sourceTitle: str({ description: 'When translated: the original title' }),
   }, ['title', 'link']),
   RuleHealthWarning: object({
+    severity: str({ enum: ['warning', 'notice'], description: 'warning: article count, titles or links; notice: only optional dates, images or summaries are missing (no push notification)' }),
     detectedAt: dateTime, checkedAt: dateTime, itemCount: int(), baselineSamples: int({ description: 'Recent healthy fetches compared' }),
     reasons: array(object({
       code: str({ enum: ['item-count', 'field-rate', 'duplicate-links', 'same-link'] }), field: str({ enum: ['title', 'link', 'date', 'image', 'description'] }),
       baseline: { type: 'number' }, current: { type: 'number' }, message: str({ description: 'Explanation for the user, in the feed owner\'s language' }),
     }, ['code', 'baseline', 'current', 'message'])),
-  }, ['detectedAt', 'checkedAt', 'itemCount', 'baselineSamples', 'reasons'], { description: 'Only present when the rules may have stopped working; the fetch itself still counts as successful' }),
+  }, ['severity', 'detectedAt', 'checkedAt', 'itemCount', 'baselineSamples', 'reasons'], { description: 'Rule-health warning or optional-field notice; the fetch itself still counts as successful' }),
   RulePreview: object({ count: int(), items: array(ref('ExtractedItem'), { maxItems: 5 }), error: str({ description: 'Why nothing was extracted' }) }, ['count', 'items']),
   RuleRedetectResult: object({ current: ref('RulePreview'), detection: ref('DetectionResult') }, ['current', 'detection']),
   FeedPayload: object({ feed: ref('Feed'), feedUrl: str({ format: 'uri', description: 'RSS address including its secret key' }) }, ['feed', 'feedUrl']),
