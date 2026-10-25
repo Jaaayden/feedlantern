@@ -87,7 +87,7 @@ export function parseSource(xml: string, base: string): SourceResult {
   return { title: plain(valueText(channel.title)).trim() || new URL(base).hostname, items: items.slice(0, 100) };
 }
 
-export interface RawResponse { status: number; location?: string; body: string; etag?: string; modified?: string; contentType?: string; retryAfter?: string }
+export interface RawResponse { status: number; location?: string; body: string; etag?: string; modified?: string; contentType?: string; retryAfter?: string; rateLimit?: string }
 
 /**
  * One HTTP request to the checked address, directly or through the feed's
@@ -119,12 +119,14 @@ async function requestOnce(url: URL, addresses: readonly string[], policy: Netwo
       const chunks: Buffer[] = []; let size = 0;
       res.on('error', reject);
       res.on('data', chunk => { size += chunk.length; if (size > maxBytes) { res.destroy(new SourceTooLargeError(msg('rss.tooLarge', { size: `${Math.round(maxBytes / 1_000_000)} MB` }))); return; } chunks.push(chunk); });
-      res.on('end', () => resolve({ status: res.statusCode ?? 0, location: res.headers.location, body: Buffer.concat(chunks).toString('utf8'), etag: res.headers.etag, modified: res.headers['last-modified'], contentType: res.headers['content-type'], retryAfter: res.headers['retry-after'] }));
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, location: res.headers.location, body: Buffer.concat(chunks).toString('utf8'), etag: res.headers.etag, modified: res.headers['last-modified'], contentType: res.headers['content-type'], retryAfter: res.headers['retry-after'], rateLimit: firstHeader(res.headers['x-ratelimit-limit']) }));
     });
     request.on('error', error => { tunnel?.destroy(); reject(error); });
     request.end();
   });
 }
+
+const firstHeader = (value: string | string[] | undefined) => Array.isArray(value) ? value[0] : value;
 
 function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   return Promise.race([

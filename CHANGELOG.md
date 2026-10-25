@@ -2,15 +2,22 @@
 
 ## 未发布
 
-### PubMed 期刊订阅改用 NCBI E-utilities
+### PubMed 检索订阅
 
-- PubMed 的期刊 RSS 地址（`https://pubmed.ncbi.nlm.nih.gov/rss/journals/<NLM ID>/…`）现在对程序访问一律返回工作量证明验证页，原先这类订阅全部失败。FeedLantern 不会尝试绕过这类验证，而是改用 NCBI 官方的 E-utilities 读取同一期刊：esearch 按 NLM ID 检索、按出版日期取最新文章（条数与地址中的 `limit` 一致，默认 15，最多 100），efetch 取标题、作者、期刊、发表日期和摘要，摘要放进正文供翻译。原地址本身不再请求。
-- 已有的期刊订阅无需操作：条目身份沿用原 RSS 的 `pubmed:<PMID>`，已存文章和译文继续使用，不会重复推送；发表时间与原 RSS 相同。
-- 遵守 NCBI 使用规则：所有 PubMed 请求共用一个队列，不带 API Key 时每秒最多 3 个、带 Key 时 10 个，批量刷新依次排队；每个请求带 `tool=feedlantern`，填写后带联系邮箱；429 时整条队列暂停后重试一次。
-- 新增“设置 → PubMed（NCBI）”：可选的 NCBI API Key（加密保存，不回显，轻量配置导出不含）和联系邮箱。
-- 订阅面板的来源地址旁标出“通过 NCBI E-utilities 获取”；新建 RSS 翻译订阅时粘贴期刊地址会提示，预览照常可用。E-utilities 请求同样经过网络安全策略、DNS over HTTPS 和订阅的网络配置代理。
-- 检索式订阅（`/rss/search/…`）仍直接抓取。
-- 接口：应用设置新增 `ncbi`（`apiKey` 只写、`apiKeyConfigured`、`email`）。
+- 新增订阅来源“PubMed 检索”（“新建订阅”菜单）：像 PubMed 高级检索（Advanced Search Builder）一样添加多行条件（逻辑运算 + 字段 + 检索词），字段包括全部字段、标题/摘要、标题、作者、第一作者、末位作者、期刊、机构、MeSH 主题词、文献类型、语言和期刊 NLM ID；可筛选发表日期（最近 N 天或日期区间）、只看有摘要、文章类型（综述、系统综述、Meta 分析、临床试验、随机对照试验、病例报告）。不用再去 PubMed 网站生成 RSS 链接。
+- 实时显示生成的 PubMed 查询式，检索词自动转义并加引号；也可以直接编辑查询式，能还原成条件时构建器同步更新，否则提示“已切换为手动编辑”。引号、括号不配对等问题会直接指出，不会发给 NCBI。
+- 预览显示匹配总数和最新 5 篇（标题、期刊、日期、作者）以及 NCBI 的提示；输入停顿后才请求，相同查询一分钟内复用，受全局 NCBI 限流约束。提供“在 PubMed 中打开”对照，订阅名默认根据条件生成。
+- 抓取通过 NCBI E-utilities：esearch 按 PubMed 的 “Most recent” 顺序取最新 N 篇（10/20/50/100，默认 20），efetch 取标题、链接、作者、期刊、发表日期和摘要。可选原文、仅译文或双语输出，条目过滤、输出与保留条数、刷新间隔、网络配置（代理和 DoH）、聚合订阅、通知照常可用；编辑时回到同一个构建器，修改条件后已存文章保留。
+- 遵守 NCBI 使用规则：所有 PubMed 请求共用一个队列，不带 API Key 时每秒最多 3 个、带 Key 时 10 个；每个请求带 `tool=feedlantern`，填写后带联系邮箱；429 时整条队列暂停后重试一次。“设置 → PubMed（NCBI）”可填写可选的 NCBI API Key（加密保存，不回显，轻量配置导出不含）和联系邮箱。
+- PubMed 的 RSS 链接仍按普通 RSS 抓取，不会在后台改写。期刊 RSS（`/rss/journals/…`）现在被 NCBI 的工作量证明验证页拦截，报错会说明原因并建议改用检索订阅或检索式 RSS（例如在 PubMed 搜 `"PLoS Pathog"[jour]` 后点 Create RSS）。订阅面板对 PubMed 的期刊 RSS 和检索式 RSS 给出提示，并可在确认后“转换为 PubMed 检索订阅”：期刊 RSS 按地址中的期刊缩写预填期刊条件，检索式 RSS 需要重新填写条件；订阅 ID、RSS 地址、已存条目和译文都保留，已有文章不会被当成新文章。
+- 构建器与 PubMed 高级检索构建器一致：每个条件写成 `(检索词[字段])`，默认不加引号，保留 PubMed 的自动词映射（MeSH、同义词、作者名变体）；每行可选“精确短语”加引号。只处理会破坏语法的字符（方括号、未配对的括号或引号），检索词中的大写 AND/OR/NOT 会提示。预览同时显示 PubMed 实际执行的查询式（querytranslation）。
+- 检索式 RSS（`/rss/search/…`）也可以转换：转换前先读取一次 RSS，从频道标题还原查询式（去掉后缀、尝试补齐不配对的括号、识别疑似截断），用 E-utilities 执行并与 RSS 最新条目对比，覆盖率至少 80% 时判定为“可直接转换”，确认后一键转换；否则打开构建器并预填候选查询式，提示“未能确认与原 RSS 一致，请核对”。任何情况下都不会自动转换。
+- 批量转换：订阅列表顶部提示可转换的 PubMed RSS 订阅数量，也可以勾选后用批量操作“转换为 PubMed 检索订阅”。验证作为后台任务保存在服务端（数据库迁移 22），关闭页面或重启后继续，再次打开看到进度和结果；大多数订阅只用订阅名和已存条目验证（每个一次 E-utilities 请求，不访问 PubMed 网页），同时验证 5 个，仍严格走全局 NCBI 限流；未变的订阅沿用上次结果，可重新验证、停止、重试失败项。进度条显示已完成数和预计剩余时间，逐行显示状态；验证通过的可以边验证边转换，转换幂等。未配置 API Key 时提示并链接到设置页。转换保留订阅 ID、RSS 地址、条目、译文、翻译设置、过滤、输出与保留条数、聚合成员资格、刷新间隔和网络配置。
+- CLI 新增 `pubmed convert <id>` / `pubmed convert --all-verified`（默认只输出验证报告，加 `--yes` 才转换）和 `pubmed checks`（查看、等待、停止、重试后台验证任务），MCP 新增 `pubmed_convert_check`、`pubmed_check_status`、`pubmed_convert_verified`、`pubmed_convert`。
+- “设置 → PubMed（NCBI）”可以在保存前测试 API Key 和邮箱：用一个 `retmax=0` 的 esearch 请求区分有效（显示速率上限）、NCBI 不接受、格式不对、被限流和网络不通，其他情况显示 NCBI 原始错误摘要；保存后显示上次测试的结果与时间，Key 改动后提示重新测试。
+- 订阅名默认为查询式原文加“ - PubMed”（固定后缀，不翻译），随查询式更新，手动修改后不再覆盖；超过 200 字符时从查询式中间截断。RSS、Atom、JSON 的频道标题都使用订阅名。编辑查询式时，仍是默认名称的会跟着更新，自定义名称保持不变并提示。转换已有订阅默认保留原名称，单个和批量确认界面可选“同时把名称改为‘查询式 - PubMed’”，批量表格显示新旧名称对照；CLI `--rename`，MCP `rename`。
+- CLI 新增 `pubmed preview` 和 `pubmed create`（`--query`，或 `--title-abstract`、`--author`、`--journal`、`--affiliation` 等条件选项），MCP 新增 `pubmed_preview`、`pubmed_create` 工具。
+- 接口：订阅新增来源类型 `pubmed` 和 `pubmed: { query, limit }`（订阅的 `url` 是对应的 PubMed 检索页）；新增 `POST /api/pubmed/preview`、`POST /api/feeds/:id/pubmed-check`（验证，不改动订阅）、`POST /api/feeds/:id/pubmed-convert`（幂等）、`/api/pubmed-checks`（后台验证任务：开始、查看、停止、重试、转换）、`POST /api/settings/ncbi/test` 和 `GET /api/settings/ncbi/status`；查询式无法发送时返回错误代码 `pubmed_query_invalid`。应用设置新增 `ncbi`（`apiKey` 只写、`apiKeyConfigured`、`email`）。
 
 ### 非订阅源响应的准确报错
 

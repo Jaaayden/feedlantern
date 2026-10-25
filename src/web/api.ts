@@ -40,6 +40,10 @@ import type {
   TranslationMode,
   TranslationProviderId,
   TranslationProvidersInfo,
+  PubmedPreview,
+  PubmedRssCheck,
+  PubmedCheckJob,
+  NcbiKeyTest,
 } from '../shared/types';
 
 /** Why each stored item is or is not published, keyed by item id. */
@@ -179,6 +183,9 @@ export const api = {
     /** Partial update: only the fields given are changed (an empty or omitted API key keeps the saved one, null removes it). */
     save: ({ bark: _bark, ...body }: Partial<ApplicationSettings>) => request<ApplicationSettings>('/api/settings', { method: 'PUT', body }),
     get: () => request<ApplicationSettings>('/api/settings'),
+    /** Tests NCBI settings as typed; an empty key tests the saved one, null tests without a key. */
+    testNcbi: (apiKey: string | null, email: string) => request<NcbiKeyTest>('/api/settings/ncbi/test', { method: 'POST', body: { apiKey, email } }),
+    ncbiStatus: () => request<{ apiKeyConfigured: boolean; lastTest?: NcbiKeyTest }>('/api/settings/ncbi/status'),
     update: (feedView: 'list' | 'cards') => request<{ feedView: 'list' | 'cards' }>('/api/settings', { method: 'PUT', body: { feedView } }),
     /** Translate a sample sentence with unsaved service settings (an empty key uses the saved one). */
     testTranslation: (provider: TranslationProviderId, settings?: unknown, targetLanguage?: TargetLanguage) => request<{ ok: boolean; sample: string; text: string }>('/api/settings/translation/test', { method: 'POST', body: { provider, settings, targetLanguage } }),
@@ -218,7 +225,24 @@ export const api = {
     preview: (id: string, rules: SelectionRules) => request<RulePreview>(`/api/feeds/${encodeURIComponent(id)}/health/preview`, { method: 'POST', body: { rules } }),
     ignore: (id: string) => request<{ feed: Feed; feedUrl: string }>(`/api/feeds/${encodeURIComponent(id)}/health/ignore`, { method: 'POST', body: {} }),
   },
+  /** Background checks of many PubMed RSS feeds; jobs keep running without the page. */
+  pubmedChecks: {
+    latest: () => request<{ job: PubmedCheckJob | null }>('/api/pubmed-checks/latest'),
+    start: (feedIds?: string[], recheck = false) => request<PubmedCheckJob>('/api/pubmed-checks', { method: 'POST', body: { ...(feedIds ? { feedIds } : {}), recheck } }),
+    get: (id: string) => request<PubmedCheckJob>(`/api/pubmed-checks/${encodeURIComponent(id)}`),
+    cancel: (id: string) => request<PubmedCheckJob>(`/api/pubmed-checks/${encodeURIComponent(id)}/cancel`, { method: 'POST', body: {} }),
+    retry: (id: string) => request<PubmedCheckJob>(`/api/pubmed-checks/${encodeURIComponent(id)}/retry`, { method: 'POST', body: {} }),
+    convert: (id: string, feedIds?: string[], rename = false) => request<{ results: Array<{ feedId: string; ok: boolean; error?: string }>; job: PubmedCheckJob }>(`/api/pubmed-checks/${encodeURIComponent(id)}/convert`, { method: 'POST', body: { ...(feedIds ? { feedIds } : {}), ...(rename ? { rename } : {}) } }),
+  },
+  pubmed: {
+    /** Matches and the newest few articles of a PubMed query (NCBI E-utilities, shared rate limit). */
+    preview: (query: string, networkProfileId?: string | null, signal?: AbortSignal) => request<PubmedPreview>('/api/pubmed/preview', { method: 'POST', body: { query, ...(networkProfileId ? { networkProfileId } : {}) }, signal }),
+  },
   feeds: {
+    /** Reads a PubMed RSS feed once and compares it with the query recovered from it; changes nothing. */
+    pubmedCheck: (id: string) => request<PubmedRssCheck>(`/api/feeds/${encodeURIComponent(id)}/pubmed-check`, { method: 'POST', body: {} }),
+    /** Turns a PubMed RSS feed into a PubMed search with this query; the feed keeps everything else. */
+    pubmedConvert: (id: string, query: string, limit?: number, rename = false) => request<{ feed: Feed; feedUrl: string }>(`/api/feeds/${encodeURIComponent(id)}/pubmed-convert`, { method: 'POST', body: { query, ...(limit ? { limit } : {}), ...(rename ? { rename } : {}) } }),
     previewRss: (url: string, networkProfileId?: string | null) => request<{ title: string; items: ExtractedItem[] }>('/api/rss/preview', { method: 'POST', body: { url, ...(networkProfileId ? { networkProfileId } : {}) } }),
     translationProgress: (id: string) => request<TranslationProgressData>(`/api/feeds/${encodeURIComponent(id)}/translation/progress`),
     retryTranslation: (id: string) => request<unknown>(`/api/feeds/${encodeURIComponent(id)}/translation/retry`, { method: 'POST', body: {} }),

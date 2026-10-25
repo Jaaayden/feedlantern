@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { DomUtils, parseDocument } from 'htmlparser2';
-import { translationEnabled, translationLabel } from '../shared/types.js';
+import { isFeedSource, translationEnabled, translationLabel } from '../shared/types.js';
 import type { Bundle, Feed, FeedItem } from '../shared/types.js';
 import type { BundleMember } from './bundles.js';
 import { mergeBundleItems } from './bundles.js';
@@ -38,7 +38,7 @@ const escape = (value: string) => escapeXml(value);
 
 function plainText(item: FeedItem, feed: Feed): string {
   const html = translationEnabled(feed) && item.contentHtml !== undefined ? item.contentHtml : item.description ?? '';
-  const text = feed.sourceType === 'rss' || translationEnabled(feed) ? DomUtils.textContent(parseDocument(html)) : html;
+  const text = isFeedSource(feed) || translationEnabled(feed) ? DomUtils.textContent(parseDocument(html)) : html;
   const compact = text.replace(/\s+/g, ' ').trim();
   return compact.length > 220 ? `${compact.slice(0, 220)}…` : compact;
 }
@@ -75,7 +75,9 @@ export function renderRssPreview(feed: Feed, items: FeedItem[], feedUrl: string)
   const source = safeLink(feed.url);
   const updated = dateText(feed.lastSuccessAt);
   const label = translationEnabled(feed) ? translationLabel(feed, translator(currentLocale())) : '';
-  const kind = feed.sourceType === 'rss'
+  const kind = feed.sourceType === 'pubmed'
+    ? label ? tl('preview.kindPubmedTranslated', { label }) : tl('preview.kindPubmed')
+    : feed.sourceType === 'rss'
     ? label ? tl('preview.kindRssTranslated', { label }) : tl('preview.kindRss')
     : label ? tl('preview.kindWebsiteTranslated', { label }) : tl('preview.kindWebsite');
   const parts = [escape(kind)];

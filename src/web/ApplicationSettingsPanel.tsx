@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { ChevronDown, Star } from 'lucide-react';
-import type { ApplicationSettings, TranslationProviderId } from '../shared/types';
+import type { ApplicationSettings, NcbiKeyTest, TranslationProviderId } from '../shared/types';
 import { api } from './api';
-import { t } from './i18n';
+import { fmt, t } from './i18n';
 
 /** The instance-wide settings, split into pages that each save only their own fields. */
 export type AppSettingsGroup = 'display' | 'translation' | 'server' | 'pubmed';
@@ -57,6 +57,12 @@ function patchFor(group: AppSettingsGroup, saved: ApplicationSettings, draft: Ap
   return Object.keys(translation).length ? { translation } : {};
 }
 
+/** One line for a test result: what NCBI said, the rate limit it reported, and the email check. */
+function ncbiTestText(test: NcbiKeyTest): string {
+  const main = t(`appSettings.ncbiTest.${test.result}`, { rate: test.rateLimit ?? (test.result === 'valid' ? 10 : 3), detail: test.detail ?? '' });
+  return test.email === 'invalid' ? `${main} ${t('error.ncbiEmailInvalid')}` : test.email === 'missing' ? `${main} ${t('appSettings.ncbiTest.noEmail')}` : main;
+}
+
 export function ApplicationSettingsPanel({ group, revision, onDirty }: { group: AppSettingsGroup; revision: number; onDirty: (dirty: boolean) => void }) {
   const [saved, setSaved] = useState<ApplicationSettings | null>(null);
   const [value, setValue] = useState<ApplicationSettings | null>(null);
@@ -66,6 +72,11 @@ export function ApplicationSettingsPanel({ group, revision, onDirty }: { group: 
   const [clearKey, setClearKey] = useState<Record<KeyOwner, boolean>>({ deepl: false, openai: false, ncbi: false });
   const [open, setOpen] = useState<Set<TranslationProviderId>>(new Set());
   const [testing, setTesting] = useState<TranslationProviderId | ''>(''), [testResult, setTestResult] = useState<{ provider: TranslationProviderId; ok: boolean; text: string }>();
+  // NCBI: the saved key's last test, and a test of the values as typed.
+  const [ncbiStatus, setNcbiStatus] = useState<{ apiKeyConfigured: boolean; lastTest?: NcbiKeyTest }>();
+  const [ncbiTest, setNcbiTest] = useState<{ key: string; test: NcbiKeyTest }>();
+  const [ncbiTesting, setNcbiTesting] = useState(false);
+  useEffect(() => { if (group === 'pubmed') void api.settings.ncbiStatus().then(setNcbiStatus).catch(() => {}); }, [group, revision, saved]);
   const onDirtyRef = useRef(onDirty);
   onDirtyRef.current = onDirty;
   useEffect(() => {
@@ -178,7 +189,19 @@ export function ApplicationSettingsPanel({ group, revision, onDirty }: { group: 
     {group === 'pubmed' && <fieldset disabled={busy}>
       <label className="field"><span>{t('appSettings.ncbiKey')}</span><input type="password" autoComplete="off" spellCheck={false} value={value.ncbi.apiKey} placeholder={value.ncbi.apiKeyConfigured && !clearKey.ncbi ? t('appSettings.keySaved') : t('appSettings.notSet')} onChange={e => { setValue({ ...value, ncbi: { ...value.ncbi, apiKey: e.target.value.trim() } }); setClearKey({ ...clearKey, ncbi: false }); }} /></label>
       {value.ncbi.apiKeyConfigured && <label className="inline"><input type="checkbox" checked={clearKey.ncbi} onChange={e => setClearKey({ ...clearKey, ncbi: e.target.checked })} />{t('appSettings.clearKey')}</label>}
-      <label className="field"><span>{t('appSettings.ncbiEmail')}</span><input type="email" autoComplete="off" maxLength={254} value={value.ncbi.email} placeholder="admin@example.com" onChange={e => setValue({ ...value, ncbi: { ...value.ncbi, email: e.target.value } })} /></label>
+      <label className="field"><span>{t('appSettings.ncbiEmail')}</span><input type="email" autoComplete="off" maxLength={254} value={value.ncbi.email} placeholder="admin@example.com" aria-invalid={!!value.ncbi.email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.ncbi.email.trim())} onChange={e => setValue({ ...value, ncbi: { ...value.ncbi, email: e.target.value } })} /></label>
+      {!!value.ncbi.email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.ncbi.email.trim()) && <p className="hint is-error">{t('error.ncbiEmailInvalid')}</p>}
+      <p className="hint">{t('appSettings.ncbiEmailWhy')}</p>
+      <div className="ncbi-test" data-testid="ncbi-test">
+        <button type="button" className="button small" disabled={ncbiTesting} onClick={() => {
+          setNcbiTesting(true); setError('');
+          const key = clearKey.ncbi ? null : value.ncbi.apiKey;
+          void api.settings.testNcbi(key, value.ncbi.email.trim()).then(test => { setNcbiTest({ key: key ?? '', test }); if (!key) void api.settings.ncbiStatus().then(setNcbiStatus).catch(() => {}); }).catch(e => setError(e instanceof Error ? e.message : String(e))).finally(() => setNcbiTesting(false));
+        }}>{ncbiTesting ? t('common.working') : t('appSettings.ncbiTestButton')}</button>
+        {ncbiTest && ncbiTest.key === (clearKey.ncbi ? '' : value.ncbi.apiKey) ? <p role="status" className={`ncbi-test-result is-${ncbiTest.test.result}`}>{ncbiTestText(ncbiTest.test)}</p>
+          : value.ncbi.apiKey ? <p className="hint">{t('appSettings.ncbiKeyChanged')}</p>
+          : ncbiStatus?.apiKeyConfigured && !clearKey.ncbi ? <p className="hint">{ncbiStatus.lastTest ? t('appSettings.ncbiSavedTested', { result: ncbiTestText(ncbiStatus.lastTest), time: fmt.date(ncbiStatus.lastTest.testedAt, { dateStyle: 'short', timeStyle: 'short' }) }) : t('appSettings.ncbiSavedUntested')}</p> : null}
+      </div>
       <p className="hint">{t('appSettings.ncbiHint')}</p>
     </fieldset>}
     {group === 'server' && <fieldset disabled={busy}>
