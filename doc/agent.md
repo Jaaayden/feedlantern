@@ -9,15 +9,15 @@
 CLI 是仓库中的 workspace 包 `packages/cli`（npm 包名 `feedlantern-cli`），需要 Node.js 20 或更高版本。它目前没有发布到 npm 注册表，从仓库打包安装：
 
 ```bash
-pnpm install && pnpm build
+pnpm install --frozen-lockfile && pnpm build
 ```
 
 ```bash
-cd packages/cli && npm pack
+(cd packages/cli && npm pack)
 ```
 
 ```bash
-npm install --global ./packages/cli/feedlantern-cli-0.7.0.tgz
+npm install --global ./packages/cli/feedlantern-cli-0.8.0.tgz
 ```
 
 `npm pack` 生成的 `.tgz` 可以复制到其他机器上用同样的命令安装，安装时会从 npm 下载依赖（MCP SDK 和 zod）。不想全局安装时，在仓库里直接运行打包好的文件：

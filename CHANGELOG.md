@@ -2,49 +2,45 @@
 
 ## 未发布
 
+## v0.8.0 — 2026-10-25
+
+这一版新增原生 PubMed 检索订阅、Agent CLI / MCP 和中英文界面。
+
 ### PubMed 检索订阅
 
-- 新增订阅来源“PubMed 检索”（“新建订阅”菜单）：像 PubMed 高级检索（Advanced Search Builder）一样添加多行条件（逻辑运算 + 字段 + 检索词），字段包括全部字段、标题/摘要、标题、作者、第一作者、末位作者、期刊、机构、MeSH 主题词、文献类型、语言和期刊 NLM ID；可筛选发表日期（最近 N 天或日期区间）、只看有摘要、文章类型（综述、系统综述、Meta 分析、临床试验、随机对照试验、病例报告）。不用再去 PubMed 网站生成 RSS 链接。
-- 实时显示生成的 PubMed 查询式，检索词自动转义并加引号；也可以直接编辑查询式，能还原成条件时构建器同步更新，否则提示“已切换为手动编辑”。引号、括号不配对等问题会直接指出，不会发给 NCBI。
-- 预览显示匹配总数和最新 5 篇（标题、期刊、日期、作者）以及 NCBI 的提示；输入停顿后才请求，相同查询一分钟内复用，受全局 NCBI 限流约束。提供“在 PubMed 中打开”对照，订阅名默认根据条件生成。
-- 抓取通过 NCBI E-utilities：esearch 按 PubMed 的 “Most recent” 顺序取最新 N 篇（10/20/50/100，默认 20），efetch 取标题、链接、作者、期刊、发表日期和摘要。可选原文、仅译文或双语输出，条目过滤、输出与保留条数、刷新间隔、网络配置（代理和 DoH）、聚合订阅、通知照常可用；编辑时回到同一个构建器，修改条件后已存文章保留。
-- 遵守 NCBI 使用规则：所有 PubMed 请求共用一个队列，不带 API Key 时每秒最多 3 个、带 Key 时 10 个；每个请求带 `tool=feedlantern`，填写后带联系邮箱；429 时整条队列暂停后重试一次。“设置 → PubMed（NCBI）”可填写可选的 NCBI API Key（加密保存，不回显，轻量配置导出不含）和联系邮箱。
-- PubMed 的 RSS 链接仍按普通 RSS 抓取，不会在后台改写。期刊 RSS（`/rss/journals/…`）现在被 NCBI 的工作量证明验证页拦截，报错会说明原因并建议改用检索订阅或检索式 RSS（例如在 PubMed 搜 `"PLoS Pathog"[jour]` 后点 Create RSS）。订阅面板对 PubMed 的期刊 RSS 和检索式 RSS 给出提示，并可在确认后“转换为 PubMed 检索订阅”：期刊 RSS 按地址中的期刊缩写预填期刊条件，检索式 RSS 需要重新填写条件；订阅 ID、RSS 地址、已存条目和译文都保留，已有文章不会被当成新文章。
-- 构建器与 PubMed 高级检索构建器一致：每个条件写成 `(检索词[字段])`，默认不加引号，保留 PubMed 的自动词映射（MeSH、同义词、作者名变体）；每行可选“精确短语”加引号。只处理会破坏语法的字符（方括号、未配对的括号或引号），检索词中的大写 AND/OR/NOT 会提示。预览同时显示 PubMed 实际执行的查询式（querytranslation）。
-- 检索式 RSS（`/rss/search/…`）也可以转换：转换前先读取一次 RSS，从频道标题还原查询式（去掉后缀、尝试补齐不配对的括号、识别疑似截断），用 E-utilities 执行并与 RSS 最新条目对比，覆盖率至少 80% 时判定为“可直接转换”，确认后一键转换；否则打开构建器并预填候选查询式，提示“未能确认与原 RSS 一致，请核对”。任何情况下都不会自动转换。
-- 批量转换：订阅列表顶部提示可转换的 PubMed RSS 订阅数量，也可以勾选后用批量操作“转换为 PubMed 检索订阅”。验证作为后台任务保存在服务端（数据库迁移 22），关闭页面或重启后继续，再次打开看到进度和结果；大多数订阅只用订阅名和已存条目验证（每个一次 E-utilities 请求，不访问 PubMed 网页），同时验证 5 个，仍严格走全局 NCBI 限流；未变的订阅沿用上次结果，可重新验证、停止、重试失败项。进度条显示已完成数和预计剩余时间，逐行显示状态；验证通过的可以边验证边转换，转换幂等。未配置 API Key 时提示并链接到设置页。转换保留订阅 ID、RSS 地址、条目、译文、翻译设置、过滤、输出与保留条数、聚合成员资格、刷新间隔和网络配置。
-- CLI 新增 `pubmed convert <id>` / `pubmed convert --all-verified`（默认只输出验证报告，加 `--yes` 才转换）和 `pubmed checks`（查看、等待、停止、重试后台验证任务），MCP 新增 `pubmed_convert_check`、`pubmed_check_status`、`pubmed_convert_verified`、`pubmed_convert`。
-- “设置 → PubMed（NCBI）”可以在保存前测试 API Key 和邮箱：用一个 `retmax=0` 的 esearch 请求区分有效（显示速率上限）、NCBI 不接受、格式不对、被限流和网络不通，其他情况显示 NCBI 原始错误摘要；保存后显示上次测试的结果与时间，Key 改动后提示重新测试。
-- 订阅名默认为查询式原文加“ - PubMed”（固定后缀，不翻译），随查询式更新，手动修改后不再覆盖；超过 200 字符时从查询式中间截断。RSS、Atom、JSON 的频道标题都使用订阅名。编辑查询式时，仍是默认名称的会跟着更新，自定义名称保持不变并提示。转换已有订阅默认保留原名称，单个和批量确认界面可选“同时把名称改为‘查询式 - PubMed’”，批量表格显示新旧名称对照；CLI `--rename`，MCP `rename`。
-- CLI 新增 `pubmed preview` 和 `pubmed create`（`--query`，或 `--title-abstract`、`--author`、`--journal`、`--affiliation` 等条件选项），MCP 新增 `pubmed_preview`、`pubmed_create` 工具。
-- 接口：订阅新增来源类型 `pubmed` 和 `pubmed: { query, limit }`（订阅的 `url` 是对应的 PubMed 检索页）；新增 `POST /api/pubmed/preview`、`POST /api/feeds/:id/pubmed-check`（验证，不改动订阅）、`POST /api/feeds/:id/pubmed-convert`（幂等）、`/api/pubmed-checks`（后台验证任务：开始、查看、停止、重试、转换）、`POST /api/settings/ncbi/test` 和 `GET /api/settings/ncbi/status`；查询式无法发送时返回错误代码 `pubmed_query_invalid`。应用设置新增 `ncbi`（`apiKey` 只写、`apiKeyConfigured`、`email`）。
+- 在“新建订阅 → PubMed 检索”中按关键词、标题/摘要、作者、期刊、机构、MeSH 等字段组合条件，支持 AND / OR / NOT、发表日期和文章类型筛选，也可手写查询式。默认不加引号，每行可选“精确短语”；无法还原为条件的合法查询式按原文保留。
+- 预览显示匹配总数、最新 5 篇、NCBI 实际执行的查询式和提示，可直接在 PubMed 中对照。输入防抖、结果缓存和全局限流共同减少重复请求。
+- 通过 NCBI E-utilities 按最新收录顺序抓取 10 / 20 / 50 / 100 篇，支持原文、译文、双语输出，以及现有的过滤、保留条数、聚合、通知和网络配置。修改查询式保留已有文章。
+- 订阅名默认为“查询式原文 + ` - PubMed`”，随查询式更新；手动命名后保留自定义名称。超过 200 字符时省略名称中间部分，完整查询式不变。RSS、Atom 和 JSON Feed 使用同一频道标题。
+- PubMed RSS 按原地址抓取，移除期刊 RSS 在后台自动改走 E-utilities 的处理。期刊 RSS 和检索式 RSS 都可在验证候选查询式后显式转换；无法确认一致的进入构建器核对。
+- 批量验证在后台运行，最多同时验证 5 个订阅，并共用 NCBI 限流队列。任务和结果持久化，关闭页面后继续、服务重启后恢复，支持缓存、取消、重试及边验证边转换。
+- 转换保留订阅 ID、对外订阅地址、已有条目和译文，以及翻译、过滤、输出、保留、聚合、刷新和网络设置。默认保留旧名称，单个或批量转换时可勾选按查询式重命名，并预览新名称。
+- “设置 → PubMed（NCBI）”支持保存前测试 API Key 和邮箱，显示响应状态及速率上限；密钥加密保存、不回显。所有 NCBI 请求共用限流器，无 Key 时每秒最多 3 个，有 Key 时最多 10 个，429 后暂停并重试。
+- 新增 PubMed 预览、转换、后台验证任务和密钥测试 API；CLI / MCP 同步支持预览、创建、验证、转换和可选重命名。
 
-### 非订阅源响应的准确报错
+### Agent CLI 与 MCP
 
-- RSS 来源返回网页（`Content-Type: text/html`，或正文以 `<!doctype html` / `<html` 开头）或 200 以外的 2xx 状态时，不再误报“RSS XML 无效或包含不支持的实体声明”，而是提示“来源返回的是网页而不是 RSS/Atom（HTTP 203）……FeedLantern 不会尝试绕过”。能识别出验证页（captcha、challenge、cookies-required 等）时注明标记。抓取日志、订阅列表的错误原因、告警和新建预览都使用新文案。
-- 被标成 `text/html` 的合法 RSS 仍正常解析；带外部实体或 DTD 的 XML 仍按原逻辑拒绝。
+- 新增 `feedlantern` 命令行（`packages/cli`）：通过个人访问令牌管理订阅、识别网页、预览规则、刷新、查看条目和日志、管理聚合及批量任务。支持 JSON / 表格输出、多个配置档案和稳定的错误代码、退出码。
+- 写操作支持 `--dry-run`；删除操作需 `--yes`。配置文件权限为 0600，读取和写入能力受令牌权限约束。
+- `feedlantern mcp` 通过 stdio 提供同一批工具，支持只读模式；删除和 PubMed 转换要求显式确认。
+- 新增令牌自身信息与调用记录接口。CLI 版本号与服务端同步；目前从仓库打包安装，未发布到 npm 注册表，见 [安装与使用](doc/agent.md)。
 
-### Agent CLI 与 MCP server
+### English 与简体中文
 
-- 新增 `feedlantern` 命令行（仓库内 workspace 包 `packages/cli`，npm 包名 `feedlantern-cli`），用访问令牌管理实例：`whoami`、`health`、`feeds list/get/create/update/delete/pause/resume/refresh/items/logs`、`detect`（自动识别并给出可直接创建的建议）、`preview`（按规则预览，报告各字段命中数和重复链接）、`rss preview`、`bundles`、`bulk`、`imports`、`tokens logs`，以及调用任意开放接口的 `api`。默认输出 JSON，`--pretty` / `--table` 给人看；退出码区分用法、鉴权、请求被拒、服务端和网络错误。
-- 所有写操作支持 `--dry-run`（只打印将要发出的请求）；删除类操作必须加 `--yes`。地址和令牌来自 `FEEDLANTERN_URL` / `FEEDLANTERN_TOKEN` 或 `feedlantern login` 写入的配置文件（权限 0600，支持多个档案）。
-- `feedlantern mcp` 以 stdio 方式提供同一批操作的 MCP 工具，可接入 Claude Code 和 Claude Desktop；删除类工具需要 `confirm: true`，写工具支持 `dryRun`，`--read-only` 只提供查询工具。CLI 版本号与服务端保持一致。说明见 `doc/agent.md`。
-- API 错误响应新增机器可读的 `code` 字段（例如 `token_read_only`、`token_not_allowed`、`unauthorized`、`not_found`、`validation`），脚本不必再匹配中文错误说明；预览 RSS 来源时，来源返回网页而不是 RSS/Atom 为 `source_not_feed`。
-- 接口：新增 `GET /api/tokens/current` 和 `GET /api/tokens/current/logs`，令牌可以查看自己的摘要和调用记录（只能看自己）。
+- 界面、日期和数字格式、错误提示及个人通知支持中英文，语言按账号保存。登录页和初始化页也可切换语言。
+- 旧账号升级后保留简体中文；新账号默认跟随浏览器。不支持的语言使用 `DEFAULT_LOCALE`（默认 `en`，可设 `zh-CN`）。
+- API 保留稳定错误代码，并返回本地化说明；订阅输出内容仍按原文或目标翻译语言显示。
+- 新增英文 README、使用指南、部署和配置参考；修复登录页密码错误被误报为登录失效的问题。
 
-### 国际化：English 与简体中文
+### 报错改进
 
-- 界面支持 English 和简体中文，覆盖全部页面、提示和日期、数字、相对时间格式（按语言用 `Intl` 格式化）。语言在顶栏或“设置 → 账号与密码 → 界面语言”中切换，按账号保存在服务端，登录后各设备一致；也可选择“跟随浏览器”。未选择时按浏览器语言显示，都不支持时使用服务器默认语言（英文）。`<html lang>` 随语言变化。
-- 登录页和初始化页按浏览器语言显示，并提供语言切换（保存在当前设备）。
-- 升级不改变现有界面：升级前已有的账号自动设为简体中文（数据库迁移 21）；旧版本的完整备份恢复后同样为简体中文。新建账号在用户选择前跟随浏览器。
-- 接口错误统一为 `{ code, message, error, messageKey, params? }`：`code` 沿用 Agent CLI 引入的稳定错误代码（脚本、CLI、MCP 和网页都按它判断）；`message`（以及保留兼容的 `error`）按账号语言、其次按 `Accept-Language` 翻译；`messageKey` 和 `params` 标识具体文案，网页界面据此按当前语言显示。新增 `PUT /api/auth/locale` 保存账号语言，`GET /api/auth/status` 返回 `locale` 和 `defaultLocale`。
-- 通知（Bark、Webhook、ntfy、Telegram）的标题和正文、抓取日志（包括“来源返回的是网页而不是 RSS”和 PubMed/NCBI 的错误说明）、批量结果和翻译进度按订阅所有者的语言书写；Webhook 的 `event` 不变，集成应按 `event` 判断。
-- 在浏览器中直接打开订阅地址看到的预览页按访问者的 `Accept-Language` 显示。RSS、Atom、JSON 输出的语言不变：翻译订阅仍按目标语言输出，其他订阅保持原样。
-- 新增环境变量 `DEFAULT_LOCALE`（默认 `en`，可设 `zh-CN`），作为没有可用浏览器语言时的兜底语言；中文实例可设为 `zh-CN`。
-- 服务端日志统一改为英文；`pnpm admin:reset` 按终端语言显示。
-- 新增英文 README（`README.md`，中文版移至 `README.zh-CN.md`），以及英文版使用指南、部署步骤和配置参考（`doc/en/`）。
-- OpenAPI 文档（`/api/openapi.json`）的说明改为英文，并描述新的错误格式。
-- 修复：登录页输错密码时不再误报“登录已失效”。
+- RSS 来源返回网页、验证页或异常 2xx 响应时，预览、日志和通知说明实际原因，不再误报 XML 实体声明问题。合法 RSS 即使被标为 HTML 仍可解析，外部实体和 DTD 仍被拒绝。
+
+### 升级提示
+
+- 从 v0.7.0 升级时，数据库自动从 schema 19 迁移到 22，加入账号语言和 PubMed 验证任务等存储。升级前导出完整备份；回退旧版本时同时恢复升级前的数据。
+- 已有订阅、对外订阅地址和已保存内容保留。曾由期刊 RSS 自动走 E-utilities 的订阅会恢复普通 RSS 抓取；若遇 NCBI 验证页，可在界面核对并转换为 PubMed 检索订阅。
+- CLI 与服务端同时更新到 0.8.0；Docker 镜像可固定为 `ghcr.io/jaaayden/feedlantern:0.8.0`，`latest` 继续跟随通过 CI 的 main。
 
 ## v0.7.0
 
