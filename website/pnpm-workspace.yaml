@@ -1,0 +1,5 @@
+# Keep documentation dependencies separate from the application and its image.
+packages:
+  - .
+allowBuilds:
+  esbuild: true
