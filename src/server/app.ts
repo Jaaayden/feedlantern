@@ -35,6 +35,7 @@ import type {
   DetectionResult,
   ExtractedItem,
   Feed,
+  DashboardPeriod,
   PubmedPreview,
   PubmedRssCheck,
   NcbiKeyTest,
@@ -939,6 +940,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   };
 
   const feedPayload = (feed: Feed): { feed: Feed; feedUrl: string } => ({ feed, feedUrl: feedUrl(currentConfig(), store, feed.id) });
+  app.get('/api/dashboard', async request => {
+    feedsGuard(request);
+    const days = Number(asRecord(request.query).days ?? 30);
+    if (![7, 30, 90].includes(days)) throw new AppError(400, 'error.dashboardPeriodInvalid');
+    return store.activity.read(workspace(request).userId, days as DashboardPeriod);
+  });
   app.get('/api/feeds', async (request): Promise<Feed[]> => { feedsGuard(request); return store.listFeeds(workspace(request).userId); });
   const backupGuard = (request: FastifyRequest, allowSetup = false) => {
     const body = asRecord(request.body);
@@ -1817,7 +1824,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
   const cleanup = setInterval(() => {
     for (const [id, owner] of browserOwners) if (Date.now() - owner.touchedAt > 10 * 60_000) browserOwners.delete(id);
-    try { store.purgeExpiredSessions(); store.tokens.purgeExpired(); store.tokenLog.prune(); store.history.prune(); store.ruleHealth.prune(); store.translations.prune(); store.compact(); } catch { console.error('Fetch log cleanup failed; it will retry automatically'); }
+    try { store.purgeExpiredSessions(); store.tokens.purgeExpired(); store.tokenLog.prune(); store.history.prune(); store.ruleHealth.prune(); store.translations.prune(); store.activity.prune(); store.compact(); } catch { console.error('Fetch log cleanup failed; it will retry automatically'); }
   }, 60 * 60_000);
   cleanup.unref();
   app.addHook('onReady', async () => { jobs.recover(); notifier.start(); translations.start(); });

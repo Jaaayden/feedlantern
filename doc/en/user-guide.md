@@ -2,6 +2,17 @@
 
 **English** · [简体中文](../user-guide.md)
 
+## Workspace and dashboard
+
+The sidebar contains Dashboard, All feeds, Needs attention, Bundles and Settings. Administrators also have Users. Opening the site shows the dashboard; existing `#/` links still open All feeds.
+
+- **Dashboard**: current feeds, enabled feeds, retained items and feeds needing attention. Two compact charts show daily new items and completed translations, and daily feed counts, over 7, 30 or 90 days. Dates use UTC; inactive days are zero, and dates before recording began are omitted.
+- **Lifetime totals**: newly stored items and successfully completed translations increment durable counters. Content retention, feed deletion and log cleanup never reduce these totals. Fetching an already retained item does not count again; successful retranslation does. A previously removed item that is fetched and stored again counts as a new collection.
+- **Recording starts**: earlier versions did not keep complete lifetime history, so recording begins when this feature is enabled after upgrading. The dashboard shows that date. Backups include totals and up to 90 days of trends. Restoring returns the statistics to the backup's state without counting imported content again; old backups without statistics start recording at restore time. Deleting an account also removes its statistics.
+- **All feeds**: the original list, cards, search, filters, sorting and bulk operations remain together. Statistics and bundles have their own pages.
+- **Needs attention**: fetch failures or core extraction warnings only. Optional date, image or description notices do not count. The sidebar, dashboard and Users page use the same definition.
+- **Bundles**: create and manage combined feed addresses. Settings keeps its existing navigation on the left and details on the right.
+
 ## Language
 
 The interface is available in English and Simplified Chinese.
@@ -15,7 +26,7 @@ The interface is available in English and Simplified Chinese.
 
 ## Users and sign-in
 
-The Users page lists each account's feeds (including failing and paused ones), credentials, last activity and creation date; the totals at the top show accounts, disabled accounts, feeds and failing feeds. Edit, disable/enable and delete are in each row's “⋯” menu. Administrators click “Create user” (top right of the Users page), set a username and an initial password of at least 8 characters, and hand the details over privately. Everyone uses the same sign-in page; there is no self-registration. Usernames, passwords and roles can be changed later; all administrators have the same rights and can manage other administrators. You can't disable or delete yourself, and you can only demote yourself while another active administrator remains. Renaming, changing the password or changing the role signs out all of that account's sessions; renaming doesn't change any RSS address.
+The Users page lists each account's feeds (including those needing attention and paused ones), credentials, last activity and creation date; the totals at the top show accounts, disabled accounts, feeds and feeds needing attention. Edit, disable/enable and delete are in each row's “⋯” menu. Administrators click “Create user” (top right of the Users page), set a username and an initial password of at least 8 characters, and hand the details over privately. Everyone uses the same sign-in page; there is no self-registration. Usernames, passwords and roles can be changed later; all administrators have the same rights and can manage other administrators. You can't disable or delete yourself, and you can only demote yourself while another active administrator remains. Renaming, changing the password or changing the role signs out all of that account's sessions; renaming doesn't change any RSS address.
 
 Each account sees only its own feeds, cookie credentials, batches and editing sessions — the administrator's everyday workspace follows this rule too. Regular users can create and manage their own web page feeds and RSS translations, using the fetch and translation services the administrator configured. The list/cards view preference is stored per account in the browser.
 
@@ -112,7 +123,7 @@ A few rules keep items that were already delivered from being delivered again as
 
 ## Everyday management
 
-The list view is the default; you can switch to cards and the choice is remembered. Both let you copy the RSS address, open the feed settings and select feeds. Click a name to see its items, source and refresh status; “Edit rules” opens from the feed settings and returns there when you're done. The stats above the list show total feeds, auto-updating feeds, collected items and feeds that need attention. The select-all checkbox is in the list header and, after a search, only affects the results. “Status → Needs attention” shows feeds whose fetch failed or whose rules may have stopped working; you can also show only “Fetch failing” or only “Rules may have stopped working”, combined with search and the source and output filters. Changing the search, source, output or status filter clears the selection.
+The list view is the default; you can switch to cards and the choice is remembered. Both let you copy the RSS address, open the feed settings and select feeds. Click a name to see its items, source and refresh status; “Edit rules” opens from the feed settings and returns there when you're done. These controls live in All feeds; status totals are on the Dashboard. The select-all checkbox is in the list header and, after a search, only affects the results. “Status → Needs attention” shows feeds whose fetch failed or whose rules may have stopped working; you can also show only “Fetch failing” or only “Rules may have stopped working”, combined with search and the source and output filters. Changing the search, source, output or status filter clears the selection.
 
 With feeds selected, a bulk action bar appears above the list. “Change settings” sets translation output (bilingual, translation only, original), target language, translation service, refresh interval (5–1440 minutes), items published (10–500) and items kept (keep current, automatic, or 10–1000) for all of them. Output defaults to “Keep current”, and empty intervals or counts aren't changed, so you can change just one thing. When items kept is below a feed's items published, that feed fails with the reason listed and the others are saved. Item filters are set per feed (the API accepts `itemFilter` in bulk). Web page and RSS feeds are both supported. Saving uses the same logic as a single feed, doesn't refetch the source, and keeps paused feeds paused.
 
@@ -122,8 +133,8 @@ Bulk copy gives one RSS address per line. “Export OPML” (in the list header 
 
 A bundle combines several of your feeds (web page feeds and RSS translations alike) into one address — handy for putting sources on one topic together so you add them to your reader once.
 
-- **Create**: click the arrow next to “New feed”, choose “Bundles”, enter a name and check the members. Or select feeds in the list and click “Add to bundle” in the bulk action bar to add them to an existing bundle or create a new one. Feeds already in a bundle aren't added twice.
-- **Manage**: once created, a “Bundles” section appears above the feed list. Each bundle can copy its address, open in a new tab, and edit its name and members; the “⋯” menu rotates the key or deletes the bundle (member feeds aren't affected).
+- **Create**: click “New bundle” on the Bundles page, or click the arrow next to “New feed”, choose “Bundles”, enter a name and check the members. Or select feeds in the list and click “Add to bundle” in the bulk action bar to add them to an existing bundle or create a new one. Feeds already in a bundle aren't added twice.
+- **Manage**: once created, the sidebar’s “Bundles” page lists your bundles. Each bundle can copy its address, open in a new tab, and edit its name and members; the “⋯” menu rotates the key or deletes the bundle (member feeds aren't affected).
 - **Content**: all items the members collected are merged into one timeline by time — the publication time, or the time first seen when there's none. Each item names the feed it came from with `<category>`. Each link appears once (the first collected copy is kept, so readers never show it twice). A bundle holds up to 100 items by default, adjustable to 10–500. Each member contributes exactly what its own address publishes: translated feeds only finished translations, and each member's item filter and items published still apply (items are selected by member first, then merged, deduplicated and cut to the bundle's limit).
 - **Read-only**: a bundle only reads items the members already stored; opening or refreshing its address never triggers a fetch. Deleted members leave the bundle automatically; paused members still contribute their existing items. When the owner's account is disabled, the bundle address stops working like single feed addresses.
 

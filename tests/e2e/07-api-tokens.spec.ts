@@ -3,7 +3,7 @@ import { e2eBaseUrl, loginAsAdmin, STATIC_RULES, FIXTURE_URLS } from './support'
 
 test('设置页创建访问令牌，脚本用 Bearer 调用 API，吊销后立即失效', async ({ page, playwright }, testInfo) => {
   await loginAsAdmin(page.request);
-  await page.goto('/');
+  await page.goto('/#/');
   await page.getByRole('button', { name: '设置', exact: true }).click();
   await page.getByRole('navigation', { name: '设置分组' }).getByRole('button', { name: '访问令牌' }).click();
   const panel = page.getByRole('region', { name: '访问令牌' });

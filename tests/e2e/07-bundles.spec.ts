@@ -19,7 +19,7 @@ test('聚合订阅：批量加入、复制地址、预览页、编辑成员、�
       const response = await page.request.post('/api/feeds', { headers, data: { name, url, rules } });
       expect(response.ok()).toBeTruthy(); ids.push((await response.json()).feed.id);
     }
-    await page.goto('/');
+    await page.goto('/#/');
     await page.getByLabel('搜索订阅').fill('聚合验收');
     for (const name of ['聚合验收 网页', '聚合验收 卡片']) await page.getByLabel(`选择订阅 ${name}`, { exact: true }).check();
     await page.getByRole('button', { name: '加入聚合', exact: true }).click();
@@ -29,6 +29,7 @@ test('聚合订阅：批量加入、复制地址、预览页、编辑成员、�
     await join.getByRole('button', { name: '加入聚合', exact: true }).click();
     await expect(page.getByRole('status')).toContainText('已创建聚合订阅“每日聚合验收”');
 
+    await page.getByRole('navigation', { name: '主导航' }).getByRole('button', { name: '聚合订阅', exact: true }).click();
     const section = page.getByRole('region', { name: '聚合订阅' });
     const card = section.getByRole('article', { name: '聚合订阅 每日聚合验收' });
     await expect(card).toContainText('2 个订阅');
@@ -53,7 +54,7 @@ test('聚合订阅：批量加入、复制地址、预览页、编辑成员、�
     await expect(page.locator('li .source').first()).toBeVisible();
     await shot(page, 'preview');
 
-    await page.goto('/');
+    await page.goto('/#/bundles');
     await card.getByRole('button', { name: '编辑聚合 每日聚合验收' }).click();
     const editor = page.getByRole('dialog', { name: '编辑聚合订阅' });
     await expect(editor.getByLabel('加入成员 聚合验收 网页')).toBeChecked();
@@ -71,6 +72,7 @@ test('聚合订阅：批量加入、复制地址、预览页、编辑成员、�
     await expect(page.getByRole('status')).toContainText('聚合地址已更新');
     expect((await page.request.get(bundleUrl)).status()).toBe(404);
 
+    await page.getByRole('navigation', { name: '主导航' }).getByRole('button', { name: /^全部订阅/ }).click();
     const download = page.waitForEvent('download');
     await page.getByRole('button', { name: '导出 OPML', exact: true }).click();
     const opml = await readFile(await (await download).path(), 'utf8');
@@ -84,6 +86,7 @@ test('聚合订阅：批量加入、复制地址、预览页、编辑成员、�
     await creator.getByRole('button', { name: '取消' }).click();
 
     expect((await page.request.delete(`/api/feeds/${ids[0]}`, { headers })).ok()).toBeTruthy();
+    await page.goto('/#/bundles');
     await page.reload();
     await expect(section.getByRole('article', { name: '聚合订阅 每日聚合验收 改名' })).toContainText('0 个订阅');
     await page.setViewportSize({ width: 390, height: 844 });
@@ -93,7 +96,8 @@ test('聚合订阅：批量加入、复制地址、预览页、编辑成员、�
     await section.getByRole('button', { name: '更多操作 每日聚合验收 改名' }).click();
     await page.getByRole('menuitem', { name: '删除聚合' }).click();
     await expect(page.getByRole('status')).toContainText('聚合订阅已删除');
-    await expect(section).toHaveCount(0);
+    await expect(section.getByRole('article')).toHaveCount(0);
+    await expect(section.getByRole('heading', { name: '还没有聚合订阅' })).toBeVisible();
   } finally {
     for (const id of ids) await page.request.delete(`/api/feeds/${id}`, { headers });
     for (const { bundle } of await (await page.request.get('/api/bundles')).json()) await page.request.delete(`/api/bundles/${bundle.id}`, { headers });

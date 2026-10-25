@@ -13,7 +13,7 @@ test('网络配置：设置中管理、编辑器预览与后台刷新经代理�
   let feedId = '';
   let profileId = '';
   try {
-    await page.goto('/');
+    await page.goto('/#/');
     await page.getByRole('button', { name: '设置', exact: true }).click();
     await page.getByRole('navigation', { name: '设置分组' }).getByRole('button', { name: '网络配置', exact: true }).click();
     const section = page.getByRole('region', { name: '网络配置' });
@@ -83,7 +83,7 @@ test('网络配置：设置中管理、编辑器预览与后台刷新经代理�
     await expect(edit).toBeHidden();
 
     const before = (await proxyLog()).filter(entry => entry.authorized).length;
-    await page.goto('/');
+    await page.goto('/#/');
     await page.getByRole('button', { name: '新建订阅' }).first().click();
     await page.getByLabel('源网址').fill(listUrl);
     await page.getByText('加载与网络设置').click();

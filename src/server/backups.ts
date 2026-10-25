@@ -25,6 +25,8 @@ export const networkProfileSecretSchema = z.object({
   headers: z.array(z.object({ name: z.string().min(1).max(NETWORK_LIMITS.headerName).regex(/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/).refine(name => !forbiddenHeaderReason(name)), value: visible(NETWORK_LIMITS.headerValue) }).strict()).max(NETWORK_LIMITS.headers),
 }).strict();
 export const backupTables = {
+  activity_totals: z.array(z.object({ owner_id: short, started_at: date, collected: z.number().int().nonnegative(), translated: z.number().int().nonnegative() }).strict()).max(10000).default([]),
+  activity_daily: z.array(z.object({ owner_id: short, day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(value => Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0,10) === value), collected: z.number().int().nonnegative(), translated: z.number().int().nonnegative(), feeds_created: z.number().int().nonnegative(), feeds_deleted: z.number().int().nonnegative() }).strict()).max(1_000_000).default([]),
   rss_sources: z.array(z.object({ feed_id: short, etag: nullable, modified: nullable, seen_json: text.refine(value => { try { const a=JSON.parse(value); return Array.isArray(a) && a.length<=100 && a.every(k=>typeof k==='string'); } catch { return false; } }).default('[]') }).strict()).max(10000).default([]),
   translations: z.array(z.object({ item_id: short, feed_id: short, revision: short, status: z.enum(['pending','running','success','failed']), attempts: z.number().int().min(0).max(3), next_at: z.number().int().nonnegative(), error: nullable,
     body_json: z.string().max(20_000_000).refine(value => { try { const b=JSON.parse(value); return (b.actorId == null || typeof b.actorId==='string' && b.actorId.length<=4000) && typeof b.html==='string' && ['title','translatedHtml','bilingualHtml'].every(k => b[k]===undefined || typeof b[k]==='string'); } catch { return false; } }) }).strict()).max(2_000_000).default([]),
@@ -83,6 +85,13 @@ export const snapshotSchema = z.preprocess(value => {
 }, currentSnapshotSchema).superRefine((snapshot, context) => {
   const { users, feeds, credentials, user_notifications, bundles, bundle_feeds, network_profiles } = snapshot.tables;
   const owners = new Set(users.map(u => u.id)), creds = new Map(credentials.map(c => [c.id, c.owner_id]));
+  const { activity_totals, activity_daily } = snapshot.tables;
+  const totalsOwners = new Set(activity_totals.map(row => row.owner_id));
+  if (totalsOwners.size !== activity_totals.length || activity_totals.some(row => !owners.has(row.owner_id))
+    || new Set(activity_daily.map(row => `${row.owner_id}\n${row.day}`)).size !== activity_daily.length
+    || activity_daily.some(row => !totalsOwners.has(row.owner_id))) {
+    context.addIssue({ code: 'custom', message: 'Invalid dashboard activity in the backup' });
+  }
   const profiles = new Map(network_profiles.map(p => [p.id, p.owner_id]));
   if (profiles.size !== network_profiles.length || network_profiles.some(p => !owners.has(p.owner_id)) || feeds.some(f => f.network_profile_id && profiles.get(f.network_profile_id) !== f.owner_id)) {
     context.addIssue({ code: 'custom', message: 'Network profiles in the backup belong to unknown users' });

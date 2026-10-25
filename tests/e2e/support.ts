@@ -207,7 +207,7 @@ export async function firstVisible(locators: Locator[]): Promise<Locator> {
 }
 
 export async function loginInPage(page: Page): Promise<void> {
-  await page.goto('/');
+  await page.goto('/#/');
   // The app first renders a connection placeholder and only then mounts the
   // auth form after /api/auth/status returns. Wait for that transition instead
   // of inspecting the DOM during the placeholder frame.
@@ -229,7 +229,7 @@ export async function loginInPage(page: Page): Promise<void> {
       page.getByRole('button', { name: '创建管理员' }),
       page.locator('button[type="submit"]'),
     ]).then((submit) => submit.click());
-    await expect(page.getByText(/订阅管理|新建订阅/).first()).toBeVisible();
+    await expect(page.getByText(/全部订阅|新建订阅/).first()).toBeVisible();
     return;
   }
   const username = await firstVisible([
@@ -252,7 +252,7 @@ export async function loginInPage(page: Page): Promise<void> {
     page.locator('button[type="submit"]'),
   ]);
   await submit.click();
-  await expect(page.getByText(/订阅管理|新建订阅/).first()).toBeVisible();
+  await expect(page.getByText(/全部订阅|新建订阅/).first()).toBeVisible();
 }
 
 export async function locatorForUrl(page: Page): Promise<Locator> {

@@ -57,7 +57,7 @@ test('English interface: sign in, create a feed, settings and language preferenc
   await expect(page.getByRole('alert')).toHaveText('Incorrect username or password.');
   await page.getByLabel('Password').fill(ACCOUNT.password);
   await page.getByRole('button', { name: 'Sign in' }).click();
-  await expect(page.getByRole('heading', { name: 'Your feeds, kept lit.' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible();
 
   // Create a web page feed.
   await page.getByRole('button', { name: 'New feed', exact: true }).click();

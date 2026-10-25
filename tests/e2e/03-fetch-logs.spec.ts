@@ -9,7 +9,7 @@ test('真实抓取成功、失败保留文章、日志自动更新及状态筛�
   expect(created.ok()).toBeTruthy();
   const { feed } = await created.json();
   try {
-    await page.goto('/'); await page.getByRole('button', { name: '查看订阅 抓取日志验收', exact: true }).click();
+    await page.goto('/#/'); await page.getByRole('button', { name: '查看订阅 抓取日志验收', exact: true }).click();
     const dialog = page.getByRole('dialog');
     await dialog.getByRole('button', { name: '运行日志', exact: true }).click();
     const logs = dialog.getByRole('region', { name: '抓取日志' });
@@ -48,7 +48,7 @@ test('日志分页、通知状态、加载失败重试及离开标签停止轮�
     return route.fulfill({ json: { logs: more ? data.slice(20) : data.slice(0, 20), nextCursor: more ? null : '2' } });
   });
   try {
-    await page.goto('/'); await page.getByRole('button', { name: '查看订阅 日志分页验收', exact: true }).click();
+    await page.goto('/#/'); await page.getByRole('button', { name: '查看订阅 日志分页验收', exact: true }).click();
     const dialog = page.getByRole('dialog');
     await dialog.getByRole('button', { name: '运行日志', exact: true }).click();
     const logs = dialog.getByRole('region', { name: '抓取日志' });

@@ -3,7 +3,7 @@ import { e2eBaseUrl, loginAsAdmin, protocolHeaders, STATIC_RULES, FIXTURE_URLS }
 
 test('管理员创建、停用、启用和重置用户；普通用户独立使用工作台', async ({ page, browser }, testInfo) => {
   await loginAsAdmin(page.request);
-  await page.goto('/');
+  await page.goto('/#/');
   await page.getByRole('button', { name: '用户管理', exact: true }).click();
   await expect(page.getByRole('heading', { name: '用户管理', exact: true })).toBeVisible();
   const username = `reader-${Date.now()}`;
@@ -20,7 +20,7 @@ test('管理员创建、停用、启用和重置用户；普通用户独立使�
   const reader = await context.newPage();
   try {
     const login = async (password: string) => {
-      await reader.goto('/');
+      await reader.goto('/#/');
       await reader.getByLabel('用户名', { exact: true }).fill(username);
       await reader.getByLabel('密码', { exact: true }).fill(password);
       await reader.getByRole('button', { name: '登录', exact: true }).click();
@@ -72,7 +72,7 @@ test('管理员切换用户工作台、配置个人通知、改名和永久删�
   const users = [];
   for (const username of names) users.push(await (await page.request.post('/api/users', { headers, data: { username, password: 'workspace-password' } })).json());
   try {
-    await page.goto('/');
+    await page.goto('/#/');
     const openUser = async (username: string) => {
       await page.getByRole('button', { name: '用户管理', exact: true }).click();
       await page.locator('.user-row').filter({ hasText: username }).getByRole('button', { name: '管理工作台' }).click();

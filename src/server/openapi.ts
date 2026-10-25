@@ -46,6 +46,12 @@ const providerId = str({ enum: ['google', 'deepl', 'openai'] });
 const networkProfileId = nullable(str({ description: 'Network profile ID; null means the default network (direct, no extra headers)' }));
 
 const schemas: Record<string, Schema> = {
+  DashboardStats: object({
+    days: int({ enum: [7,30,90] }), recordingSince: dateTime, updatedAt: dateTime,
+    totals: object({ collected: int(), translated: int() }, ['collected','translated']),
+    daily: array(object({ date: str({ format: 'date' }), collected: int(), translated: int(), added: int(), removed: int(), subscriptions: int() }, ['date','collected','translated','added','removed','subscriptions'])),
+    translation: object({ pending: int(), running: int(), failed: int() }, ['pending','running','failed']), fetching: int(),
+  }, ['days','recordingSince','updatedAt','totals','daily','translation','fetching']),
   Error: object({
     code: str({ enum: [...API_ERROR_CODES], description: 'Stable, machine-readable error code; scripts should branch on it. token_read_only: a read token tried to write; token_not_allowed: a token called an endpoint reserved for browser sessions; source_not_feed: the source returned a web page (often a bot check) or an unusual status instead of RSS/Atom; pubmed_query_invalid: a PubMed query that cannot be sent; the rest follow the HTTP status' }),
     message: str({ description: 'Error message for people, in the reader\'s language; may change between versions' }),
@@ -82,7 +88,7 @@ const schemas: Record<string, Schema> = {
   ApiTokenCreated: object({ token: ref('ApiToken'), secret: str({ description: 'The full token, returned only this once', pattern: '^fl_[A-Za-z0-9_-]{43}$' }) }, ['token', 'secret']),
   UserSummary: object({
     id: str(), username: str(), role: str({ enum: ['admin', 'user'] }), enabled: bool, createdAt: dateTime, updatedAt: dateTime,
-    stats: object({ feeds: int(), failingFeeds: int(), pausedFeeds: int(), credentials: int(), lastSeenAt: nullable(dateTime) }),
+    stats: object({ feeds: int(), failingFeeds: int(), attentionFeeds: int(), pausedFeeds: int(), credentials: int(), lastSeenAt: nullable(dateTime) }),
   }, ['id', 'username', 'role', 'enabled', 'createdAt', 'updatedAt']),
   SelectionRules: object({ item: str(), title: str(), link: str(), description: str(), image: str(), date: str() }, ['item', 'title', 'link'], { description: 'CSS selectors; title, link and the rest are relative to item' }),
   FeedInput: object({
@@ -274,6 +280,9 @@ const operations: Operation[] = [
   { method: 'PUT', path: '/api/credentials/:id', tag: 'credentials', summary: 'Update a cookie credential', workspace: true, body: ref('CredentialInput'), response: ref('CredentialSummary') },
   { method: 'DELETE', path: '/api/credentials/:id', tag: 'credentials', summary: 'Delete a cookie credential', description: 'Returns 409 while feeds still use it.', workspace: true, response: ok },
   // Feeds
+  { method: 'GET', path: '/api/dashboard', tag: 'feeds', summary: 'Read dashboard activity', workspace: true,
+    description: 'Account totals survive item retention, feed deletion and diagnostic log cleanup. Recording starts when dashboard statistics are installed. Collection counts new stored items; translation counts successful completions, including retranslation. Daily UTC detail is kept for 90 days; lifetime totals do not expire.',
+    query: [{ name: 'days', schema: int({ enum: [7,30,90], default: 30 }) }], response: ref('DashboardStats') },
   { method: 'GET', path: '/api/feeds', tag: 'feeds', summary: 'List feeds', workspace: true, response: array(ref('Feed')) },
   { method: 'POST', path: '/api/feeds', tag: 'feeds', summary: 'Create a feed', description: 'Web page feeds are fetched once before the response; RSS feeds are fetched in the background.', workspace: true, body: ref('FeedInput'), response: ref('FeedPayload') },
   { method: 'POST', path: '/api/feeds/bulk', tag: 'feeds', summary: 'Bulk actions', workspace: true, body: object({ ids: array(str(), { minItems: 1, maxItems: 200 }), action: str({ enum: ['copy', 'pause', 'resume', 'refresh', 'delete', 'settings'] }), settings: object({ translationMode, targetLanguage, translationProvider, intervalMinutes: int({ minimum: 5, maximum: 1440 }), itemFilter: nullable(ref('ItemFilter')), outputLimit: int({ minimum: 10, maximum: 500 }), retentionLimit: nullable(int({ minimum: 10, maximum: 1000 })) }) }, ['ids', 'action']), response: ref('BulkResult') },

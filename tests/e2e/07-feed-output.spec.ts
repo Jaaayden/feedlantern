@@ -7,7 +7,7 @@ test('订阅面板切换 Atom / JSON Feed 地址，设置过滤和输出条数�
   expect(created.ok()).toBeTruthy();
   const { feed, feedUrl } = await created.json() as { feed: { id: string }; feedUrl: string };
   try {
-    await page.goto('/');
+    await page.goto('/#/');
     await page.getByLabel('搜索订阅').fill('输出格式验收');
     await page.getByRole('button', { name: '查看订阅 输出格式验收', exact: true }).click();
     const dialog = page.getByRole('dialog');
@@ -91,7 +91,7 @@ test('批量修改输出条数和保留条数，只改填写的字段', async ({
       const created = await page.request.post('/api/feeds', { headers, data: { name: `批量条数验收 ${i}`, url: FIXTURE_URLS.static, intervalMinutes: 90, rules: STATIC_RULES } });
       expect(created.ok()).toBeTruthy(); ids.push((await created.json()).feed.id);
     }
-    await page.goto('/'); await page.getByLabel('搜索订阅').fill('批量条数验收');
+    await page.goto('/#/'); await page.getByLabel('搜索订阅').fill('批量条数验收');
     await page.getByLabel('全选当前结果').check();
     await page.getByRole('button', { name: '批量修改设置', exact: true }).click();
     const form = page.getByRole('form', { name: '批量修改订阅设置' });

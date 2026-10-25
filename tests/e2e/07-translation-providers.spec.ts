@@ -44,7 +44,7 @@ test('管理员配置 DeepL 和 OpenAI 兼容接口，订阅选择服务与目�
     expect(JSON.stringify(saved)).not.toContain('sk-e2e-secret'); expect(saved.translation.openai.apiKeyConfigured).toBe(true);
     expect(saved.translation.defaultProvider).toBe('deepl');
 
-    await page.goto('/');
+    await page.goto('/#/');
     await page.getByRole('button', { name: '新建订阅', exact: true }).click();
     await page.getByRole('button', { name: 'RSS 翻译', exact: true }).click();
     await page.getByLabel('RSS / Atom 地址').fill(`${fixtureBaseUrl}/feed.xml?providers=1`);

@@ -5,7 +5,7 @@ test('列表偏好、统一订阅名称、批量创建及加密备份入口', as
   const headers = protocolHeaders(auth.csrfToken);
   await page.request.put('/api/settings', { headers, data: { feedView: 'list' } });
   await page.request.post('/api/feeds', { headers, data: { name: 'Management fixture', url: FIXTURE_URLS.static, rules: { item: '.article-card', title: '.article-title', link: 'a.article-link' } } });
-  await page.goto('/');
+  await page.goto('/#/');
   await expect(page.getByRole('button', { name: '列表', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await page.getByRole('button', { name: '卡片', exact: true }).click();
   await page.reload();
@@ -47,7 +47,7 @@ test('移动端列表、选择后复制和过滤清空选择', async ({ page }) 
   const created = await page.request.post('/api/feeds', { headers, data: { name: '移动端独立测试', url: FIXTURE_URLS.static, rules: { item: '.article-card', title: '.article-title', link: 'a.article-link' } } });
   expect(created.ok()).toBeTruthy();
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto('/');
+  await page.goto('/#/');
   await page.getByLabel('搜索订阅').fill('移动端独立测试');
   await page.getByLabel('选择订阅 移动端独立测试').check();
   await expect(page.getByText('已选择 1 项')).toBeVisible();
@@ -68,7 +68,7 @@ test('独立设置入口、刷新间隔持久化、未保存提醒及操作保�
   const headers = protocolHeaders(auth.csrfToken);
   const created = await page.request.post('/api/feeds', { headers, data: { name: '刷新设置测试', url: FIXTURE_URLS.static, intervalMinutes: 60, rules: { item: '.article-card', title: '.article-title', link: 'a.article-link' } } });
   const { feed, feedUrl } = await created.json();
-  await page.goto('/');
+  await page.goto('/#/');
   await page.getByLabel('搜索订阅').fill(feed.name);
   await page.getByRole('button', { name: `查看订阅 ${feed.name}`, exact: true }).click();
   const dialog = page.getByRole('dialog');
@@ -117,7 +117,7 @@ test('设置保存失败保留输入，规则编辑取消和保存返回设置',
   const headers = protocolHeaders(auth.csrfToken);
   const created = await page.request.post('/api/feeds', { headers, data: { name: `规则设置返回测试-${testInfo.retry}`,  url: FIXTURE_URLS.static, rules: { item: '.article-card', title: '.article-title', link: 'a.article-link' } } });
   const { feed } = await created.json();
-  await page.goto('/');
+  await page.goto('/#/');
   await page.getByLabel('搜索订阅').fill(feed.name);
   await page.getByRole('button', { name: `订阅设置 ${feed.name}`, exact: true }).click();
   const dialog = page.getByRole('dialog');
@@ -152,7 +152,7 @@ test('源网页不可用也能在设置中修改间隔，无需连接或预览',
   expect(created.ok()).toBeTruthy();
   const { feed, feedUrl } = await created.json();
   expect(feed.lastError).toBeTruthy();
-  await page.goto('/');
+  await page.goto('/#/');
   await page.getByLabel('搜索订阅').fill(feed.name);
   await page.getByRole('button', { name: `订阅设置 ${feed.name}`, exact: true }).click();
   const dialog = page.getByRole('dialog');

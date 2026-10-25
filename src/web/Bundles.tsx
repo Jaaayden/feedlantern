@@ -16,9 +16,9 @@ function memberNames(feedIds: string[], feeds: Feed[]): string {
   return names.length > 4 ? t('bundle.andMore', { names: fmt.list(names.slice(0, 4), 'unit'), count: names.length }) : fmt.list(names, 'unit');
 }
 
-/** Bundles on the feeds page: copy the address, edit members, rotate the key or delete. */
-export function BundleSection({ bundles, feeds, create, edit, changed, notify }: {
-  bundles: BundlePayload[]; feeds: Feed[]; create: () => void; edit: (bundle: BundlePayload) => void; changed: () => void; notify: (text: string) => void;
+/** Reuse the existing bundle operations in their own compact page. */
+export function BundleSection({ bundles, feeds, create, edit, changed, notify, standalone = false }: {
+  bundles: BundlePayload[]; feeds: Feed[]; create: () => void; edit: (bundle: BundlePayload) => void; changed: () => void; notify: (text: string) => void; standalone?: boolean;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -26,10 +26,11 @@ export function BundleSection({ bundles, feeds, create, edit, changed, notify }:
     setBusy(true); setError('');
     try { await operation(); changed(); notify(success); } catch (e) { setError(messageOf(e)); } finally { setBusy(false); }
   }
-  return <section className="bundle-section" aria-label={t('opml.bundles')}>
-    <div className="list-toolbar"><h2>{t('opml.bundles')} <span>{bundles.length}</span></h2><button className="button small" disabled={busy} onClick={create}><Plus size={14} />{t('bundle.new')}</button></div>
+  return <section className={`bundle-section ${standalone ? 'standalone' : ''}`} aria-label={t('opml.bundles')}>
+    <div className={standalone ? 'page-heading' : 'list-toolbar'}>{standalone ? <div><h1>{t('nav.bundles')}</h1><p>{t('bundle.pageLead')}</p></div> : <h2>{t('opml.bundles')} <span>{bundles.length}</span></h2>}<button className={`button ${standalone ? 'primary' : 'small'}`} disabled={busy} onClick={create}><Plus size={14} />{t('bundle.new')}</button></div>
     {error && <div className="error-note" role="alert">{error}</div>}
-    <div className="bundle-grid">{bundles.map(({ bundle, bundleUrl }) => <article className="bundle-card" key={bundle.id} aria-label={t('bundle.named', { name: bundle.name })}>
+    {standalone && bundles.length === 0 && <div className="empty-state"><span className="large-icon"><Layers size={32} /></span><h2>{t('bundle.emptyTitle')}</h2><p>{t('bundle.emptyBody')}</p></div>}
+    <div className={standalone ? 'bundle-list' : 'bundle-grid'}>{bundles.map(({ bundle, bundleUrl }) => <article className="bundle-card" key={bundle.id} aria-label={t('bundle.named', { name: bundle.name })}>
       <div className="bundle-head">
         <span className="soft-icon"><Layers size={18} /></span>
         <div className="bundle-title"><h3 title={bundle.name}>{bundle.name}</h3><small>{t('bundle.summary', { count: bundle.feedIds.length, limit: bundle.itemLimit })}</small></div>
