@@ -333,7 +333,8 @@ const server = createServer(async (request, response) => {
   // A term containing "zzqx" matches nothing; every other search lists the same three articles.
   if (requestUrl.pathname === '/entrez/eutils/esearch.fcgi') {
     pubmedSearches.push(requestUrl.searchParams.get('term') ?? '');
-    response.writeHead(200, { 'Content-Type': 'application/json' });
+    // Like NCBI: the limit header says 10 with an API key, 3 without.
+    response.writeHead(200, { 'Content-Type': 'application/json', 'X-RateLimit-Limit': requestUrl.searchParams.get('api_key') ? '10' : '3' });
     response.end(pubmedFixture((requestUrl.searchParams.get('term') ?? '').includes('zzqx') ? 'esearch-empty.json' : 'esearch-journal.json'));
     return;
   }

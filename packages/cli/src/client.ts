@@ -12,6 +12,7 @@ import {
   type ExtractedItem,
   type PubmedPreview,
   type PubmedRssCheck,
+  type PubmedCheckJob,
   type Feed,
   type FeedInput,
   type FeedItem,
@@ -170,6 +171,12 @@ export class FeedLanternClient {
   rssPreview(url: string, networkProfileId?: string | null): Promise<RssPreview> { return this.request('POST', '/api/rss/preview', { body: { url, ...(networkProfileId ? { networkProfileId } : {}) } }); }
   pubmedCheck(id: string): Promise<PubmedRssCheck> { return this.request('POST', `/api/feeds/${encodeURIComponent(id)}/pubmed-check`, { body: {}, safe: true }); }
   pubmedConvert(id: string, query: string, limit?: number): Promise<FeedPayload> { return this.request('POST', `/api/feeds/${encodeURIComponent(id)}/pubmed-convert`, { body: { query, ...(limit ? { limit } : {}) } }); }
+  startPubmedChecks(feedIds?: string[], recheck = false): Promise<PubmedCheckJob> { return this.request('POST', '/api/pubmed-checks', { body: { ...(feedIds ? { feedIds } : {}), recheck }, safe: true }); }
+  latestPubmedChecks(): Promise<{ job: PubmedCheckJob | null }> { return this.request('GET', '/api/pubmed-checks/latest'); }
+  pubmedCheckJob(id: string): Promise<PubmedCheckJob> { return this.request('GET', `/api/pubmed-checks/${encodeURIComponent(id)}`); }
+  cancelPubmedChecks(id: string): Promise<PubmedCheckJob> { return this.request('POST', `/api/pubmed-checks/${encodeURIComponent(id)}/cancel`, { body: {}, safe: true }); }
+  retryPubmedChecks(id: string): Promise<PubmedCheckJob> { return this.request('POST', `/api/pubmed-checks/${encodeURIComponent(id)}/retry`, { body: {}, safe: true }); }
+  convertPubmedChecks(id: string, feedIds?: string[]): Promise<{ results: Array<{ feedId: string; ok: boolean; error?: string }>; job: PubmedCheckJob }> { return this.request('POST', `/api/pubmed-checks/${encodeURIComponent(id)}/convert`, { body: feedIds ? { feedIds } : {} }); }
   pubmedPreview(query: string, networkProfileId?: string | null): Promise<PubmedPreview> { return this.request('POST', '/api/pubmed/preview', { body: { query, ...(networkProfileId ? { networkProfileId } : {}) } }); }
 
   // Remote editor (browser) sessions, used for detection and rule previews.

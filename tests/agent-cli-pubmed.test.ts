@@ -109,7 +109,8 @@ test('MCP：pubmed_preview / pubmed_create 支持条件或查询式，只读模�
   try {
     const names = (await writer.client.listTools()).tools.map(tool => tool.name);
     assert.ok(names.includes('pubmed_preview') && names.includes('pubmed_create'));
-    assert.ok(!(await readOnly.client.listTools()).tools.some(tool => tool.name.startsWith('pubmed_')));
+    // Only the job status is a read; checks, previews and conversions need a write token.
+    assert.deepEqual((await readOnly.client.listTools()).tools.filter(tool => tool.name.startsWith('pubmed_')).map(tool => tool.name), ['pubmed_check_status']);
     const preview = await writer.call('pubmed_preview', { conditions: [{ field: 'author', term: 'Zhang Y' }, { field: 'lastAuthor', term: 'Li X', op: 'OR' }], filters: { hasAbstract: true } });
     assert.equal(preview.isError, false, JSON.stringify(preview.body));
     assert.equal(preview.body.query, '((Zhang Y[Author]) OR (Li X[Author - Last])) AND (hasabstract)');

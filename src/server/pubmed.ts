@@ -374,7 +374,8 @@ export async function checkPubmedRss(feed: { url: string; name: string }, deps: 
     if (options.signal?.aborted) throw reason;
     error = deps.describe(reason);
   }
-  if (!fetched) return byName ? { ...byName, error } : attempt(fromName, feed.name, undefined, error);
+  // The RSS couldn't be read either: say so, unless the name already showed a more precise problem.
+  if (!fetched) return byName ? { ...byName, error, ...(byName.reason === 'lowCoverage' || byName.reason === 'noItems' ? { reason: 'fetchFailed' as const } : {}) } : attempt(fromName, feed.name, undefined, error);
   const title = fetched.title.trim() || feed.name;
   const rssIds = fetched.items.map(item => pubmedPmidOf(item.link)).filter((id): id is string => !!id);
   return attempt(pubmedQueryFromRssTitle(title), title, rssIds.length ? { source: 'rss', ids: rssIds } : stored);

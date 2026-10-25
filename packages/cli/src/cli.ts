@@ -303,9 +303,19 @@ const commands: Command[] = [
   },
   {
     name: 'pubmed convert', args: ['[feedId]'], write: true,
-    options: { 'all-verified': { type: 'boolean' }, query: { type: 'string' }, limit: { type: 'string' } },
+    options: { 'all-verified': { type: 'boolean' }, query: { type: 'string' }, limit: { type: 'string' }, recheck: { type: 'boolean' } },
     table: { rows: 'feeds', columns: ['feedId', 'name', 'status', 'reason', 'coverage', 'query'] },
-    run: async ctx => ops.pubmedConvert(await ctx.client(), compact({ feedId: ctx.args.feedId as string | undefined, allVerified: ctx.opts['all-verified'] ? true : undefined, yes: ctx.opts.yes ? true : undefined, query: str(ctx.opts, 'query'), limit: pubmedLimit(ctx) })),
+    run: async ctx => ops.pubmedConvert(await ctx.client(), compact({ feedId: ctx.args.feedId as string | undefined, allVerified: ctx.opts['all-verified'] ? true : undefined, yes: ctx.opts.yes ? true : undefined, query: str(ctx.opts, 'query'), limit: pubmedLimit(ctx), recheck: ctx.opts.recheck ? true : undefined })),
+  },
+  {
+    name: 'pubmed checks', write: true,
+    options: { job: { type: 'string' }, start: { type: 'boolean' }, feeds: { type: 'string' }, recheck: { type: 'boolean' }, wait: { type: 'boolean' }, cancel: { type: 'boolean' }, retry: { type: 'boolean' } },
+    table: { rows: 'feeds', columns: ['feedId', 'name', 'state', 'status', 'reason', 'coverage', 'query'] },
+    run: async ctx => {
+      const waitMs = ctx.opts.wait ? 30 * 60_000 : undefined;
+      if (ctx.opts.start || ctx.opts.recheck || str(ctx.opts, 'feeds')) return ops.pubmedChecks(await ctx.client(), compact({ feedIds: list(str(ctx.opts, 'feeds')), recheck: ctx.opts.recheck ? true : undefined, waitMs }));
+      return ops.pubmedCheckStatus(await ctx.client(), compact({ jobId: str(ctx.opts, 'job'), cancel: ctx.opts.cancel ? true : undefined, retry: ctx.opts.retry ? true : undefined, waitMs }));
+    },
   },
   {
     name: 'rss preview', args: ['url'], options: { 'network-profile': { type: 'string' } }, write: true,

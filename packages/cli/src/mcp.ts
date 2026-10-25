@@ -126,14 +126,20 @@ const tools: ToolDef[] = [
     run: (client, args) => { const { networkProfileId, ...search } = args; return ops.pubmedPreview(client, search as ops.PubmedSearchInput, networkProfileId as string | undefined); },
   },
   {
-    name: 'pubmed_convert_check', scope: 'write', annotations: fetches, input: { feedIds: z.array(z.string().min(1)).max(500).optional().describe(d('pubmedCheckIds')) },
-    async run(client, args) {
-      const ids = args.feedIds as string[] | undefined;
-      if (!ids?.length) return ops.pubmedConvert(client, { allVerified: true });
-      const feeds = [];
-      for (const feedId of ids) feeds.push(...(await ops.pubmedConvert(client, { feedId })).feeds);
-      return { checked: feeds.length, verified: feeds.filter(feed => feed.status === 'verified').length, review: feeds.filter(feed => feed.status === 'review').length, feeds };
-    },
+    name: 'pubmed_convert_check', scope: 'write', annotations: fetches,
+    input: { feedIds: z.array(z.string().min(1)).max(1000).optional().describe(d('pubmedCheckIds')), recheck: z.boolean().optional().describe(d('pubmedRecheck')), waitSeconds: z.number().int().min(0).max(300).optional().describe(d('pubmedWait')) },
+    run: (client, args) => ops.pubmedChecks(client, { feedIds: args.feedIds as string[] | undefined, recheck: args.recheck as boolean | undefined, waitMs: ((args.waitSeconds as number | undefined) ?? 0) * 1000 }),
+  },
+  {
+    name: 'pubmed_check_status', scope: 'read', annotations: read,
+    input: { jobId: z.string().optional().describe(d('pubmedJobId')), waitSeconds: z.number().int().min(0).max(300).optional().describe(d('pubmedWait')) },
+    run: (client, args) => ops.pubmedCheckStatus(client, { jobId: args.jobId as string | undefined, waitMs: ((args.waitSeconds as number | undefined) ?? 0) * 1000 }),
+  },
+  {
+    name: 'pubmed_convert_verified', scope: 'write', annotations: idempotent,
+    input: { jobId: z.string().min(1).describe(d('pubmedJobId')), feedIds: z.array(z.string().min(1)).optional().describe(d('pubmedConvertIds')), confirm, dryRun },
+    confirm: () => true,
+    run: (client, args) => ops.pubmedConvertVerified(client, s(args.jobId), args.feedIds as string[] | undefined),
   },
   {
     name: 'pubmed_convert', scope: 'write', annotations: idempotent,

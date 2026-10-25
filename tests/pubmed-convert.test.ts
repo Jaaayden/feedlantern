@@ -118,11 +118,19 @@ test('转换前的验证：还原查询式并与 RSS 最新条目对比，覆盖
     const empty = await t.check(t.rssFeed('Empty', search('empty')).id);
     assert.deepEqual([empty.status, empty.reason], ['review', 'noItems']);
 
-    // The address can't be read: the query comes from the feed's name and stays a suggestion.
-    const gone = t.rssFeed(SUN, search('gone'));
+    // A feed named after its search (as PubMed's RSS title names it) is confirmed by the items it holds:
+    // one E-utilities request and no visit to the PubMed website.
+    const named = t.rssFeed(SUN, search('gone'));
+    t.store.transaction(() => t.store.translations.upsert(named, parseSource(rssDocument(SUN, ['42883926', '41714066']), search('gone')).items));
+    const fetchedBefore = t.fetched.length;
+    const byName = await t.check(named.id);
+    assert.deepEqual([byName.status, byName.query, byName.coverage.source, byName.sourceTitle], ['verified', SUN, 'stored', SUN]);
+    assert.equal(t.fetched.length, fetchedBefore, 'the RSS address is not read');
+    // The name isn't the search and the address can't be read: the name stays only a suggestion.
+    const gone = t.rssFeed('My lab', search('gone'));
     t.store.transaction(() => t.store.translations.upsert(gone, parseSource(rssDocument(SUN, ['42883926', '41714066']), search('gone')).items));
     const failed = await t.check(gone.id);
-    assert.deepEqual([failed.status, failed.reason, failed.query, failed.coverage.source], ['review', 'fetchFailed', SUN, 'stored']);
+    assert.deepEqual([failed.status, failed.reason, failed.query, failed.coverage.source], ['review', 'fetchFailed', 'My lab', 'stored']);
     assert.match(failed.error, /socket hang up/);
 
     // A journal RSS (blocked by NCBI) is checked against the items it already holds.
@@ -179,9 +187,11 @@ test('转换后订阅 ID、RSS 地址、条目、译文、翻译设置、过滤�
     await t.app.inject({ method: 'POST', url: `/api/feeds/${feed.id}/refresh`, headers: t.headers, payload: {} });
     assert.equal((await t.app.inject({ url: `/api/feeds/${feed.id}/logs`, headers: t.headers })).json().logs[0].newItemCount, 0);
 
-    // Only PubMed RSS feeds convert; a query must be sendable.
+    // Converting again with the same query succeeds without changes (a batch can be retried); another query doesn't.
     const again = await t.app.inject({ method: 'POST', url: `/api/feeds/${feed.id}/pubmed-convert`, headers: t.headers, payload: { query: SUN } });
-    assert.deepEqual([again.statusCode, again.json().code], [400, 'validation']);
+    assert.deepEqual([again.statusCode, again.json().feed.id, again.json().feedUrl], [200, feed.id, before.feedUrl]);
+    const different = await t.app.inject({ method: 'POST', url: `/api/feeds/${feed.id}/pubmed-convert`, headers: t.headers, payload: { query: 'cancer' } });
+    assert.deepEqual([different.statusCode, different.json().code], [400, 'validation']);
     const other = t.rssFeed('Other', search('other'));
     const broken = await t.app.inject({ method: 'POST', url: `/api/feeds/${other.id}/pubmed-convert`, headers: t.headers, payload: { query: HU } });
     assert.deepEqual([broken.statusCode, broken.json().code], [400, 'pubmed_query_invalid']);
@@ -206,19 +216,29 @@ test('CLI pubmed convert 默认只出报告；--all-verified --yes 只转换验�
   };
   try {
     const sun = t.rssFeed('Sun', search('sun')), low = t.rssFeed('Low', search('low'));
+    const row = (result: { json(): { feeds: Array<{ name: string }> } }, name: string) => result.json().feeds.find(entry => entry.name === name) as unknown as Record<string, unknown>;
+    // --all-verified checks every PubMed RSS feed in a server job, waits for it and only reports.
     const report = await cli(['pubmed', 'convert', '--all-verified']);
     assert.equal(report.code, 0, report.stderr);
-    assert.deepEqual([report.json().checked, report.json().verified, report.json().review, report.json().converted], [2, 1, 1, 0]);
-    assert.deepEqual(report.json().feeds.map((row: { name: string; status: string; reason: string | null; coverage: string }) => [row.name, row.status, row.reason, row.coverage]), [['Sun', 'verified', null, '2/2'], ['Low', 'review', 'lowCoverage', '0/2']]);
+    assert.deepEqual([report.json().state, report.json().progress.total, report.json().progress.verified, report.json().progress.review, report.json().converted], ['done', 2, 1, 1, 0]);
+    assert.deepEqual([row(report, 'Sun').status, row(report, 'Sun').coverage], ['verified', '2/2']);
+    assert.deepEqual([row(report, 'Low').status, row(report, 'Low').reason, row(report, 'Low').coverage], ['review', 'lowCoverage', '0/2']);
     assert.match(report.json().hint, /没有改动任何订阅/);
     assert.equal(t.store.getFeed(sun.id)!.sourceType, 'rss');
-    assert.match((await cli(['pubmed', 'convert', '--all-verified', '--table'])).stdout, /feedId\s+name\s+status/);
+    // The job is kept: `pubmed checks` shows it again, reusing the results.
+    const status = await cli(['pubmed', 'checks']);
+    assert.deepEqual([status.json().jobId, status.json().state], [report.json().jobId, 'done']);
+    assert.match((await cli(['pubmed', 'checks', '--table'])).stdout, /feedId\s+name\s+state\s+status/);
+    const searched = t.terms.length;
+    const again = await cli(['pubmed', 'convert', '--all-verified']);
+    assert.ok(again.json().feeds.every((entry: { cached: boolean }) => entry.cached));
+    assert.equal(t.terms.length, searched, 'unchanged feeds are not checked again');
 
     // --dry-run still checks (nothing changes) and only lists the conversion it would send.
     const dry = await cli(['pubmed', 'convert', '--all-verified', '--yes', '--dry-run']);
     assert.equal(dry.code, 0, dry.stderr);
     assert.deepEqual(dry.json().requests.map((request: { method: string; url: string }) => request.method), ['POST']);
-    assert.match(dry.json().requests[0].url, new RegExp(`/api/feeds/${sun.id}/pubmed-convert$`));
+    assert.match(dry.json().requests[0].url, /\/api\/pubmed-checks\/pmc_[\w-]+\/convert$/);
     assert.equal(t.store.getFeed(sun.id)!.sourceType, 'rss');
 
     const done = await cli(['pubmed', 'convert', '--all-verified', '--yes']);
@@ -226,10 +246,12 @@ test('CLI pubmed convert 默认只出报告；--all-verified --yes 只转换验�
     assert.deepEqual([done.json().converted, done.json().failed], [1, 0]);
     assert.equal(t.store.getFeed(sun.id)!.sourceType, 'pubmed');
     assert.equal(t.store.getFeed(low.id)!.sourceType, 'rss');
-    assert.match(done.json().feeds.find((row: { name: string }) => row.name === 'Low').error, /需要核对/);
+    assert.deepEqual([row(done, 'Sun').state, row(done, 'Low').state, row(done, 'Low').status], ['converted', 'done', 'review']);
 
     assert.equal((await cli(['pubmed', 'convert'])).code, 2);
     assert.equal((await cli(['pubmed', 'convert', low.id, '--all-verified'])).code, 2);
+    // A single feed that needs review converts only with the query the user checked.
+    assert.equal((await cli(['pubmed', 'convert', low.id, '--yes'])).code, 2);
 
     // MCP: the check lists the result, the conversion needs confirm: true.
     const server = createMcpServer({ connection: { url, token, profile: 'default', configPath: '', sources: { url: 'env', token: 'env' } }, readOnly: false });
@@ -238,8 +260,10 @@ test('CLI pubmed convert 默认只出报告；--all-verified --yes 只转换验�
     const client = new Client({ name: 'test', version: '1.0.0' });
     await client.connect(clientSide);
     const call = async (name: string, args: Record<string, unknown>) => { const result = await client.callTool({ name, arguments: args }) as { isError?: boolean; content: Array<{ text: string }> }; return { isError: !!result.isError, body: JSON.parse(result.content[0].text) }; };
-    const checked = await call('pubmed_convert_check', { feedIds: [low.id] });
-    assert.deepEqual([checked.isError, checked.body.review, checked.body.feeds[0].reason], [false, 1, 'lowCoverage']);
+    const checked = await call('pubmed_convert_check', { feedIds: [low.id], waitSeconds: 30 });
+    assert.deepEqual([checked.isError, checked.body.progress.review, checked.body.feeds[0].reason], [false, 1, 'lowCoverage']);
+    const jobStatus = await call('pubmed_check_status', { jobId: checked.body.jobId });
+    assert.deepEqual([jobStatus.isError, jobStatus.body.state], [false, 'done']);
     const reviewed = '"lantern fungi"[Title] AND 2020:2026[dp]';
     const unconfirmed = await call('pubmed_convert', { id: low.id, query: reviewed });
     assert.deepEqual([unconfirmed.isError, unconfirmed.body.error.code], [true, 'usage']);

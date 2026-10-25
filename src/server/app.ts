@@ -1454,7 +1454,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
   // Background check jobs for many PubMed RSS feeds.
   const pubmedJob = (request: FastifyRequest) => {
-    const job = store.pubmedChecks.job(String((request.params as { id: string }).id));
+    const job = store.pubmedChecks.job(String((request.params as { jobId: string }).jobId));
     if (!job || job.ownerId !== workspace(request).userId) throw new AppError(404, 'error.pubmedJobNotFound');
     return job;
   };
@@ -1479,11 +1479,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const job = store.pubmedChecks.latestJob(workspace(request).userId);
     return { job: job ? jobView(job) : null };
   });
-  app.get('/api/pubmed-checks/:id', async request => { feedsGuard(request); return jobView(pubmedJob(request)); });
-  app.post('/api/pubmed-checks/:id/cancel', async request => { feedsGuard(request); return jobView(pubmedJobs.cancel(pubmedJob(request))); });
-  app.post('/api/pubmed-checks/:id/retry', async request => { feedsGuard(request); return jobView(pubmedJobs.retry(pubmedJob(request))); });
+  app.get('/api/pubmed-checks/:jobId', async request => { feedsGuard(request); return jobView(pubmedJob(request)); });
+  app.post('/api/pubmed-checks/:jobId/cancel', async request => { feedsGuard(request); return jobView(pubmedJobs.cancel(pubmedJob(request))); });
+  app.post('/api/pubmed-checks/:jobId/retry', async request => { feedsGuard(request); return jobView(pubmedJobs.retry(pubmedJob(request))); });
   // Converts the job's verified feeds (or the listed ones among them), one after another; already converted ones succeed again.
-  app.post('/api/pubmed-checks/:id/convert', async request => {
+  app.post('/api/pubmed-checks/:jobId/convert', async request => {
     feedsGuard(request);
     const body = asRecord(request.body);
     if (body.feedIds !== undefined && (!Array.isArray(body.feedIds) || !body.feedIds.every(id => typeof id === 'string'))) throw new AppError(400, 'error.selectFeeds');

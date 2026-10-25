@@ -196,6 +196,8 @@ export class PubmedCheckRunner {
     } catch (error) {
       result = controller.signal.aborted ? { state: 'canceled' } : { state: 'failed', error: this.deps.describe(error, feed?.ownerId) };
     } finally { this.controllers.delete(key); }
+    // The service is stopping: the feed stays "checking" and goes back in the queue when it starts again.
+    if (this.closed) return;
     // The job is read again: it may have been canceled or retried meanwhile.
     const job = this.deps.store.job(jobId);
     if (!job) return;

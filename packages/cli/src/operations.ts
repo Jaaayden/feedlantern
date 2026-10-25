@@ -1,5 +1,5 @@
 import { buildPubmedQuery, parsePubmedQuery, pubmedRssSource, pubmedDefaultTerms, pubmedSearchUrl, PUBMED_DEFAULT_LIMIT, type PubmedField, type PubmedFilters, type PubmedOperator } from '../../../src/shared/pubmed.js';
-import { feedFormatUrl, type PubmedRssCheck, type ApiTokenCallFilter, type BulkFeedSettingsInput, type ExtractedItem, type Feed, type FeedInput, type FeedSettingsInput, type FetchStatus, type ItemOutputStatus, type PaginationRules, type SelectionRules } from '../../../src/shared/types.js';
+import { feedFormatUrl, type PubmedCheckEntry, type PubmedCheckJob, type ApiTokenCallFilter, type BulkFeedSettingsInput, type ExtractedItem, type Feed, type FeedInput, type FeedSettingsInput, type FetchStatus, type ItemOutputStatus, type PaginationRules, type SelectionRules } from '../../../src/shared/types.js';
 import type { BrowserOpenInput, BulkAction, FeedLanternClient, FeedPayload, HttpMethod, ImportJobInput } from './client.js';
 import { FeedLanternError, usageError } from './errors.js';
 import { t } from './messages.js';
@@ -208,30 +208,72 @@ export interface PubmedFeedInput extends PubmedSearchInput, Pick<FeedInput, 'tra
   name?: string; limit?: number; intervalMinutes?: number;
 }
 
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+const reportRow = (entry: PubmedCheckEntry) => ({
+  feedId: entry.feedId, name: entry.name, state: entry.state, status: entry.check?.status ?? null, reason: entry.check?.reason ?? null,
+  query: entry.check?.query ?? null, coverage: entry.check?.coverage ? `${entry.check.coverage.matched}/${entry.check.coverage.total}${entry.check.coverage.source === 'stored' ? ' (stored)' : ''}` : null,
+  repaired: entry.check?.repaired ?? false, cached: entry.cached ?? false, error: entry.error ?? entry.check?.error ?? null,
+});
+/** A check job as the CLI and MCP print it: progress, then one row per feed. */
+export const jobReport = (job: PubmedCheckJob) => ({ jobId: job.id, state: job.state, progress: job.progress ?? null, ncbiKeyConfigured: job.ncbiKeyConfigured ?? null, feeds: job.entries.map(reportRow) });
+
+/** Waits (up to `waitMs`) for a check job to finish, reading its progress every 1.5 s. */
+async function settle(client: FeedLanternClient, job: PubmedCheckJob, waitMs: number): Promise<PubmedCheckJob> {
+  const deadline = Date.now() + waitMs;
+  while (job.state === 'running' && Date.now() < deadline) { await sleep(Math.min(1500, Math.max(0, deadline - Date.now()))); job = await client.pubmedCheckJob(job.id); }
+  return job;
+}
+
 /**
- * Checks PubMed RSS feeds for conversion into PubMed searches and, with `yes`,
- * converts them. Without `yes` it only reports. A feed that needs review is
- * converted only when the caller gives the reviewed `query` (one feed at a time).
+ * Checks all (or the listed) PubMed RSS feeds in a background job on the
+ * server; it keeps running when this command ends. `waitMs` waits for it.
  */
-export async function pubmedConvert(client: FeedLanternClient, input: { feedId?: string; allVerified?: boolean; yes?: boolean; query?: string; limit?: number }) {
+export async function pubmedChecks(client: FeedLanternClient, input: { feedIds?: string[]; recheck?: boolean; waitMs?: number } = {}) {
+  let job = await client.startPubmedChecks(input.feedIds, input.recheck);
+  if (input.waitMs) job = await settle(client, job, input.waitMs);
+  return { ...jobReport(job), ...(job.state === 'running' ? { hint: t('pubmed.checksRunning') } : {}) };
+}
+
+/** A check job's progress and results (the latest one by default); optionally cancels, retries or waits. */
+export async function pubmedCheckStatus(client: FeedLanternClient, input: { jobId?: string; cancel?: boolean; retry?: boolean; waitMs?: number } = {}) {
+  let job = input.jobId ? await client.pubmedCheckJob(input.jobId) : (await client.latestPubmedChecks()).job;
+  if (!job) throw new FeedLanternError({ code: 'not_found', status: 404, message: t('pubmed.noChecks') });
+  if (input.cancel) job = await client.cancelPubmedChecks(job.id);
+  if (input.retry) job = await client.retryPubmedChecks(job.id);
+  if (input.waitMs) job = await settle(client, job, input.waitMs);
+  return jobReport(job);
+}
+
+/** Converts the verified feeds of a check job (or the listed ones among them). */
+export async function pubmedConvertVerified(client: FeedLanternClient, jobId: string, feedIds?: string[]) {
+  const response = await client.convertPubmedChecks(jobId, feedIds);
+  if (client.dryRun) return dryRunResult(client);
+  const failed = response.results.filter(result => !result.ok).length;
+  return { converted: response.results.length - failed, failed, results: response.results, ...jobReport(response.job) };
+}
+
+/**
+ * `pubmed convert`: one feed is checked now and, with `yes`, converted (a
+ * feed that needs review only with the reviewed `query`). `allVerified`
+ * checks every PubMed RSS feed in a background job, waits for it, reports,
+ * and with `yes` converts the verified ones. Without `yes` nothing changes.
+ */
+export async function pubmedConvert(client: FeedLanternClient, input: { feedId?: string; allVerified?: boolean; yes?: boolean; query?: string; limit?: number; recheck?: boolean; waitMs?: number }) {
   if (!input.feedId === !input.allVerified) throw usageError(t('usage.pubmedConvertTarget'));
   if (input.allVerified && input.query) throw usageError(t('usage.pubmedConvertQueryOne'));
-  const ids = input.feedId ? [input.feedId] : (await client.listFeeds()).filter(feed => feed.sourceType === 'rss' && pubmedRssSource(feed.url)).map(feed => feed.id);
-  const checks: PubmedRssCheck[] = [];
-  for (const id of ids) checks.push(await client.pubmedCheck(id));
-  const report = checks.map(check => ({ feedId: check.feedId, name: check.name, kind: check.kind, status: check.status, reason: check.reason ?? null, query: check.query, coverage: check.coverage ? `${check.coverage.matched}/${check.coverage.total}${check.coverage.source === 'stored' ? ' (stored)' : ''}` : null, count: check.count ?? null, limit: check.limit, repaired: check.repaired, error: check.error ?? null }));
-  const summary = { checked: checks.length, verified: checks.filter(check => check.status === 'verified').length, review: checks.filter(check => check.status === 'review').length, ncbiKeyConfigured: checks.every(check => check.ncbiKeyConfigured) };
-  if (!input.yes) return { ...summary, converted: 0, feeds: report, hint: t('pubmed.convertHint') };
-  const results: Array<{ feedId: string; converted: boolean; query?: string; error?: string }> = [];
-  for (const check of checks) {
-    const query = input.query ?? (check.status === 'verified' ? check.query : undefined);
-    if (!query) { results.push({ feedId: check.feedId, converted: false, error: t('pubmed.convertNeedsReview') }); continue; }
-    try { await client.pubmedConvert(check.feedId, query, input.limit ?? check.limit); results.push({ feedId: check.feedId, converted: true, query }); }
-    catch (error) { results.push({ feedId: check.feedId, converted: false, error: error instanceof Error ? error.message : String(error) }); }
+  if (input.allVerified) {
+    const job = await settle(client, await client.startPubmedChecks(undefined, input.recheck), input.waitMs ?? 30 * 60_000);
+    if (!input.yes) return { ...jobReport(job), converted: 0, hint: t(job.state === 'running' ? 'pubmed.checksRunning' : 'pubmed.convertHint') };
+    return pubmedConvertVerified(client, job.id);
   }
-  if (client.dryRun) return { ...dryRunResult(client), feeds: report };
-  const failed = results.filter(result => !result.converted && checks.find(check => check.feedId === result.feedId)?.status === 'verified').length;
-  return { ...summary, converted: results.filter(result => result.converted).length, failed, feeds: report.map(row => ({ ...row, ...results.find(result => result.feedId === row.feedId) })) };
+  const check = await client.pubmedCheck(input.feedId!);
+  const row = { feedId: check.feedId, name: check.name, status: check.status, reason: check.reason ?? null, query: check.query, coverage: check.coverage ? `${check.coverage.matched}/${check.coverage.total}${check.coverage.source === 'stored' ? ' (stored)' : ''}` : null, count: check.count ?? null, limit: check.limit, repaired: check.repaired, error: check.error ?? null };
+  if (!input.yes) return { checked: 1, verified: check.status === 'verified' ? 1 : 0, review: check.status === 'review' ? 1 : 0, converted: 0, feeds: [row], hint: t('pubmed.convertHint') };
+  const query = input.query ?? (check.status === 'verified' ? check.query : undefined);
+  if (!query) throw usageError(t('pubmed.convertNeedsReview'));
+  const payload = await client.pubmedConvert(check.feedId, query, input.limit ?? check.limit);
+  if (client.dryRun) return { ...dryRunResult(client), feeds: [row] };
+  return { converted: 1, feeds: [{ ...row, query }], ...withUrls(payload) };
 }
 
 /** Creates a PubMed search feed; the first fetch runs in the background (see feeds logs). */

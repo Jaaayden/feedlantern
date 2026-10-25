@@ -35,7 +35,14 @@ test('PubMed 检索订阅：构建条件 → 预览 → 保存 → 刷新 → �
     await expect(preview.getByRole('link', { name: 'A Fixture virus and CD4+ T cells' })).toHaveAttribute('href', 'https://pubmed.ncbi.nlm.nih.gov/42883926/');
     await expect(preview).toContainText('PLoS Pathog · 2026 Oct 6');
     await expect(preview).toContainText('One A, Two B, Three C 等');
-    const sent = (await searches(page.request)).slice(before);
+    // What PubMed actually ran is shown, so automatic term mapping is visible.
+    await expect(preview.getByTestId('pubmed-translation')).toContainText('"plos pathog"[Journal]');
+    // "Exact phrase" quotes one term (and turns term mapping off for it); it is off by default.
+    await page.getByLabel('条件 1 作为精确短语').check();
+    await expect(query).toHaveValue(BUILT.replace('(cryo-EM[Title/Abstract])', '("cryo-EM"[Title/Abstract])'));
+    await page.getByLabel('条件 1 作为精确短语').uncheck();
+    await expect(query).toHaveValue(BUILT);
+    const sent = (await searches(page.request)).slice(before).filter(term => term === BUILT || !term.includes('"cryo-EM"'));
     expect(sent.at(-1)).toBe(BUILT);
     expect(sent.length, `previews sent while typing: ${JSON.stringify(sent)}`).toBeLessThanOrEqual(3);
 
@@ -149,6 +156,10 @@ test('管理员在“设置 → PubMed（NCBI）”填写 API Key 和联系邮�
     const form = page.getByRole('form', { name: 'PubMed（NCBI）' });
     await form.getByLabel('NCBI API Key（可选）').fill('e2ekey0123456789');
     await form.getByLabel('联系邮箱（可选）').fill('admin@example.test');
+    // The typed values can be tested before saving (the fixture answers like NCBI does for a working key).
+    await expect(form.getByTestId('ncbi-test')).toContainText('Key 已修改，保存前请先测试');
+    await form.getByRole('button', { name: '测试', exact: true }).click();
+    await expect(form.getByTestId('ncbi-test').getByRole('status')).toHaveText('Key 有效：NCBI 允许每秒 10 个请求。');
     const sent = page.waitForRequest(request => request.url().endsWith('/api/settings') && request.method() === 'PUT');
     await form.getByRole('button', { name: '保存 PubMed 设置' }).click();
     expect((await sent).postDataJSON()).toEqual({ ncbi: { email: 'admin@example.test', apiKey: 'e2ekey0123456789' } });
@@ -157,6 +168,7 @@ test('管理员在“设置 → PubMed（NCBI）”填写 API Key 和联系邮�
     await expect(form.getByLabel('NCBI API Key（可选）')).toHaveValue('');
     await expect(form.getByLabel('NCBI API Key（可选）')).toHaveAttribute('placeholder', '已保存，留空保持不变');
     await expect(form.getByLabel('联系邮箱（可选）')).toHaveValue('admin@example.test');
+    await expect(form.getByTestId('ncbi-test')).toContainText('已配置 Key。上次测试：Key 有效：NCBI 允许每秒 10 个请求。');
     expect(await (await page.request.get('/api/settings')).text()).not.toContain('e2ekey0123456789');
     await form.getByLabel('保存时删除已保存的 Key').check();
     await form.getByRole('button', { name: '保存 PubMed 设置' }).click();
@@ -185,7 +197,7 @@ test('检索式 RSS 订阅：验证还原的查询式后确认转换', async ({ 
     const result = dialog.getByTestId('pubmed-check-result');
     await expect(result).toContainText('可直接转换');
     await expect(result).toContainText('2/2（100%）');
-    await expect(result.locator('code')).toHaveText('(PLoS Pathog[Journal]) AND (Wolbachia[tiab])');
+    await expect(result.locator('code')).toHaveText('("PLoS Pathog"[Journal]) AND (Wolbachia[tiab])');
     await result.getByRole('button', { name: '确认转换' }).click();
     await expect(page.getByRole('status').filter({ hasText: '已转换为 PubMed 检索订阅' })).toBeVisible();
     await expect(dialog.locator('.pubmed-source')).toContainText('(Wolbachia[tiab])');
