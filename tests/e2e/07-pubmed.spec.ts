@@ -27,7 +27,8 @@ test('PubMed 检索订阅：构建条件 → 预览 → 保存 → 刷新 → �
     await page.getByLabel('只看有摘要的文章').check();
     const query = page.getByLabel('PubMed 查询式');
     await expect(query).toHaveValue(BUILT);
-    await expect(page.getByLabel('订阅名称')).toHaveValue('PubMed：cryo-EM · ShanghaiTech');
+    // The default name is the query exactly, then " - PubMed" (not translated).
+    await expect(page.getByLabel('订阅名称')).toHaveValue(`${BUILT} - PubMed`);
     await expect(page.getByRole('link', { name: '在 PubMed 中打开' }).first()).toHaveAttribute('href', `https://pubmed.ncbi.nlm.nih.gov/?${new URLSearchParams({ term: BUILT, sort: 'date', size: '20' })}`);
 
     const preview = page.getByRole('region', { name: '预览' });
@@ -82,6 +83,23 @@ test('PubMed 检索订阅：构建条件 → 预览 → 保存 → 刷新 → �
     await expect(page.getByRole('heading', { name: '编辑 PubMed 检索订阅' })).toBeVisible();
     await expect(page.getByLabel('条件 1 的检索词')).toHaveValue('cryo-EM');
     await expect(page.getByLabel('每次抓取最新文章数')).toHaveValue('50');
+    // A name that is still the default follows the new query…
+    await page.getByLabel('条件 2 的检索词').fill('Fudan');
+    const edited = BUILT.replace('ShanghaiTech', 'Fudan');
+    await expect(page.getByLabel('订阅名称')).toHaveValue(`${edited} - PubMed`);
+    // …a name the user set stays, and the page says so.
+    await page.getByLabel('订阅名称').fill('My cryo-EM papers');
+    await page.getByLabel('条件 2 的检索词').fill('ShanghaiTech');
+    await page.getByLabel('条件 2 的检索词').fill('Peking');
+    await expect(page.getByLabel('订阅名称')).toHaveValue('My cryo-EM papers');
+    const resaved = page.waitForResponse(response => response.url().endsWith(`/api/feeds/${feedId}`) && response.request().method() === 'PUT');
+    await page.getByRole('button', { name: '保存 PubMed 检索订阅' }).click();
+    expect((await (await resaved).json()).feed.name).toBe('My cryo-EM papers');
+    await page.getByRole('dialog').getByRole('button', { name: '订阅设置' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: '编辑检索条件' }).click();
+    await page.getByLabel('条件 2 的检索词').fill('Fudan');
+    await expect(page.getByLabel('订阅名称')).toHaveValue('My cryo-EM papers');
+    await expect(page.getByTestId('pubmed-name-kept')).toHaveText('名称是你自定义的，未随查询式更新。');
   } finally { if (feedId) await page.request.delete(`/api/feeds/${feedId}`, { headers }); }
 });
 
@@ -198,11 +216,14 @@ test('检索式 RSS 订阅：验证还原的查询式后确认转换', async ({ 
     await expect(result).toContainText('可直接转换');
     await expect(result).toContainText('2/2（100%）');
     await expect(result.locator('code')).toHaveText('("PLoS Pathog"[Journal]) AND (Wolbachia[tiab])');
+    // The feed keeps its name unless the user ticks the rename option.
+    await result.getByLabel('同时把名称改为“查询式 - PubMed”').check();
+    await expect(result).toContainText('新名称：("PLoS Pathog"[Journal]) AND (Wolbachia[tiab]) - PubMed');
     await result.getByRole('button', { name: '确认转换' }).click();
     await expect(page.getByRole('status').filter({ hasText: '已转换为 PubMed 检索订阅' })).toBeVisible();
     await expect(dialog.locator('.pubmed-source')).toContainText('(Wolbachia[tiab])');
     const after = await (await page.request.get(`/api/feeds/${id}`)).json();
-    expect([after.feed.id, after.feedUrl, after.feed.sourceType]).toEqual([id, before.feedUrl, 'pubmed']);
+    expect([after.feed.id, after.feedUrl, after.feed.sourceType, after.feed.name]).toEqual([id, before.feedUrl, 'pubmed', '("PLoS Pathog"[Journal]) AND (Wolbachia[tiab]) - PubMed']);
   } finally { await page.request.delete(`/api/feeds/${id}`, { headers }); }
 });
 
@@ -225,7 +246,8 @@ test('批量转换 PubMed RSS 订阅：逐个验证并汇总，确认后只转�
     page.once('dialog', prompt => { expect(prompt.message()).toContain('1 个订阅'); void prompt.accept(); });
     await modal.getByRole('button', { name: '转换 1 个可直接转换的订阅' }).click();
     await expect(ok).toContainText('已转换');
-    expect((await (await page.request.get(`/api/feeds/${ids[0]}`)).json()).feed.sourceType).toBe('pubmed');
+    // Without the rename option the converted feed keeps its name.
+    expect((await (await page.request.get(`/api/feeds/${ids[0]}`)).json()).feed).toMatchObject({ sourceType: 'pubmed', name: 'Batch OK' });
     expect((await (await page.request.get(`/api/feeds/${ids[1]}`)).json()).feed.sourceType).toBe('rss');
 
     await low.getByRole('button', { name: '核对' }).click();

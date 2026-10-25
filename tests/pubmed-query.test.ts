@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  buildPubmedQuery, parsePubmedQuery, pubmedConversion, pubmedTermHasOperator, pubmedDefaultTerms, pubmedQueryProblem, pubmedRssSource, pubmedSearchFromUrl, pubmedSearchUrl, pubmedTerm,
+  buildPubmedQuery, parsePubmedQuery, pubmedConversion, pubmedTermHasOperator, pubmedDefaultName, pubmedQueryProblem, pubmedRssSource, pubmedSearchFromUrl, pubmedSearchUrl, pubmedTerm,
   PUBMED_FIELD_IDS, type PubmedBuilder,
 } from '../src/shared/pubmed.js';
 
@@ -121,6 +121,10 @@ test('PubMed 地址：检索订阅保存为 PubMed 检索页；识别期刊 RSS 
   // A search RSS id is opaque: the builder starts empty.
   assert.equal(buildPubmedQuery(pubmedConversion(pubmedRssSource('https://pubmed.ncbi.nlm.nih.gov/rss/search/abc/')!).builder), '');
 
-  assert.equal(pubmedDefaultTerms({ rows: rows(['AND', 'tiab', 'cryo-EM'], ['AND', 'affiliation', 'ShanghaiTech'], ['NOT', 'title', 'mouse']), filters: {} }, ''), 'cryo-EM · ShanghaiTech');
-  assert.equal(pubmedDefaultTerms(null, 'a AND (b OR c)'), 'a AND (b OR c)');
+  // The default name is the query exactly, then " - PubMed"; a query too long for a name loses its middle.
+  assert.equal(pubmedDefaultName('(Mengmeng Lin[Author]) AND (ShanghaiTech[Affiliation])'), '(Mengmeng Lin[Author]) AND (ShanghaiTech[Affiliation]) - PubMed');
+  const long = `(${'a'.repeat(150)}[Title]) AND (${'b'.repeat(150)}[Affiliation])`;
+  const name = pubmedDefaultName(long);
+  assert.equal(name.length, 200);
+  assert.ok(name.startsWith('(aaaa') && name.endsWith('b[Affiliation]) - PubMed') && name.includes('…'), name);
 });

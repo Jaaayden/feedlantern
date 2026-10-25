@@ -170,13 +170,13 @@ export class FeedLanternClient {
   bulk(action: BulkAction, ids: string[], settings?: BulkFeedSettingsInput): Promise<{ results: BulkResult[] }> { return this.request('POST', '/api/feeds/bulk', { body: { ids, action, ...(settings ? { settings } : {}) } }); }
   rssPreview(url: string, networkProfileId?: string | null): Promise<RssPreview> { return this.request('POST', '/api/rss/preview', { body: { url, ...(networkProfileId ? { networkProfileId } : {}) } }); }
   pubmedCheck(id: string): Promise<PubmedRssCheck> { return this.request('POST', `/api/feeds/${encodeURIComponent(id)}/pubmed-check`, { body: {}, safe: true }); }
-  pubmedConvert(id: string, query: string, limit?: number): Promise<FeedPayload> { return this.request('POST', `/api/feeds/${encodeURIComponent(id)}/pubmed-convert`, { body: { query, ...(limit ? { limit } : {}) } }); }
+  pubmedConvert(id: string, query: string, limit?: number, rename = false): Promise<FeedPayload> { return this.request('POST', `/api/feeds/${encodeURIComponent(id)}/pubmed-convert`, { body: { query, ...(limit ? { limit } : {}), ...(rename ? { rename } : {}) } }); }
   startPubmedChecks(feedIds?: string[], recheck = false): Promise<PubmedCheckJob> { return this.request('POST', '/api/pubmed-checks', { body: { ...(feedIds ? { feedIds } : {}), recheck }, safe: true }); }
   latestPubmedChecks(): Promise<{ job: PubmedCheckJob | null }> { return this.request('GET', '/api/pubmed-checks/latest'); }
   pubmedCheckJob(id: string): Promise<PubmedCheckJob> { return this.request('GET', `/api/pubmed-checks/${encodeURIComponent(id)}`); }
   cancelPubmedChecks(id: string): Promise<PubmedCheckJob> { return this.request('POST', `/api/pubmed-checks/${encodeURIComponent(id)}/cancel`, { body: {}, safe: true }); }
   retryPubmedChecks(id: string): Promise<PubmedCheckJob> { return this.request('POST', `/api/pubmed-checks/${encodeURIComponent(id)}/retry`, { body: {}, safe: true }); }
-  convertPubmedChecks(id: string, feedIds?: string[]): Promise<{ results: Array<{ feedId: string; ok: boolean; error?: string }>; job: PubmedCheckJob }> { return this.request('POST', `/api/pubmed-checks/${encodeURIComponent(id)}/convert`, { body: feedIds ? { feedIds } : {} }); }
+  convertPubmedChecks(id: string, feedIds?: string[], rename = false): Promise<{ results: Array<{ feedId: string; ok: boolean; error?: string }>; job: PubmedCheckJob }> { return this.request('POST', `/api/pubmed-checks/${encodeURIComponent(id)}/convert`, { body: { ...(feedIds ? { feedIds } : {}), ...(rename ? { rename } : {}) } }); }
   pubmedPreview(query: string, networkProfileId?: string | null): Promise<PubmedPreview> { return this.request('POST', '/api/pubmed/preview', { body: { query, ...(networkProfileId ? { networkProfileId } : {}) } }); }
 
   // Remote editor (browser) sessions, used for detection and rule previews.

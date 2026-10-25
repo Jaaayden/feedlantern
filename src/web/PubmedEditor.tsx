@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { ArrowLeft, ExternalLink, LoaderCircle, Plus, Trash2 } from 'lucide-react';
 import type { Feed, PubmedPreview, PubmedRssCheck, TargetLanguage, TranslationMode, TranslationProviderId } from '../shared/types';
 import {
-  buildPubmedQuery, isPubmedDate, parsePubmedQuery, pubmedTermHasOperator, pubmedConversion, pubmedDefaultTerms, pubmedQueryProblem, pubmedRssSource, pubmedSearchUrl,
+  buildPubmedQuery, isPubmedDate, parsePubmedQuery, pubmedTermHasOperator, pubmedConversion, pubmedDefaultName, pubmedQueryProblem, pubmedRssSource, pubmedSearchUrl,
   PUBMED_ARTICLE_TYPES, PUBMED_DAYS_MAX, PUBMED_DEFAULT_LIMIT, PUBMED_FIELD_IDS, PUBMED_LIMITS, PUBMED_OPERATORS,
   type PubmedArticleType, type PubmedBuilder, type PubmedField, type PubmedFilters, type PubmedOperator, type PubmedRow,
 } from '../shared/pubmed';
@@ -49,9 +49,10 @@ export function PubmedEditor({ initial, convert = false, check, prefill, existin
   const [query, setQuery] = useState(start.query);
   const [manual, setManual] = useState(start.manual);
   const [limit, setLimit] = useState(start.limit);
-  // A saved or converted feed keeps its name; a new one follows the conditions until the name is edited.
+  // The default name is the query + " - PubMed" and follows the query until the name is edited.
+  // A saved search whose name is still its default keeps following; a converted feed keeps its own name unless asked.
   const [name, setName] = useState(initial?.name ?? '');
-  const [nameTouched, setNameTouched] = useState(!!initial);
+  const [nameTouched, setNameTouched] = useState(!!initial && !(initial.sourceType === 'pubmed' && initial.pubmed && initial.name === pubmedDefaultName(initial.pubmed.query)));
   const [mode, setMode] = useState<TranslationMode>(initial?.translationMode ?? 'original');
   const [language, setLanguage] = useState<TargetLanguage>(initial?.targetLanguage ?? 'zh-CN');
   const [provider, setProvider] = useState<TranslationProviderId | ''>(initial?.translationProvider ?? '');
@@ -66,8 +67,9 @@ export function PubmedEditor({ initial, convert = false, check, prefill, existin
   const builder: PubmedBuilder = { rows: lines.map(({ key: _key, ...row }) => row), filters };
   const text = query.trim();
   const problem = pubmedQueryProblem(query);
-  const autoName = t('pubmedEditor.defaultName', { terms: pubmedDefaultTerms(manual ? null : builder, query) });
-  const shownName = nameTouched ? name : text ? autoName.slice(0, 200) : '';
+  const shownName = nameTouched ? name : text ? pubmedDefaultName(text) : '';
+  // An edited search whose custom name stays as it was while the query changed.
+  const nameKept = nameTouched && initial?.sourceType === 'pubmed' && !!initial.pubmed && text !== initial.pubmed.query.trim() && name === initial.name;
   const duplicate = existing.find(feed => feed.sourceType === 'pubmed' && feed.id !== initial?.id && feed.pubmed?.query.trim() === text);
 
   /** A change made in the builder rewrites the query. */
@@ -198,7 +200,8 @@ export function PubmedEditor({ initial, convert = false, check, prefill, existin
       </section>
 
       <section className="panel settings-form pubmed-settings" aria-label={t('pubmedEditor.settings')}>
-        <label className="field"><span>{t('label.feedName')}</span><input required maxLength={200} disabled={busy} value={shownName} onChange={e => { setName(e.target.value); setNameTouched(true); }} />{!initial && <small>{t('pubmedEditor.nameHint')}</small>}</label>
+        <label className="field"><span>{t('label.feedName')}</span><input required maxLength={200} disabled={busy} value={shownName} onChange={e => { setName(e.target.value); setNameTouched(true); }} />{!initial && <small>{t('pubmedEditor.nameHint')}</small>}{nameKept && <small data-testid="pubmed-name-kept">{t('pubmedEditor.nameKept')}</small>}</label>
+        {convert && initial && <label className="checkbox-field"><input type="checkbox" checked={!nameTouched} onChange={e => { if (e.target.checked) setNameTouched(false); else { setName(initial.name); setNameTouched(true); } }} /><span>{t('pubmedConvert.rename')}</span></label>}
         <div className="form-row">
           <label className="field"><span>{t('pubmedEditor.limit')}</span><select value={limit} disabled={busy} onChange={e => setLimit(Number(e.target.value))}>{PUBMED_LIMITS.map(value => <option key={value} value={value}>{value}</option>)}</select></label>
           <label className="field"><span>{t('label.intervalMinutes')}</span><input type="number" min={5} max={1440} required value={interval} disabled={busy} onChange={e => setIntervalValue(Number(e.target.value))} /></label>

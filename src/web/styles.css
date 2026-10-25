@@ -1867,3 +1867,6 @@ button.card-warning:hover { text-decoration: underline; text-underline-offset: 3
 .ncbi-test-result.is-valid, .ncbi-test-result.is-noKey { color: var(--success); }
 .ncbi-test-result.is-invalidKey, .ncbi-test-result.is-badFormat, .ncbi-test-result.is-error { color: var(--danger); }
 .ncbi-test-result.is-rateLimited, .ncbi-test-result.is-network { color: var(--warning); }
+
+.pubmed-batch-name .pubmed-rename { display: block; margin-top: 4px; font-weight: 500; color: var(--accent-ink); overflow-wrap: anywhere; }
+.pubmed-rename { overflow-wrap: anywhere; }

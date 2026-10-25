@@ -190,6 +190,9 @@ test('转换后订阅 ID、RSS 地址、条目、译文、翻译设置、过滤�
     // Converting again with the same query succeeds without changes (a batch can be retried); another query doesn't.
     const again = await t.app.inject({ method: 'POST', url: `/api/feeds/${feed.id}/pubmed-convert`, headers: t.headers, payload: { query: SUN } });
     assert.deepEqual([again.statusCode, again.json().feed.id, again.json().feedUrl], [200, feed.id, before.feedUrl]);
+    // Asked for, the name becomes the query's default name; the address stays.
+    const renamed = await t.app.inject({ method: 'POST', url: `/api/feeds/${feed.id}/pubmed-convert`, headers: t.headers, payload: { query: SUN, rename: true } });
+    assert.deepEqual([renamed.json().feed.name, renamed.json().feed.channelTitle, renamed.json().feedUrl], [`${SUN} - PubMed`, `${SUN} - PubMed`, before.feedUrl]);
     const different = await t.app.inject({ method: 'POST', url: `/api/feeds/${feed.id}/pubmed-convert`, headers: t.headers, payload: { query: 'cancer' } });
     assert.deepEqual([different.statusCode, different.json().code], [400, 'validation']);
     const other = t.rssFeed('Other', search('other'));

@@ -359,11 +359,23 @@ export function pubmedConversion(rss: PubmedRss): { builder: PubmedBuilder; limi
   return { builder: { rows: [rss.name ? { op: 'AND', field: 'journal', term: rss.name } : { op: 'AND', field: 'nlmId', term: rss.nlmId }], filters: {} }, limit };
 }
 
-/** A default feed name from the builder: the terms that are searched for, joined. */
-export function pubmedDefaultTerms(builder: PubmedBuilder | null, query: string): string {
-  const terms = builder?.rows.filter(row => row.op !== 'NOT' && row.term.replace(/"/g, '').trim()).map(row => row.term.replace(/"/g, '').trim()) ?? [];
-  const text = terms.length ? terms.join(' · ') : query.trim();
-  return text.length > 80 ? `${text.slice(0, 79)}…` : text;
+/** Longest feed name (the API's limit). */
+export const FEED_NAME_MAX = 200;
+/** The fixed suffix of a PubMed search's default name; not translated. */
+export const PUBMED_NAME_SUFFIX = ' - PubMed';
+
+/**
+ * A PubMed search's default name: the query exactly as it is sent, then
+ * " - PubMed" (as PubMed titles its own search pages). A query too long for
+ * a name keeps its beginning and end with an ellipsis in the middle; the feed
+ * still stores and runs the full query.
+ */
+export function pubmedDefaultName(query: string): string {
+  const text = query.replace(/\s+/g, ' ').trim();
+  const room = FEED_NAME_MAX - PUBMED_NAME_SUFFIX.length;
+  if (text.length <= room) return `${text}${PUBMED_NAME_SUFFIX}`;
+  const head = Math.ceil((room - 1) / 2), tail = room - 1 - head;
+  return `${text.slice(0, head)}…${text.slice(text.length - tail)}${PUBMED_NAME_SUFFIX}`;
 }
 
 // Converting a PubMed search RSS feed

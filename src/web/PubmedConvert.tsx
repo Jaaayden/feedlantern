@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { LoaderCircle, Microscope } from 'lucide-react';
 import type { Feed, PubmedCheckEntry, PubmedCheckJob, PubmedRssCheck } from '../shared/types';
-import { pubmedRssSource } from '../shared/pubmed';
+import { pubmedDefaultName, pubmedRssSource } from '../shared/pubmed';
 import { api } from './api';
 import { Modal } from './Modal';
 import { fmt, t } from './i18n';
@@ -29,6 +29,7 @@ export function PubmedRssNotice({ feed, review, converted }: { feed: Feed; revie
   const [check, setCheck] = useState<PubmedRssCheck>();
   const [busy, setBusy] = useState<'' | 'check' | 'convert'>('');
   const [error, setError] = useState('');
+  const [rename, setRename] = useState(false);
   if (!rss) return null;
   async function verify() {
     setBusy('check'); setError('');
@@ -37,7 +38,7 @@ export function PubmedRssNotice({ feed, review, converted }: { feed: Feed; revie
   }
   async function convert(result: PubmedRssCheck) {
     setBusy('convert'); setError('');
-    try { await api.feeds.pubmedConvert(feed.id, result.query, result.limit); converted(); }
+    try { await api.feeds.pubmedConvert(feed.id, result.query, result.limit, rename); converted(); }
     catch (reason) { setError(messageOf(reason)); } finally { setBusy(''); }
   }
   return <div className={`notice pubmed-rss-notice ${rss.kind === 'journal' ? 'is-warning' : ''}`} data-testid="pubmed-rss-notice">
@@ -47,6 +48,8 @@ export function PubmedRssNotice({ feed, review, converted }: { feed: Feed; revie
         <p><strong>{t('pubmedConvert.verified')}</strong> {t('pubmedConvert.verifiedDetail', { coverage: coverageText(check), count: fmt.number(check.count ?? 0) })}</p>
         <code>{check.query}</code>
         {check.repaired && <p className="hint">{t('pubmedConvert.repaired')}</p>}
+        <label className="checkbox-field"><input type="checkbox" checked={rename} onChange={e => setRename(e.target.checked)} /><span>{t('pubmedConvert.rename')}</span></label>
+        {rename && <p className="hint pubmed-rename">{t('pubmedConvert.renameTo', { name: pubmedDefaultName(check.query) })}</p>}
         <div className="detail-actions">
           <button type="button" className="button small primary" disabled={!!busy} onClick={() => void convert(check)}>{busy === 'convert' ? t('common.working') : t('pubmedConvert.confirm')}</button>
           <button type="button" className="button small" disabled={!!busy} onClick={() => review(check)}>{t('pubmedConvert.editFirst')}</button>
@@ -73,6 +76,7 @@ export function PubmedBatchConvert({ feeds, close, review, changed, notify }: { 
   const [job, setJob] = useState<PubmedCheckJob>();
   const [busy, setBusy] = useState<'' | 'convert' | 'cancel' | 'retry' | 'recheck'>('');
   const [error, setError] = useState('');
+  const [rename, setRename] = useState(false);
   const ids = feeds.map(feed => feed.id).sort().join(',');
   // Reopening shows the job already running (or finished) for these feeds; otherwise a new one starts, reusing saved results.
   useEffect(() => {
@@ -106,7 +110,7 @@ export function PubmedBatchConvert({ feeds, close, review, changed, notify }: { 
     if (!job || !ready.length || !confirm(t('pubmedBatch.confirm', { count: ready.length }))) return;
     setBusy('convert'); setError('');
     try {
-      const { results, job: next } = await api.pubmedChecks.convert(job.id, ready.map(entry => entry.feedId));
+      const { results, job: next } = await api.pubmedChecks.convert(job.id, ready.map(entry => entry.feedId), rename);
       setJob(next); changed();
       const done = results.filter(result => result.ok).length;
       notify(t('pubmedBatch.converted', { count: done }));
@@ -127,10 +131,11 @@ export function PubmedBatchConvert({ feeds, close, review, changed, notify }: { 
     </div>}
     {!job && !error && <p className="pubmed-batch-progress"><LoaderCircle size={14} className="spin" />{t('pubmedConvert.checking')}</p>}
     {error && <div className="error-note" role="alert">{error}</div>}
+    {entries.length > 0 && <label className="checkbox-field"><input type="checkbox" checked={rename} onChange={e => setRename(e.target.checked)} /><span>{t('pubmedConvert.rename')}</span></label>}
     {entries.length > 0 && <div className="pubmed-batch-table" role="table" aria-label={t('pubmedBatch.title')}>
       <div role="row" className="pubmed-batch-head"><span role="columnheader">{t('label.feedName')}</span><span role="columnheader">{t('pubmedBatch.query')}</span><span role="columnheader">{t('pubmedBatch.coverage')}</span><span role="columnheader">{t('pubmedBatch.status')}</span></div>
       {entries.map(entry => <div role="row" key={entry.feedId} data-state={rowState(entry)}>
-        <span role="cell" className="pubmed-batch-name">{entry.name}</span>
+        <span role="cell" className="pubmed-batch-name">{entry.name}{rename && entry.check?.query && entry.state !== 'converted' && pubmedDefaultName(entry.check.query) !== entry.name && <small className="pubmed-rename">→ {pubmedDefaultName(entry.check.query)}</small>}</span>
         <span role="cell">{entry.check?.query ? <code>{entry.check.query}</code> : '—'}</span>
         <span role="cell">{entry.check ? coverageText(entry.check) : '—'}{entry.cached && <small className="pubmed-cached"> {t('pubmedBatch.cached')}</small>}</span>
         <span role="cell" className="pubmed-batch-status">{status(entry)}{entry.state === 'done' && entry.check?.status === 'review' && byId.get(entry.feedId) && <button type="button" className="button small" onClick={() => review(byId.get(entry.feedId)!, { ...entry.check!, ncbiKeyConfigured: !!job?.ncbiKeyConfigured } as PubmedRssCheck)}>{t('pubmedBatch.review')}</button>}</span>

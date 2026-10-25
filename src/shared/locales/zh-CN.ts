@@ -1785,12 +1785,11 @@ const messages: LocaleMessages = {
   'pubmedEditor.translation': 'PubMed 实际执行的查询式',
   'pubmedEditor.rateNote': '预览和刷新共用 NCBI 每秒 3 个请求的额度（填写 API Key 后为 10 个）。',
   'pubmedEditor.settings': '订阅设置',
-  'pubmedEditor.nameHint': '默认根据检索条件生成，修改后不再自动更新。',
+  'pubmedEditor.nameHint': '默认名称是查询式加“ - PubMed”，随查询式更新；手动修改后不再自动更新。',
   'pubmedEditor.limit': '每次抓取最新文章数',
   'pubmedEditor.limitHint': '每次刷新读取最新的这些匹配文章（按收录到 PubMed 的时间，新的在前）；已存的文章不会重复加入。',
   'pubmedEditor.editHint': '修改检索条件后已存的文章会保留，新的匹配文章在下次刷新时加入。',
   'pubmedEditor.duplicate': 'PubMed 检索订阅“{name}”已经在使用这个查询式，仍然可以另存为新订阅。',
-  'pubmedEditor.defaultName': 'PubMed：{terms}',
   'pubmedEditor.save': '保存 PubMed 检索订阅',
   'pubmedEditor.saveConvert': '确认转换',
   'pubmedEditor.confirmConvert': '确定把“{name}”转换为 PubMed 检索订阅吗？订阅 ID、RSS 地址、已存条目和译文都会保留；之后改为通过 NCBI E-utilities 获取，不再访问原 RSS 地址。',
@@ -1871,6 +1870,9 @@ const messages: LocaleMessages = {
   'appSettings.ncbiSavedTested': '已配置 Key。上次测试：{result}（{time}）',
   'appSettings.ncbiSavedUntested': '已配置 Key，尚未测试。',
   'appSettings.ncbiEmailWhy': 'NCBI 建议程序附上联系邮箱：请求出现问题时，他们会先发邮件联系你，而不是直接封禁来源。',
+  'pubmedEditor.nameKept': '名称是你自定义的，未随查询式更新。',
+  'pubmedConvert.rename': '同时把名称改为“查询式 - PubMed”',
+  'pubmedConvert.renameTo': '新名称：{name}',
   // @end
 };
 

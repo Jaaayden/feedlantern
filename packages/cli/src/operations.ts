@@ -1,4 +1,4 @@
-import { buildPubmedQuery, parsePubmedQuery, pubmedRssSource, pubmedDefaultTerms, pubmedSearchUrl, PUBMED_DEFAULT_LIMIT, type PubmedField, type PubmedFilters, type PubmedOperator } from '../../../src/shared/pubmed.js';
+import { buildPubmedQuery, pubmedRssSource, pubmedDefaultName, pubmedSearchUrl, PUBMED_DEFAULT_LIMIT, type PubmedField, type PubmedFilters, type PubmedOperator } from '../../../src/shared/pubmed.js';
 import { feedFormatUrl, type PubmedCheckEntry, type PubmedCheckJob, type ApiTokenCallFilter, type BulkFeedSettingsInput, type ExtractedItem, type Feed, type FeedInput, type FeedSettingsInput, type FetchStatus, type ItemOutputStatus, type PaginationRules, type SelectionRules } from '../../../src/shared/types.js';
 import type { BrowserOpenInput, BulkAction, FeedLanternClient, FeedPayload, HttpMethod, ImportJobInput } from './client.js';
 import { FeedLanternError, usageError } from './errors.js';
@@ -245,8 +245,8 @@ export async function pubmedCheckStatus(client: FeedLanternClient, input: { jobI
 }
 
 /** Converts the verified feeds of a check job (or the listed ones among them). */
-export async function pubmedConvertVerified(client: FeedLanternClient, jobId: string, feedIds?: string[]) {
-  const response = await client.convertPubmedChecks(jobId, feedIds);
+export async function pubmedConvertVerified(client: FeedLanternClient, jobId: string, feedIds?: string[], rename = false) {
+  const response = await client.convertPubmedChecks(jobId, feedIds, rename);
   if (client.dryRun) return dryRunResult(client);
   const failed = response.results.filter(result => !result.ok).length;
   return { converted: response.results.length - failed, failed, results: response.results, ...jobReport(response.job) };
@@ -258,20 +258,20 @@ export async function pubmedConvertVerified(client: FeedLanternClient, jobId: st
  * checks every PubMed RSS feed in a background job, waits for it, reports,
  * and with `yes` converts the verified ones. Without `yes` nothing changes.
  */
-export async function pubmedConvert(client: FeedLanternClient, input: { feedId?: string; allVerified?: boolean; yes?: boolean; query?: string; limit?: number; recheck?: boolean; waitMs?: number }) {
+export async function pubmedConvert(client: FeedLanternClient, input: { feedId?: string; allVerified?: boolean; yes?: boolean; query?: string; limit?: number; recheck?: boolean; waitMs?: number; rename?: boolean }) {
   if (!input.feedId === !input.allVerified) throw usageError(t('usage.pubmedConvertTarget'));
   if (input.allVerified && input.query) throw usageError(t('usage.pubmedConvertQueryOne'));
   if (input.allVerified) {
     const job = await settle(client, await client.startPubmedChecks(undefined, input.recheck), input.waitMs ?? 30 * 60_000);
     if (!input.yes) return { ...jobReport(job), converted: 0, hint: t(job.state === 'running' ? 'pubmed.checksRunning' : 'pubmed.convertHint') };
-    return pubmedConvertVerified(client, job.id);
+    return pubmedConvertVerified(client, job.id, undefined, input.rename);
   }
   const check = await client.pubmedCheck(input.feedId!);
   const row = { feedId: check.feedId, name: check.name, status: check.status, reason: check.reason ?? null, query: check.query, coverage: check.coverage ? `${check.coverage.matched}/${check.coverage.total}${check.coverage.source === 'stored' ? ' (stored)' : ''}` : null, count: check.count ?? null, limit: check.limit, repaired: check.repaired, error: check.error ?? null };
   if (!input.yes) return { checked: 1, verified: check.status === 'verified' ? 1 : 0, review: check.status === 'review' ? 1 : 0, converted: 0, feeds: [row], hint: t('pubmed.convertHint') };
   const query = input.query ?? (check.status === 'verified' ? check.query : undefined);
   if (!query) throw usageError(t('pubmed.convertNeedsReview'));
-  const payload = await client.pubmedConvert(check.feedId, query, input.limit ?? check.limit);
+  const payload = await client.pubmedConvert(check.feedId, query, input.limit ?? check.limit, input.rename);
   if (client.dryRun) return { ...dryRunResult(client), feeds: [row] };
   return { converted: 1, feeds: [{ ...row, query }], ...withUrls(payload) };
 }
@@ -280,7 +280,8 @@ export async function pubmedConvert(client: FeedLanternClient, input: { feedId?:
 export async function createPubmedFeed(client: FeedLanternClient, input: PubmedFeedInput) {
   const query = pubmedQueryFrom(input);
   const limit = input.limit ?? PUBMED_DEFAULT_LIMIT;
-  const name = (input.name ?? `PubMed: ${pubmedDefaultTerms(parsePubmedQuery(query), query)}`).slice(0, 200);
+  // Like the web editor: the query as sent, then " - PubMed".
+  const name = (input.name ?? pubmedDefaultName(query)).slice(0, 200);
   return withUrls(await client.createFeed({
     sourceType: 'pubmed', pubmed: { query, limit }, url: pubmedSearchUrl({ query, limit }), name,
     rules: { item: '', title: '', link: '' }, credentialId: null, waitMs: 0, intervalMinutes: input.intervalMinutes ?? 60,

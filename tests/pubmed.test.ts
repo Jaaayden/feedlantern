@@ -11,7 +11,7 @@ import { NCBI_INTERVAL_MS, NcbiRateLimiter, fetchPubmedSearch, parseEfetch, pars
 import { NcbiError, NotAFeedError, sourceMessages } from '../src/server/fetch-errors.js';
 import { friendlyError } from '../src/server/validation.js';
 import { lt, rawText } from '../src/server/i18n.js';
-import { pubmedSearchUrl } from '../src/shared/pubmed.js';
+import { pubmedDefaultName, pubmedSearchUrl } from '../src/shared/pubmed.js';
 import { startHttpProxy, startTarget } from './proxy-fixtures.js';
 
 const fixture = (name: string) => readFileSync(new URL(`./fixtures/pubmed/${name}`, import.meta.url), 'utf8');
@@ -310,7 +310,7 @@ test('创建 PubMed 检索订阅：保存检索条件，抓取后条目、输出
   const app = await createApp({ store, dataDir: dir, browserService: browser, startScheduler: false, allowedHosts: [eutils.host], ncbiEndpoint: eutils.endpoint, translator: async text => `译：${text}`, translationIntervalMs: 0 });
   try {
     const headers = await signIn(app, store);
-    const base = { sourceType: 'pubmed', name: 'cryo-EM · ShanghaiTech', translationMode: 'bilingual', intervalMinutes: 120 };
+    const base = { sourceType: 'pubmed', name: pubmedDefaultName(SEARCH.query), translationMode: 'bilingual', intervalMinutes: 120 };
     for (const [payload, code] of [[{ ...base }, 'pubmed_query_invalid'], [{ ...base, pubmed: { query: '(cryo' } }, 'pubmed_query_invalid'], [{ ...base, pubmed: { query: 'x', limit: 15 } }, 'validation']] as const) {
       const rejected = await app.inject({ method: 'POST', url: '/api/feeds', headers, payload });
       assert.deepEqual([rejected.statusCode, rejected.json().code], [400, code], rejected.body);
@@ -330,6 +330,14 @@ test('创建 PubMed 检索订阅：保存检索条件，抓取后条目、输出
     const detail = (await app.inject({ url: `/api/feeds/${feed.id}`, headers })).json();
     assert.ok(detail.items.every((item: { translatedTitle?: string }) => item.translatedTitle?.startsWith('译：')));
     const output = await app.inject({ url: new URL(created.json().feedUrl).pathname });
+    // Readers show the feed's name, the query + " - PubMed", in all three formats.
+    const title = `${SEARCH.query} - PubMed`;
+    assert.equal(feed.name, title);
+    const xmlTitle = title.replaceAll('"', '&quot;').replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+    assert.match(output.body, new RegExp(`<channel><title>${xmlTitle}</title>`));
+    const path = new URL(created.json().feedUrl).pathname;
+    assert.match((await app.inject({ url: path.replace(/\.xml$/, '.atom') })).body, new RegExp(`</id><title type="text">${xmlTitle}</title>`));
+    assert.equal(JSON.parse((await app.inject({ url: path.replace(/\.xml$/, '.json') })).body).title, title);
     assert.match(output.body, /<description>FeedLantern 通过 NCBI E-utilities 生成的 PubMed 检索：\(&quot;cryo-EM&quot;\[Title\/Abstract\]\) AND/);
     assert.match(output.body, /<title>译：A Fixture virus and CD4\+ T cells \/ A Fixture virus and CD4\+ T cells<\/title>/);
 

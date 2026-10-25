@@ -1788,12 +1788,11 @@ const messages = {
   'pubmedEditor.translation': 'What PubMed actually ran',
   'pubmedEditor.rateNote': 'Previews and refreshes share NCBI\'s limit of 3 requests per second (10 with an API key).',
   'pubmedEditor.settings': 'Feed settings',
-  'pubmedEditor.nameHint': 'Filled in from your conditions until you change it.',
+  'pubmedEditor.nameHint': 'By default the name is the query followed by “ - PubMed”, and it follows the query until you change it.',
   'pubmedEditor.limit': 'Newest articles per fetch',
   'pubmedEditor.limitHint': 'Each refresh reads this many of the newest matches (newest added to PubMed first). Articles already stored aren\'t added again.',
   'pubmedEditor.editHint': 'Changing the search keeps the stored articles; new matches are added on the next refresh.',
   'pubmedEditor.duplicate': 'The PubMed search “{name}” already uses this query. You can still save this as a new feed.',
-  'pubmedEditor.defaultName': 'PubMed: {terms}',
   'pubmedEditor.save': 'Save PubMed search',
   'pubmedEditor.saveConvert': 'Convert feed',
   'pubmedEditor.confirmConvert': 'Convert “{name}” to a PubMed search feed? Its feed ID, RSS address, stored items and translations are kept; from now on it is read through NCBI E-utilities instead of the RSS address.',
@@ -1874,6 +1873,9 @@ const messages = {
   'appSettings.ncbiSavedTested': 'A key is saved. Last test: {result} ({time})',
   'appSettings.ncbiSavedUntested': 'A key is saved but hasn\'t been tested yet.',
   'appSettings.ncbiEmailWhy': 'NCBI asks programs for a contact email so they can reach you about problems with your requests before blocking them.',
+  'pubmedEditor.nameKept': 'The name didn\'t follow the query because you set it yourself.',
+  'pubmedConvert.rename': 'Also rename the feed to “query - PubMed”',
+  'pubmedConvert.renameTo': 'New name: {name}',
   // @end
 } as const;
 

@@ -232,7 +232,7 @@ export const api = {
     get: (id: string) => request<PubmedCheckJob>(`/api/pubmed-checks/${encodeURIComponent(id)}`),
     cancel: (id: string) => request<PubmedCheckJob>(`/api/pubmed-checks/${encodeURIComponent(id)}/cancel`, { method: 'POST', body: {} }),
     retry: (id: string) => request<PubmedCheckJob>(`/api/pubmed-checks/${encodeURIComponent(id)}/retry`, { method: 'POST', body: {} }),
-    convert: (id: string, feedIds?: string[]) => request<{ results: Array<{ feedId: string; ok: boolean; error?: string }>; job: PubmedCheckJob }>(`/api/pubmed-checks/${encodeURIComponent(id)}/convert`, { method: 'POST', body: feedIds ? { feedIds } : {} }),
+    convert: (id: string, feedIds?: string[], rename = false) => request<{ results: Array<{ feedId: string; ok: boolean; error?: string }>; job: PubmedCheckJob }>(`/api/pubmed-checks/${encodeURIComponent(id)}/convert`, { method: 'POST', body: { ...(feedIds ? { feedIds } : {}), ...(rename ? { rename } : {}) } }),
   },
   pubmed: {
     /** Matches and the newest few articles of a PubMed query (NCBI E-utilities, shared rate limit). */
@@ -242,7 +242,7 @@ export const api = {
     /** Reads a PubMed RSS feed once and compares it with the query recovered from it; changes nothing. */
     pubmedCheck: (id: string) => request<PubmedRssCheck>(`/api/feeds/${encodeURIComponent(id)}/pubmed-check`, { method: 'POST', body: {} }),
     /** Turns a PubMed RSS feed into a PubMed search with this query; the feed keeps everything else. */
-    pubmedConvert: (id: string, query: string, limit?: number) => request<{ feed: Feed; feedUrl: string }>(`/api/feeds/${encodeURIComponent(id)}/pubmed-convert`, { method: 'POST', body: { query, ...(limit ? { limit } : {}) } }),
+    pubmedConvert: (id: string, query: string, limit?: number, rename = false) => request<{ feed: Feed; feedUrl: string }>(`/api/feeds/${encodeURIComponent(id)}/pubmed-convert`, { method: 'POST', body: { query, ...(limit ? { limit } : {}), ...(rename ? { rename } : {}) } }),
     previewRss: (url: string, networkProfileId?: string | null) => request<{ title: string; items: ExtractedItem[] }>('/api/rss/preview', { method: 'POST', body: { url, ...(networkProfileId ? { networkProfileId } : {}) } }),
     translationProgress: (id: string) => request<TranslationProgressData>(`/api/feeds/${encodeURIComponent(id)}/translation/progress`),
     retryTranslation: (id: string) => request<unknown>(`/api/feeds/${encodeURIComponent(id)}/translation/retry`, { method: 'POST', body: {} }),

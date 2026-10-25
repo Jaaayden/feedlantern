@@ -118,6 +118,8 @@ test('批量验证：重启后继续；可以取消和重试失败项；验证�
     assert.ok(converted.json().results.every((result: { ok: boolean }) => result.ok));
     assert.equal(converted.json().job.state, 'running');
     for (const id of early) assert.equal(store.getFeed(id)!.sourceType, 'pubmed');
+    // Conversion keeps each feed's own name unless renaming was asked for.
+    for (const id of early) assert.equal(store.getFeed(id)!.name, feeds.find(feed => feed.id === id)!.name);
     // Converting again is safe.
     assert.ok((await app.inject({ method: 'POST', url: `/api/pubmed-checks/${job.id}/convert`, headers, payload: { feedIds: early } })).json().results.every((result: { ok: boolean }) => result.ok));
 

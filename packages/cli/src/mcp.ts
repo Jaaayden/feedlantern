@@ -137,15 +137,15 @@ const tools: ToolDef[] = [
   },
   {
     name: 'pubmed_convert_verified', scope: 'write', annotations: idempotent,
-    input: { jobId: z.string().min(1).describe(d('pubmedJobId')), feedIds: z.array(z.string().min(1)).optional().describe(d('pubmedConvertIds')), confirm, dryRun },
+    input: { jobId: z.string().min(1).describe(d('pubmedJobId')), feedIds: z.array(z.string().min(1)).optional().describe(d('pubmedConvertIds')), rename: z.boolean().optional().describe(d('pubmedRename')), confirm, dryRun },
     confirm: () => true,
-    run: (client, args) => ops.pubmedConvertVerified(client, s(args.jobId), args.feedIds as string[] | undefined),
+    run: (client, args) => ops.pubmedConvertVerified(client, s(args.jobId), args.feedIds as string[] | undefined, args.rename === true),
   },
   {
     name: 'pubmed_convert', scope: 'write', annotations: idempotent,
-    input: { id, query: z.string().min(1).max(4000).describe(d('pubmedConvertQuery')), limit: z.union([z.literal(10), z.literal(20), z.literal(50), z.literal(100)]).optional().describe(d('pubmedLimit')), confirm, dryRun },
+    input: { id, query: z.string().min(1).max(4000).describe(d('pubmedConvertQuery')), limit: z.union([z.literal(10), z.literal(20), z.literal(50), z.literal(100)]).optional().describe(d('pubmedLimit')), rename: z.boolean().optional().describe(d('pubmedRename')), confirm, dryRun },
     confirm: () => true,
-    run: async (client, args) => { const payload = await client.pubmedConvert(s(args.id), s(args.query), args.limit as number | undefined); return client.dryRun ? ops.dryRunResult(client) : { converted: true, ...payload }; },
+    run: async (client, args) => { const payload = await client.pubmedConvert(s(args.id), s(args.query), args.limit as number | undefined, args.rename === true); return client.dryRun ? ops.dryRunResult(client) : { converted: true, ...payload }; },
   },
   {
     name: 'pubmed_create', scope: 'write', annotations: write,

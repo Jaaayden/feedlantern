@@ -3,7 +3,7 @@ import { providerProblem } from './translation-providers.js';
 import { fetchSource, probeTarget, type SourceFetcher, type SourceOptions, type SourceResult } from './rss-source.js';
 import { checkPubmedRss, fetchPubmedSearch, keyDigest, NcbiRateLimiter, previewPubmed, testNcbiSettings, withPubmedRssHint } from './pubmed.js';
 import { checkSignature, jobSnapshot, PubmedCheckRunner } from './pubmed-checks.js';
-import { nearestPubmedLimit, pubmedPmidOf, pubmedRssSource, pubmedSearchUrl } from '../shared/pubmed.js';
+import { nearestPubmedLimit, pubmedDefaultName, pubmedPmidOf, pubmedRssSource, pubmedSearchUrl } from '../shared/pubmed.js';
 import { NetworkPolicy, NetworkPolicyError } from './network.js';
 import { networkOptions, parseNetworkProfileInput, type FetchNetworkOptions } from './fetch-options.js';
 import { TranslationError, TranslationWorker, type Translator } from './rss-translation.js';
@@ -1413,12 +1413,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
    * else about the feed stays. Converting a feed that already is this search
    * succeeds without changes, so a batch can be retried.
    */
-  const convertToPubmed = async (id: string, query: unknown, limit: unknown, guard: () => void): Promise<Feed> => {
+  const convertToPubmed = async (id: string, query: unknown, limit: unknown, guard: () => void, rename = false): Promise<Feed> => {
     const feed = store.getFeed(id);
     if (!feed) throw new AppError(404, 'error.feedNotFound');
     const rss = feed.sourceType === 'rss' ? pubmedRssSource(feed.url) : null;
     const pubmed = parsePubmedSearch({ query, limit: limit ?? (rss ? nearestPubmedLimit(rss.limit) : feed.pubmed?.limit) }, undefined);
-    if (feed.sourceType === 'pubmed' && feed.pubmed?.query === pubmed.query && (limit === undefined || feed.pubmed.limit === pubmed.limit)) return feed;
+    if (feed.sourceType === 'pubmed' && feed.pubmed?.query === pubmed.query && (limit === undefined || feed.pubmed.limit === pubmed.limit) && (!rename || feed.name === pubmedDefaultName(pubmed.query))) return feed;
+    if (feed.sourceType === 'pubmed' && feed.pubmed?.query === pubmed.query && rename) return store.setChannelTitle(id, pubmedDefaultName(pubmed.query)) ?? feed;
     if (!rss) throw new AppError(400, 'error.notPubmedRss');
     // Only this feed is held: other PubMed feeds' refreshes (same site) don't make a batch wait.
     const updated = await enqueueRefresh(() => {
@@ -1426,7 +1427,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       const current = store.getFeed(id);
       if (!current || current.sourceType !== 'rss') throw new AppError(409, 'error.notPubmedRss');
       return store.updateFeed(current.id, {
-        sourceType: 'pubmed', pubmed, url: pubmedSearchUrl(pubmed), name: current.name,
+        // The feed keeps its own name unless the user asked for the query's default name.
+        sourceType: 'pubmed', pubmed, url: pubmedSearchUrl(pubmed), name: rename ? pubmedDefaultName(pubmed.query) : current.name,
         translationMode: current.translationMode, targetLanguage: current.targetLanguage, translationProvider: current.translationProvider ?? null,
         rules: { item: '', title: '', link: '' }, credentialId: null, intervalMinutes: current.intervalMinutes, waitMs: 0,
       });
@@ -1448,7 +1450,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   app.post('/api/feeds/:id/pubmed-convert', async request => {
     feedsGuard(request);
     const body = asRecord(request.body);
-    const feed = await convertToPubmed(String((request.params as { id: string }).id), body.query, body.limit, () => feedsGuard(request));
+    const feed = await convertToPubmed(String((request.params as { id: string }).id), body.query, body.limit, () => feedsGuard(request), body.rename === true);
     return feedPayload(feed);
   });
 
@@ -1494,7 +1496,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       if (wanted && !wanted.has(entry.feedId)) continue;
       if (!entry.check || entry.check.status !== 'verified' || !(entry.state === 'done' || entry.state === 'converted')) { if (wanted) results.push({ feedId: entry.feedId, ok: false, error: tl('pubmedConvert.needsReview') }); continue; }
       try {
-        await convertToPubmed(entry.feedId, entry.check.query, entry.check.limit, () => feedsGuard(request));
+        await convertToPubmed(entry.feedId, entry.check.query, entry.check.limit, () => feedsGuard(request), body.rename === true);
         results.push({ feedId: entry.feedId, ok: true });
         const current = store.pubmedChecks.job(job.id)!;
         const row = current.entries.find(item => item.feedId === entry.feedId);

@@ -303,9 +303,9 @@ const commands: Command[] = [
   },
   {
     name: 'pubmed convert', args: ['[feedId]'], write: true,
-    options: { 'all-verified': { type: 'boolean' }, query: { type: 'string' }, limit: { type: 'string' }, recheck: { type: 'boolean' } },
+    options: { 'all-verified': { type: 'boolean' }, query: { type: 'string' }, limit: { type: 'string' }, recheck: { type: 'boolean' }, rename: { type: 'boolean' } },
     table: { rows: 'feeds', columns: ['feedId', 'name', 'status', 'reason', 'coverage', 'query'] },
-    run: async ctx => ops.pubmedConvert(await ctx.client(), compact({ feedId: ctx.args.feedId as string | undefined, allVerified: ctx.opts['all-verified'] ? true : undefined, yes: ctx.opts.yes ? true : undefined, query: str(ctx.opts, 'query'), limit: pubmedLimit(ctx), recheck: ctx.opts.recheck ? true : undefined })),
+    run: async ctx => ops.pubmedConvert(await ctx.client(), compact({ feedId: ctx.args.feedId as string | undefined, allVerified: ctx.opts['all-verified'] ? true : undefined, yes: ctx.opts.yes ? true : undefined, query: str(ctx.opts, 'query'), limit: pubmedLimit(ctx), recheck: ctx.opts.recheck ? true : undefined, rename: ctx.opts.rename ? true : undefined })),
   },
   {
     name: 'pubmed checks', write: true,

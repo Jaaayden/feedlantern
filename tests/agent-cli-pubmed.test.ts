@@ -90,7 +90,7 @@ test('CLI：pubmed create 保存检索订阅，dry-run 不创建；feeds update 
     const created = await t.cli(['pubmed', 'create', '--journal', 'PLoS Pathog', '--has-abstract', '--limit', '50', '--translation', 'bilingual', '--interval', '180']);
     assert.equal(created.code, 0, created.stderr);
     const feed = created.json().feed;
-    assert.deepEqual([feed.sourceType, feed.name, feed.translationMode, feed.intervalMinutes], ['pubmed', 'PubMed: PLoS Pathog', 'bilingual', 180]);
+    assert.deepEqual([feed.sourceType, feed.name, feed.translationMode, feed.intervalMinutes], ['pubmed', '(PLoS Pathog[Journal]) AND (hasabstract) - PubMed', 'bilingual', 180]);
     assert.deepEqual(feed.pubmed, { query: '(PLoS Pathog[Journal]) AND (hasabstract)', limit: 50 });
     assert.equal(feed.url, pubmedSearchUrl(feed.pubmed));
     assert.match(created.json().feedUrls.json, /\.json$/);
