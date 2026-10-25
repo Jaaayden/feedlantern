@@ -185,7 +185,7 @@ feedlantern pubmed convert --all-verified --yes
 feedlantern pubmed convert feed_123 --query '(Hu wanlong[Author]) AND (The University of Hong Kong[Affiliation])' --yes
 ```
 
-`pubmed create` 默认输出原文、每次抓取最新 20 篇、刷新间隔 60 分钟，名称省略时根据条件生成。修改已有检索订阅用 `feeds update <id> --data '{"pubmed":{"query":"…"}}'`（不写 `limit` 时保留原篇数，已存条目保留）。所有 NCBI 请求共用实例的限流队列（不带 NCBI API Key 每秒 3 个，带 Key 10 个），请不要在循环里高频预览。
+`pubmed create` 默认输出原文、每次抓取最新 20 篇、刷新间隔 60 分钟，名称省略时为“查询式 - PubMed”（与网页一致，过长时从中间截断）。`pubmed convert` 默认保留订阅现有的名称，加 `--rename` 才改为“查询式 - PubMed”；MCP 的 `pubmed_convert`、`pubmed_convert_verified` 对应参数 `rename`。修改已有检索订阅用 `feeds update <id> --data '{"pubmed":{"query":"…"}}'`（不写 `limit` 时保留原篇数，已存条目保留）。所有 NCBI 请求共用实例的限流队列（不带 NCBI API Key 每秒 3 个，带 Key 10 个），请不要在循环里高频预览。
 
 判断规则是否可靠：`coverage.title` 和 `coverage.link` 应等于 `count`，`duplicateLinks` 应为 0；日期、图片和摘要缺失不影响订阅可用。页面需要等待脚本渲染时加 `--wait-for <选择器>` 或 `--wait-ms`。之后如果订阅出现规则失效预警（`feeds list --status warning`），用 `preview --feed <id>` 在订阅的网页上试新规则，再用 `feeds update <id>` 保存。
 

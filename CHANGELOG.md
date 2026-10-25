@@ -15,6 +15,7 @@
 - 批量转换：订阅列表顶部提示可转换的 PubMed RSS 订阅数量，也可以勾选后用批量操作“转换为 PubMed 检索订阅”。验证作为后台任务保存在服务端（数据库迁移 22），关闭页面或重启后继续，再次打开看到进度和结果；大多数订阅只用订阅名和已存条目验证（每个一次 E-utilities 请求，不访问 PubMed 网页），同时验证 5 个，仍严格走全局 NCBI 限流；未变的订阅沿用上次结果，可重新验证、停止、重试失败项。进度条显示已完成数和预计剩余时间，逐行显示状态；验证通过的可以边验证边转换，转换幂等。未配置 API Key 时提示并链接到设置页。转换保留订阅 ID、RSS 地址、条目、译文、翻译设置、过滤、输出与保留条数、聚合成员资格、刷新间隔和网络配置。
 - CLI 新增 `pubmed convert <id>` / `pubmed convert --all-verified`（默认只输出验证报告，加 `--yes` 才转换）和 `pubmed checks`（查看、等待、停止、重试后台验证任务），MCP 新增 `pubmed_convert_check`、`pubmed_check_status`、`pubmed_convert_verified`、`pubmed_convert`。
 - “设置 → PubMed（NCBI）”可以在保存前测试 API Key 和邮箱：用一个 `retmax=0` 的 esearch 请求区分有效（显示速率上限）、NCBI 不接受、格式不对、被限流和网络不通，其他情况显示 NCBI 原始错误摘要；保存后显示上次测试的结果与时间，Key 改动后提示重新测试。
+- 订阅名默认为查询式原文加“ - PubMed”（固定后缀，不翻译），随查询式更新，手动修改后不再覆盖；超过 200 字符时从查询式中间截断。RSS、Atom、JSON 的频道标题都使用订阅名。编辑查询式时，仍是默认名称的会跟着更新，自定义名称保持不变并提示。转换已有订阅默认保留原名称，单个和批量确认界面可选“同时把名称改为‘查询式 - PubMed’”，批量表格显示新旧名称对照；CLI `--rename`，MCP `rename`。
 - CLI 新增 `pubmed preview` 和 `pubmed create`（`--query`，或 `--title-abstract`、`--author`、`--journal`、`--affiliation` 等条件选项），MCP 新增 `pubmed_preview`、`pubmed_create` 工具。
 - 接口：订阅新增来源类型 `pubmed` 和 `pubmed: { query, limit }`（订阅的 `url` 是对应的 PubMed 检索页）；新增 `POST /api/pubmed/preview`、`POST /api/feeds/:id/pubmed-check`（验证，不改动订阅）、`POST /api/feeds/:id/pubmed-convert`（幂等）、`/api/pubmed-checks`（后台验证任务：开始、查看、停止、重试、转换）、`POST /api/settings/ncbi/test` 和 `GET /api/settings/ncbi/status`；查询式无法发送时返回错误代码 `pubmed_query_invalid`。应用设置新增 `ncbi`（`apiKey` 只写、`apiKeyConfigured`、`email`）。
 
