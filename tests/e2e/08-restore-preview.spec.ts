@@ -7,7 +7,7 @@ test('完整恢复预览列出服务器与网络设置，默认不勾选恢复�
   const exported = await page.request.post('/api/backups/export', { headers, data: { currentPassword: TEST_ACCOUNT.password, password: 'e2e-backup-password' } });
   expect(exported.ok()).toBeTruthy();
   const archive = await exported.json();
-  await page.goto('/');
+  await page.goto('/#/');
   await page.getByRole('button', { name: '设置', exact: true }).click();
   await page.getByRole('navigation', { name: '设置分组' }).getByRole('button', { name: '备份与迁移', exact: true }).click();
   await page.getByRole('button', { name: '完整恢复', exact: true }).click();

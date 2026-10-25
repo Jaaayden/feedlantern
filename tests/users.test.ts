@@ -207,7 +207,7 @@ test('多用户备份保留归属、状态和 RSS 密钥，旧备份及 v6 数�
     const bad = structuredClone(snapshot); bad.tables.feeds[0].owner_id = 'unknown'; assert.throws(() => snapshotSchema.parse(bad));
     const wrongOwner = structuredClone(snapshot); wrongOwner.tables.credentials[0].owner_id = 'admin';
     assert.throws(() => snapshotSchema.parse(wrongOwner));
-    const legacy = JSON.parse(JSON.stringify(snapshot)); legacy.version = 1;
+    const legacy = JSON.parse(JSON.stringify(snapshot)); legacy.version = 1; delete legacy.tables.activity_totals; delete legacy.tables.activity_daily;
     const admin = legacy.tables.users.find((u: {role: string}) => u.role === 'admin');
     legacy.tables.admin = [{ id: 1, username: admin.username, password_hash: admin.password_hash, created_at: admin.created_at, updated_at: admin.updated_at }]; delete legacy.tables.users;
     for (const row of legacy.tables.feeds) delete row.owner_id;
@@ -217,6 +217,9 @@ test('多用户备份保留归属、状态和 RSS 密钥，旧备份及 v6 数�
     const oldSession = store.createSession('original-admin', 60_000);
     store.close();
     const db = new DatabaseSync(join(dir, 'app.db'));
+    // Recreate an old schema without the later activity tables or triggers.
+    for (const { name } of db.prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'activity_%'").all()) db.exec(`DROP TRIGGER ${name}`);
+    db.exec('DROP TABLE activity_daily; DROP TABLE activity_totals;');
     db.exec(`CREATE TABLE admin (id INTEGER PRIMARY KEY CHECK(id=1),username TEXT NOT NULL,password_hash TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
       INSERT INTO admin SELECT 1,username,password_hash,created_at,updated_at FROM users WHERE role='admin';
       DROP INDEX sessions_user; ALTER TABLE sessions DROP COLUMN user_id; DROP TABLE users; DROP TABLE user_notifications;

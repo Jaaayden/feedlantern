@@ -12,7 +12,7 @@ test('PubMed 检索订阅：构建条件 → 预览 → 保存 → 刷新 → �
   const auth = await loginAsAdmin(page.request), headers = protocolHeaders(auth.csrfToken);
   let feedId: string | undefined;
   try {
-    await page.goto('/');
+    await page.goto('/#/');
     await page.getByRole('button', { name: '新建订阅', exact: true }).click();
     await page.getByRole('button', { name: 'PubMed 检索', exact: true }).click();
     await expect(page.getByRole('heading', { name: '订阅 PubMed 检索' })).toBeVisible();
@@ -148,7 +148,7 @@ test('期刊 RSS 订阅一键转换为 PubMed 检索订阅：确认后保留订�
 
 test('来源返回反爬验证页时，预览给出准确报错而不是“实体声明”', async ({ page }) => {
   await loginAsAdmin(page.request);
-  await page.goto('/');
+  await page.goto('/#/');
   await page.getByRole('button', { name: '新建订阅', exact: true }).click();
   await page.getByRole('button', { name: 'RSS 翻译', exact: true }).click();
   await page.getByLabel('RSS / Atom 地址').fill(`${fixtureBaseUrl}/challenge-feed.xml`);
@@ -231,7 +231,7 @@ test('批量转换 PubMed RSS 订阅：逐个验证并汇总，确认后只转�
   const auth = await loginAsAdmin(page.request), headers = protocolHeaders(auth.csrfToken);
   const ids = await importRss(page.request, headers, [{ name: 'Batch OK', url: SEARCH_RSS('e2eok') }, { name: 'Batch Low', url: SEARCH_RSS('e2elow') }]);
   try {
-    await page.goto('/');
+    await page.goto('/#/');
     const strip = page.getByTestId('pubmed-batch-strip');
     await expect(strip).toContainText('有 2 个 PubMed RSS 订阅可以转换');
     await strip.getByRole('button', { name: '验证并转换' }).click();

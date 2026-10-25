@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import { createApp, Store, type BrowserServiceLike } from '../src/server/app.js';
 import type { FeedInput, UserSummary } from '../src/shared/types.js';
@@ -29,9 +30,31 @@ test('管理员用户列表附带订阅、出错、暂停、凭据数量和最�
     assert.equal(response.statusCode, 200);
     const users = response.json() as UserSummary[];
     const byName = Object.fromEntries(users.map(user => [user.username, user]));
-    assert.deepEqual({ ...byName.alice.stats, lastSeenAt: typeof byName.alice.stats?.lastSeenAt }, { feeds: 3, failingFeeds: 1, pausedFeeds: 1, credentials: 1, lastSeenAt: 'string' });
-    assert.deepEqual(byName.bob.stats, { feeds: 0, failingFeeds: 0, pausedFeeds: 0, credentials: 0, lastSeenAt: null });
+    assert.deepEqual({ ...byName.alice.stats, lastSeenAt: typeof byName.alice.stats?.lastSeenAt }, { feeds: 3, failingFeeds: 1, attentionFeeds: 1, pausedFeeds: 1, credentials: 1, lastSeenAt: 'string' });
+    assert.deepEqual(byName.bob.stats, { feeds: 0, failingFeeds: 0, attentionFeeds: 0, pausedFeeds: 0, credentials: 0, lastSeenAt: null });
     assert.ok(byName.admin.stats?.lastSeenAt);
     assert.ok(!response.body.includes('password'));
   } finally { await app.close(); store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('用户待检查数量与列表一致：包含核心规则警告，排除可选字段提示，同一订阅不重复统计', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fl-attention-stats-')), store = new Store(dir);
+  store.createAdmin('admin', 'admin-password');
+  const alice = store.createUser('alice', 'alice-password');
+  const db = new DatabaseSync(store.dbPath);
+  try {
+    const core = store.createFeed(input, alice.id).feed;
+    const optional = store.createFeed(input, alice.id).feed;
+    const both = store.createFeed(input, alice.id).feed;
+    const warning = (field: string) => JSON.stringify({ reasons: [{ code: 'field-rate', field, baseline: 1, current: 0, message: 'test' }] });
+    const insert = db.prepare('INSERT INTO feed_health(feed_id,signature,warning_json) VALUES (?, ?, ?)');
+    insert.run(core.id, 'test', warning('title'));
+    insert.run(optional.id, 'test', warning('date'));
+    insert.run(both.id, 'test', warning('link'));
+    store.markFetchFailure(both.id, 'failed', new Date().toISOString());
+    const users = store.listUsersWithStats();
+    assert.equal(users.find(user => user.id === alice.id)?.stats?.attentionFeeds, 2);
+    assert.equal(users.find(user => user.id === alice.id)?.stats?.failingFeeds, 1);
+    assert.equal(users.find(user => user.id === 'admin')?.stats?.attentionFeeds, 0);
+  } finally { db.close(); store.close(); rmSync(dir, { recursive: true, force: true }); }
 });

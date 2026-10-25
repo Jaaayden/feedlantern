@@ -14,6 +14,8 @@ import type {
   NotificationSummary,
   NotificationUpdate,
   AuthState,
+  DashboardPeriod,
+  DashboardStats,
   ApplicationSettings,
   ImportJob,
   CredentialSummary,
@@ -139,6 +141,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 }
 
 export const api = {
+  dashboard: { get: (days: DashboardPeriod, signal?: AbortSignal) => request<DashboardStats>(`/api/dashboard?days=${days}`, { signal }) },
   tokens: {
     /** `userId`: an administrator reading another account's tokens (read-only). */
     list: (userId?: string) => request<ApiTokenSummary[]>('/api/tokens', userId ? { headers: { 'X-FeedLantern-User': userId } } : {}),

@@ -17,11 +17,15 @@ test('条数仍为 6 条：日期缺失仅轻提示，独立筛选、日志标�
     expect(after.ruleHealth?.itemCount).toBe(6);
     expect(after.lastError).toBeNull();
     await page.addInitScript(() => localStorage.removeItem('feedlantern:theme'));
-    await page.goto('/');
+    await page.goto('/#/');
     const title = page.getByRole('button', { name: '查看订阅 日期缺失验收', exact: true });
     const row = page.locator('article').filter({ has: title });
     await expect(row.getByRole('button', { name: '部分字段缺失', exact: true })).toBeVisible();
     await expect(row.getByRole('button', { name: '规则可能失效', exact: true })).toHaveCount(0);
+    const nav = page.getByRole('navigation', { name: '主导航' });
+    await nav.getByRole('button', { name: /^需要检查/ }).click();
+    await expect(title).toHaveCount(0);
+    await nav.getByRole('button', { name: /^全部订阅/ }).click();
     for (const filter of ['attention', 'rule-health']) {
       await page.getByLabel('筛选订阅状态').selectOption(filter);
       await expect(title).toHaveCount(0);
@@ -98,9 +102,13 @@ async function degradedFeed(request: APIRequestContext, name: string) {
 test('规则可能失效：列表与筛选提示、日志标记、重新识别并排对比后逐项替换', async ({ page }) => {
   const { feed, headers } = await degradedFeed(page.request, '改版预警验收');
   try {
-    await page.goto('/');
+    await page.goto('/#/');
     const row = page.locator('article').filter({ has: page.getByRole('button', { name: '查看订阅 改版预警验收', exact: true }) });
     await expect(row.getByRole('button', { name: '规则可能失效', exact: true })).toBeVisible();
+    const nav = page.getByRole('navigation', { name: '主导航' });
+    await nav.getByRole('button', { name: /^需要检查/ }).click();
+    await expect(row).toBeVisible();
+    await nav.getByRole('button', { name: /^全部订阅/ }).click();
     await page.getByLabel('筛选订阅状态').selectOption('rule-health');
     await expect(page.getByRole('button', { name: '查看订阅 改版预警验收', exact: true })).toBeVisible();
     await page.getByLabel('筛选订阅状态').selectOption('failing');
@@ -147,7 +155,7 @@ test('规则可能失效：列表与筛选提示、日志标记、重新识别�
 test('规则可能失效：忽略此警告后恢复正常状态', async ({ page }) => {
   const { feed, headers } = await degradedFeed(page.request, '忽略预警验收');
   try {
-    await page.goto('/');
+    await page.goto('/#/');
     await page.getByRole('button', { name: '查看订阅 忽略预警验收', exact: true }).click();
     const dialog = page.getByRole('dialog');
     await dialog.getByRole('region', { name: '规则可能失效' }).getByRole('button', { name: '忽略此警告' }).click();

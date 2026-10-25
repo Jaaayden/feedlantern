@@ -9,6 +9,8 @@ import { RuleHealth } from './rule-health.js';
 import { BUNDLE_SCHEMA, BundleStore } from './bundle-store.js';
 import { ApiTokens } from './api-tokens.js';
 import { ApiTokenLog, API_TOKEN_LOG_SCHEMA } from './api-token-log.js';
+import { ActivityStats, ACTIVITY_SCHEMA } from './activity-stats.js';
+import { feedNeedsAttention } from '../shared/rule-health.js';
 import { PUBMED_CHECK_SCHEMA, PubmedCheckStore } from './pubmed-checks.js';
 import { AppError } from './auth.js';
 import { applicationSettingsSchema } from './settings.js';
@@ -186,6 +188,7 @@ export class Store {
   readonly bundles: BundleStore;
   readonly tokens: ApiTokens;
   readonly tokenLog: ApiTokenLog;
+  readonly activity: ActivityStats;
   /** Saved PubMed conversion checks, check jobs and the last NCBI key test. */
   readonly pubmedChecks: PubmedCheckStore;
   readonly dataDir: string;
@@ -435,6 +438,12 @@ export class Store {
       const current = Number((this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
       this.db.exec(`BEGIN; ${PUBMED_CHECK_SCHEMA} PRAGMA user_version=${Math.max(22, current)}; COMMIT;`);
     }
+    // 23: durable account counters and daily dashboard activity, independent of retained content.
+    if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='activity_totals'").get()) {
+      const current = Number((this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
+      this.db.exec(`BEGIN; ${ACTIVITY_SCHEMA} PRAGMA user_version=${Math.max(23, current)}; COMMIT;`);
+    }
+    this.activity = new ActivityStats(this.db);
     this.migrateBark();
     this.ensureSetupToken();
   }
@@ -584,13 +593,21 @@ export class Store {
       feeds.set(String(row.owner_id), { total: Number(row.total), failing: Number(row.failing ?? 0), paused: Number(row.paused ?? 0) });
     }
     const credentials = new Map<string, number>();
+    const attention = new Map<string, number>();
+    for (const row of this.db.prepare(`SELECT f.owner_id,f.last_error,h.warning_json FROM feeds f LEFT JOIN feed_health h ON h.feed_id=f.id
+      WHERE f.last_error IS NOT NULL OR h.warning_json IS NOT NULL`).all()) {
+      const warning = parseJson<Feed['ruleHealth']>(row.warning_json, undefined);
+      if (feedNeedsAttention({ lastError: row.last_error ? String(row.last_error) : null, ruleHealth: warning && Array.isArray(warning.reasons) ? warning : undefined })) {
+        const owner = String(row.owner_id); attention.set(owner, (attention.get(owner) ?? 0) + 1);
+      }
+    }
     for (const row of this.db.prepare('SELECT owner_id, COUNT(*) AS total FROM credentials GROUP BY owner_id').all() as Array<Record<string, unknown>>) credentials.set(String(row.owner_id), Number(row.total));
     const seen = new Map<string, number>();
     for (const row of this.db.prepare('SELECT user_id, MAX(last_seen_at) AS seen FROM sessions WHERE user_id IS NOT NULL GROUP BY user_id').all() as Array<Record<string, unknown>>) seen.set(String(row.user_id), Number(row.seen));
     return this.listUsers().map(user => {
       const feed = feeds.get(user.id);
       const lastSeen = seen.get(user.id);
-      return { ...user, stats: { feeds: feed?.total ?? 0, failingFeeds: feed?.failing ?? 0, pausedFeeds: feed?.paused ?? 0, credentials: credentials.get(user.id) ?? 0, lastSeenAt: lastSeen ? new Date(lastSeen).toISOString() : null } };
+      return { ...user, stats: { feeds: feed?.total ?? 0, failingFeeds: feed?.failing ?? 0, attentionFeeds: attention.get(user.id) ?? 0, pausedFeeds: feed?.paused ?? 0, credentials: credentials.get(user.id) ?? 0, lastSeenAt: lastSeen ? new Date(lastSeen).toISOString() : null } };
     });
   }
 
@@ -973,8 +990,9 @@ export class Store {
   }
 
   exportTables(): Tables {
+    this.activity.prune();
     const tables: Record<string, unknown> = {};
-    for (const table of ['users', 'user_notifications', 'credentials', 'network_profiles', 'feeds', 'feed_items', 'settings', 'rss_sources', 'translations', 'translation_cache', 'bundles', 'bundle_feeds']) {
+    for (const table of ['users', 'user_notifications', 'credentials', 'network_profiles', 'feeds', 'feed_items', 'settings', 'rss_sources', 'translations', 'translation_cache', 'bundles', 'bundle_feeds', 'activity_totals', 'activity_daily']) {
       // The cache is pruned hourly, so it can briefly exceed the limit the backup format allows.
       const rows = table === 'translation_cache'
         ? this.db.prepare('SELECT * FROM translation_cache ORDER BY touched_at DESC LIMIT ?').all(TRANSLATION_CACHE_LIMIT)
@@ -1022,6 +1040,13 @@ export class Store {
           this.db.prepare(`INSERT INTO ${table}(${keys.join(',')}) VALUES (${keys.map(() => '?').join(',')})`).run(...keys.map(k => row[k]));
         }
       }
+      // Restoring rows is not new collection activity. Replace trigger-generated
+      // counts with the saved counters, or start a fresh recording for old backups.
+      this.db.exec('DELETE FROM activity_daily; DELETE FROM activity_totals;');
+      for (const row of tables.activity_totals ?? []) this.db.prepare('INSERT INTO activity_totals(owner_id,started_at,collected,translated) VALUES (?,?,?,?)').run(row.owner_id,row.started_at,row.collected,row.translated);
+      for (const row of tables.activity_daily ?? []) this.db.prepare('INSERT INTO activity_daily(owner_id,day,collected,translated,feeds_created,feeds_deleted) VALUES (?,?,?,?,?,?)').run(row.owner_id,row.day,row.collected,row.translated,row.feeds_created,row.feeds_deleted);
+      this.activity.initializeOwners();
+      this.activity.prune();
       // Old backups restore safe defaults, and never reactivate a legacy env URL.
       this.initializeSettings({ ...structuredClone(defaultApplicationSettings), server: previousServer });
       this.migrateBark();

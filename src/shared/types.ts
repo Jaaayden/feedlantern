@@ -470,7 +470,15 @@ export interface NcbiKeyTest {
 /** POST /api/pubmed/preview: how many articles match and the newest few. */
 export interface PubmedPreview { count: number; queryTranslation?: string; warnings: PubmedWarning[]; items: PubmedArticle[]; pubmedUrl: string }
 
-export interface UserStats { feeds: number; failingFeeds: number; pausedFeeds: number; credentials: number; lastSeenAt: string | null }
+export type DashboardPeriod = 7 | 30 | 90;
+export interface DashboardDay { date: string; collected: number; translated: number; added: number; removed: number; subscriptions: number }
+export interface DashboardStats {
+  days: DashboardPeriod; recordingSince: string; updatedAt: string;
+  totals: { collected: number; translated: number }; daily: DashboardDay[];
+  translation: { pending: number; running: number; failed: number }; fetching: number;
+}
+
+export interface UserStats { feeds: number; failingFeeds: number; attentionFeeds: number; pausedFeeds: number; credentials: number; lastSeenAt: string | null }
 export interface UserSummary { id: string; username: string; role: "admin" | "user"; enabled: boolean; createdAt: string; updatedAt: string; stats?: UserStats }
 
 export type BarkSummary = Omit<ApplicationSettings["bark"], "url"> & { configured: boolean; maskedUrl: string };

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { AlertTriangle, Info, LoaderCircle, RefreshCw } from 'lucide-react';
 import type { DetectionCandidate, ExtractedItem, Feed, FieldName, RuleHealthReason, RulePreview, RuleRedetectResult, SelectionRules } from '../shared/types';
 import { isRuleHealthNotice, optionalFieldReason } from '../shared/rule-health';
+export { feedNeedsAttention as needsAttention } from '../shared/rule-health';
 import { fmt, t } from './i18n';
 import { api } from './api';
 import { absoluteTime, relativeTime } from './format';
@@ -21,9 +22,6 @@ export function reasonText(reason: RuleHealthReason, itemCount: number): string 
   if (reason.code === 'field-rate' && reason.field) return t('health.fieldRate', { field: label(reason.field), baseline: percent(reason.baseline), current: percent(reason.current) });
   return reason.message;
 }
-
-/** A feed needs checking when the last fetch failed or its rules may have stopped matching. */
-export function needsAttention(feed: Feed): boolean { return !!feed.lastError || !!feed.ruleHealth && !isRuleHealthNotice(feed.ruleHealth); }
 
 /** Short text for lists: the first reason of the active warning. */
 export function ruleHealthSummary(feed: Feed): string {

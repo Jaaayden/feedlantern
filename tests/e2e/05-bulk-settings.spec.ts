@@ -9,7 +9,7 @@ test('多选修改模式和间隔、保留未指定字段及失败选择', async
       const created = await page.request.post('/api/feeds', { headers, data: { name: `批量设置验收 ${i}`, url: FIXTURE_URLS.static, intervalMinutes: 60 + i * 60, rules: { item: '.article-card', title: '.article-title', link: 'a.article-link' } } });
       expect(created.ok()).toBeTruthy(); ids.push((await created.json()).feed.id);
     }
-    await page.goto('/'); await page.getByLabel('搜索订阅').fill('批量设置验收');
+    await page.goto('/#/'); await page.getByLabel('搜索订阅').fill('批量设置验收');
     for (const i of [0, 1]) await page.getByLabel(`选择订阅 批量设置验收 ${i}`, { exact: true }).check();
     await page.getByRole('button', { name: '批量修改设置', exact: true }).click();
     const form = page.getByRole('form', { name: '批量修改订阅设置' });
@@ -55,7 +55,7 @@ test('需要检查筛选与搜索、来源和输出组合，仅选择失败订�
       expect(response.ok()).toBeTruthy(); const { feed } = await response.json(); ids.push(feed.id);
       expect(!!feed.lastError).toBe(name.endsWith('失败'));
     }
-    await page.goto('/'); await page.getByLabel('搜索订阅').fill('状态筛选');
+    await page.goto('/#/'); await page.getByLabel('搜索订阅').fill('状态筛选');
     const collection = page.getByRole('region', { name: '订阅集合' });
     await expect(collection.locator('article')).toHaveCount(2);
     await page.getByLabel('选择订阅 状态筛选 正常', { exact: true }).check();

@@ -21,7 +21,7 @@ export function UsersPanel({ currentUserId, manage, changed, identityChanged }: 
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [query, setQuery] = useState('');
-  const [onlyFailing, setOnlyFailing] = useState(false);
+  const [onlyAttention, setOnlyAttention] = useState(false);
   useEffect(() => { void api.users.list().then(setUsers).catch(e => setError(e.message)); }, []);
   async function run(action: () => Promise<unknown>, message: string) {
     setBusy(true); setError(''); setNotice('');
@@ -41,8 +41,8 @@ export function UsersPanel({ currentUserId, manage, changed, identityChanged }: 
     }, editing ? t('users.updated') : t('users.created'));
     if (ok) reset();
   }
-  const shown = users.filter(user => user.username.toLowerCase().includes(query.trim().toLowerCase()) && (!onlyFailing || !!user.stats?.failingFeeds));
-  const totals = users.reduce((sum, user) => ({ feeds: sum.feeds + (user.stats?.feeds ?? 0), failing: sum.failing + (user.stats?.failingFeeds ?? 0) }), { feeds: 0, failing: 0 });
+  const shown = users.filter(user => user.username.toLowerCase().includes(query.trim().toLowerCase()) && (!onlyAttention || !!user.stats?.attentionFeeds));
+  const totals = users.reduce((sum, user) => ({ feeds: sum.feeds + (user.stats?.feeds ?? 0), attention: sum.attention + (user.stats?.attentionFeeds ?? 0) }), { feeds: 0, attention: 0 });
   return <>
     <div className="page-heading"><div><span className="section-kicker">ACCOUNTS</span><h1>{t('users.title')}</h1><p>{t('users.lead')}</p></div><button className="button primary" disabled={busy} onClick={() => { reset(); setError(''); setFormOpen(true); }}><Plus size={17} />{t('users.create')}</button></div>
     {error && !formOpen && !deletion && <p className="error-note" role="alert">{error}</p>}
@@ -58,13 +58,13 @@ export function UsersPanel({ currentUserId, manage, changed, identityChanged }: 
       <div><span>{t('users.accounts')}</span><strong>{users.length}<small>{t('users.adminCount', { count: users.filter(user => user.role === 'admin').length })}</small></strong></div>
       <div><span>{t('users.disabled')}</span><strong>{users.filter(user => !user.enabled).length}<small>{t('users.accountsUnit', { count: users.filter(user => !user.enabled).length })}</small></strong></div>
       <div><span>{t('users.totalFeeds')}</span><strong>{totals.feeds}<small>{t('users.sourcesUnit', { count: totals.feeds })}</small></strong></div>
-      {totals.failing ? <button className={`attention ${onlyFailing ? 'active' : ''}`} aria-pressed={onlyFailing} title={onlyFailing ? t('users.showAll') : t('users.onlyFailing')} onClick={() => setOnlyFailing(!onlyFailing)}><span>{t('users.failingFeeds')}</span><strong>{totals.failing}<small>{onlyFailing ? t('users.filtered') : t('users.clickToFilter')}</small><ChevronRight size={15} className="stat-arrow" /></strong></button> : <div><span>{t('users.failingFeeds')}</span><strong>0<small>{t('users.allGood')}</small></strong></div>}
+      {totals.attention ? <button className={`attention ${onlyAttention ? 'active' : ''}`} aria-pressed={onlyAttention} title={onlyAttention ? t('users.showAll') : t('users.onlyAttention')} onClick={() => setOnlyAttention(!onlyAttention)}><span>{t('collection.attention')}</span><strong>{totals.attention}<small>{onlyAttention ? t('users.filtered') : t('users.clickToFilter')}</small><ChevronRight size={15} className="stat-arrow" /></strong></button> : <div><span>{t('collection.attention')}</span><strong>0<small>{t('users.allGood')}</small></strong></div>}
     </div>}
     <section className="panel settings-form users-list" aria-label={t('users.list')}><div className="panel-heading"><h2>{t('users.allAccounts')} <span>{users.length}</span></h2>{users.length > 5 && <div className="input-icon users-search"><Search size={15} /><input aria-label={t('workspace.searchUsers')} placeholder={t('users.searchPlaceholder')} value={query} onChange={e => setQuery(e.target.value)} /></div>}</div>
       <div className="user-row user-head" aria-hidden="true"><span>{t('users.accounts')}</span><span>{t('users.feeds')}</span><span>{t('users.credentials')}</span><span>{t('users.lastActive')}</span><span /></div>
       {shown.map(user => <div className={`user-row ${user.enabled ? '' : 'is-disabled'}`} key={user.id}>
         <div className="user-identity"><span className={`avatar ${user.enabled ? '' : 'off'}`}>{user.username.slice(0, 1).toUpperCase()}</span><div><strong>{user.username}{user.id === currentUserId ? t('users.you') : ''}</strong><p className="inline user-badges"><span className={`badge ${user.role === 'admin' ? 'good' : ''}`}>{user.role === 'admin' ? t('role.admin') : t('role.user')}</span><span className={`badge ${user.enabled ? '' : 'bad'}`}>{user.enabled ? t('users.enabled') : t('users.disabled')}</span></p></div></div>
-        <div className="user-cell user-feeds" data-label={t('users.feeds')}><strong>{user.stats?.feeds ?? '—'}</strong>{!!user.stats?.failingFeeds && <button type="button" className="user-failing" title={user.id === currentUserId ? t('users.myFailing') : t('users.theirFailing', { name: user.username })} onClick={() => manage(user.id === currentUserId ? null : user, true)}>{t('users.failingCount', { count: user.stats.failingFeeds })}</button>}{!!user.stats?.pausedFeeds && <span className="user-paused">{t('users.pausedCount', { count: user.stats.pausedFeeds })}</span>}</div>
+        <div className="user-cell user-feeds" data-label={t('users.feeds')}><strong>{user.stats?.feeds ?? '—'}</strong>{!!user.stats?.attentionFeeds && <button type="button" className="user-failing" title={user.id === currentUserId ? t('users.myAttention') : t('users.theirAttention', { name: user.username })} onClick={() => manage(user.id === currentUserId ? null : user, true)}>{t('users.attentionCount', { count: user.stats.attentionFeeds })}</button>}{user.stats?.attentionFeeds === 0 && <span className="user-attention-zero">{t('users.attentionCount', { count: 0 })}</span>}{!!user.stats?.pausedFeeds && <span className="user-paused">{t('users.pausedCount', { count: user.stats.pausedFeeds })}</span>}</div>
         <div className="user-cell" data-label={t('users.credentials')}>{user.stats ? t('users.credentialCount', { count: user.stats.credentials }) : '—'}</div>
         <div className="user-cell user-seen" data-label={t('users.lastActive')}><span title={absoluteTime(user.stats?.lastSeenAt)}>{user.stats?.lastSeenAt ? relativeTime(user.stats.lastSeenAt) : t('users.noSession')}</span><small title={absoluteTime(user.createdAt)}>{t('users.createdOn', { date: fmt.date(user.createdAt, { dateStyle: 'medium' }) })}</small></div>
         <div className="inline user-actions">
@@ -81,7 +81,7 @@ export function UsersPanel({ currentUserId, manage, changed, identityChanged }: 
           ]} />
         </div>
       </div>)}
-      {users.length > 0 && !shown.length && <p className="muted users-empty">{t('workspace.noMatch')}{onlyFailing && <> · <button type="button" className="link-button" onClick={() => setOnlyFailing(false)}>{t('users.showAll')}</button></>}</p>}
+      {users.length > 0 && !shown.length && <p className="muted users-empty">{t('workspace.noMatch')}{onlyAttention && <> · <button type="button" className="link-button" onClick={() => setOnlyAttention(false)}>{t('users.showAll')}</button></>}</p>}
     </section>
     {deletion && <div className="modal-backdrop"><section className="panel settings-form delete-user-dialog" role="dialog" aria-modal="true" aria-label={t('users.deleteTitleLabel')}>
       <h2>{t('users.deleteTitle', { name: deletion.user.username })}</h2><p>{t('users.deleteScope', { list: fmt.list([t('users.feedCount', { count: deletion.feeds }), ...(deletion.bundles ? [t('backup.bundleCount', { count: deletion.bundles })] : []), t('users.credentialItems', { count: deletion.credentials }), t('users.jobCount', { count: deletion.jobs })], 'unit') })}</p>

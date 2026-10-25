@@ -4,7 +4,7 @@ import { fixtureBaseUrl } from '../../playwright.config';
 
 test('RSS 翻译创建、原文预览、双语输出、模式切换和移动端', async ({ page }) => {
   await loginAsAdmin(page.request);
-  await page.goto('/');
+  await page.goto('/#/');
   await page.getByRole('button', { name: '新建订阅', exact: true }).click();
   await page.getByRole('button', { name: 'RSS 翻译', exact: true }).click();
   await page.getByLabel('RSS / Atom 地址').fill(`${fixtureBaseUrl}/feed.xml`);
@@ -56,7 +56,7 @@ test('RSS 翻译创建、原文预览、双语输出、模式切换和移动端'
 });
 
 test('批量添加 RSS 翻译，跳过重复地址并输出中文订阅', async ({ page }) => {
-  await loginAsAdmin(page.request); await page.goto('/');
+  await loginAsAdmin(page.request); await page.goto('/#/');
   await page.getByRole('button', { name: '更多新建方式' }).click();
   await page.getByRole('menuitem', { name: '批量添加' }).click();
   await page.getByLabel('批量订阅类型').selectOption('rss');
@@ -76,7 +76,7 @@ test('网页订阅设置翻译、列表区分来源并筛选', async ({ page }) 
   const auth = await loginAsAdmin(page.request);
   const created = await page.request.post('/api/feeds', { headers: protocolHeaders(auth.csrfToken), data: { name: 'Website translation settings', url: `${fixtureBaseUrl}/`, rules: { item: 'article', title: '.article-title', link: 'a' }, credentialId: null, intervalMinutes: 60, waitMs: 0 } });
   expect(created.ok()).toBeTruthy(); const payload = await created.json();
-  await page.goto('/');
+  await page.goto('/#/');
   const row = page.locator('article').filter({ has: page.getByRole('button', { name: '查看订阅 Website translation settings', exact: true }) });
   await expect(row.getByText('网页抓取', { exact: true })).toBeVisible();
   await expect(row.getByText('原文', { exact: true })).toBeVisible();
@@ -84,7 +84,7 @@ test('网页订阅设置翻译、列表区分来源并筛选', async ({ page }) 
   await page.getByLabel('输出模式', { exact: true }).selectOption('bilingual');
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
   await expect.poll(async () => (await (await page.request.get(`/api/feeds/${payload.feed.id}`)).json()).feed.translationMode).toBe('bilingual');
-  await page.goto('/');
+  await page.goto('/#/');
   await expect(row.getByText('双语翻译', { exact: true })).toBeVisible();
   await page.getByLabel('筛选订阅来源').selectOption('rss'); await expect(row).toHaveCount(0);
   await page.getByLabel('筛选订阅来源').selectOption('website'); await expect(row).toBeVisible();

@@ -9,7 +9,7 @@ function meta(user: UserSummary): string {
   if (!user.enabled) parts.push(t('users.disabled'));
   if (user.stats) {
     parts.push(t('users.feedCount', { count: user.stats.feeds }));
-    if (user.stats.failingFeeds) parts.push(t('users.failingCount', { count: user.stats.failingFeeds }));
+    if (user.stats.attentionFeeds) parts.push(t('users.attentionCount', { count: user.stats.attentionFeeds }));
   }
   return parts.join(' · ');
 }
@@ -48,7 +48,7 @@ export function WorkspaceSwitcher({ me, users, target, open: openWorkspace, mana
       {others.length > 0 && <div className="switcher-group">{t('workspace.otherUsers')}</div>}
       <div className="switcher-list">{shown.map(user => <button key={user.id} type="button" role="menuitem" className={`${target?.id === user.id ? 'current' : ''} ${user.enabled ? '' : 'disabled-user'}`} onClick={() => choose(user)}>
         <span className="switcher-avatar">{user.username.slice(0, 1).toUpperCase()}</span>
-        <span className="switcher-option"><strong>{user.username}</strong><small className={user.stats?.failingFeeds ? 'has-errors' : ''}>{meta(user)}</small></span>
+        <span className="switcher-option"><strong>{user.username}</strong><small className={user.stats?.attentionFeeds ? 'has-errors' : ''}>{meta(user)}</small></span>
         {target?.id === user.id && <Check size={15} />}
       </button>)}{others.length > 0 && !shown.length && <p className="switcher-empty">{t('workspace.noMatch')}</p>}</div>
       {!others.length && <p className="switcher-empty">{t('workspace.noOthers')}</p>}

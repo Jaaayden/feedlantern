@@ -5,7 +5,7 @@ test('网页设置保存、配置导出导入及手机显示', async ({ page }) 
   const auth = await loginAsAdmin(page.request), headers = protocolHeaders(auth.csrfToken);
   const original = await (await page.request.get('/api/settings')).json();
   try {
-    await page.goto('/'); await page.getByRole('button', { name: '设置', exact: true }).click();
+    await page.goto('/#/'); await page.getByRole('button', { name: '设置', exact: true }).click();
     const nav = page.getByRole('navigation', { name: '设置分组' });
     const open = async (label: string, path: string) => { await nav.getByRole('button', { name: label, exact: true }).click(); await expect(page).toHaveURL(new RegExp(`#/settings/${path}$`)); };
     // One group per page: the instance groups are separate entries, not one long form.

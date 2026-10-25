@@ -1,4 +1,9 @@
-import type { RuleHealthReason, RuleHealthSeverity, RuleHealthWarning } from './types.js';
+import type { Feed, RuleHealthReason, RuleHealthSeverity, RuleHealthWarning } from './types.js';
+
+/** Keep sidebar, dashboard, admin counts and list filters on the same definition. */
+export function feedNeedsAttention(feed: Pick<Feed, 'lastError' | 'ruleHealth'>): boolean {
+  return !!feed.lastError || !!feed.ruleHealth && !isRuleHealthNotice(feed.ruleHealth);
+}
 
 /** Optional metadata can disappear while the feed's articles remain usable. */
 export function optionalFieldReason(reason: RuleHealthReason): boolean {
