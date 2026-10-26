@@ -113,8 +113,8 @@ function PolicyForm({ summary, onSaved }: { summary: NotificationSummary; onSave
   const [busy, setBusy] = useState(false), [notice, setNotice] = useState<Notice>({});
   async function save(event: FormEvent) {
     event.preventDefault(); setBusy(true); setNotice({});
-    const { failureThreshold, timeoutSeconds, maxAttempts, retryDelaySeconds, laterRetryDelaySeconds, cooldownMinutes, ruleHealthAlerts } = policy;
-    try { onSaved(await api.notifications.save({ failureThreshold, timeoutSeconds, maxAttempts, retryDelaySeconds, laterRetryDelaySeconds, cooldownMinutes, ruleHealthAlerts })); setNotice({ message: t('notifications.policySaved') }); }
+    const { failureThreshold, attentionFailureThreshold, timeoutSeconds, maxAttempts, retryDelaySeconds, laterRetryDelaySeconds, cooldownMinutes, ruleHealthAlerts } = policy;
+    try { onSaved(await api.notifications.save({ failureThreshold, attentionFailureThreshold, timeoutSeconds, maxAttempts, retryDelaySeconds, laterRetryDelaySeconds, cooldownMinutes, ruleHealthAlerts })); setNotice({ message: t('notifications.policySaved') }); }
     catch (error) { setNotice({ error: messageOf(error, t('common.saveFailed')) }); } finally { setBusy(false); }
   }
   const number = (key: Exclude<keyof NotificationPolicy, 'ruleHealthAlerts'>, label: string, min: number, max: number) => <label className="field"><span>{label}</span><input type="number" required min={min} max={max} value={policy[key]} onChange={e => setPolicy({ ...policy, [key]: Number(e.target.value) })} /></label>;
@@ -122,6 +122,8 @@ function PolicyForm({ summary, onSaved }: { summary: NotificationSummary; onSave
     <div className="channel-heading"><h3>{t('notifications.policy')}</h3></div>
     <p className="hint">{t('notifications.policyHint')}</p>
     <fieldset disabled={busy}>
+      {number('attentionFailureThreshold', t('notifications.attentionThreshold'), 1, 1000)}
+      <p className="hint">{t('notifications.attentionHint')}</p>
       {number('failureThreshold', t('notifications.threshold'), 1, 1000)}
       <label className="inline"><input type="checkbox" checked={policy.ruleHealthAlerts !== false} onChange={e => setPolicy({ ...policy, ruleHealthAlerts: e.target.checked })} />{t('notifications.ruleHealth')}</label>
       <p className="hint">{t('notifications.ruleHealthHint')}</p>
@@ -134,18 +136,19 @@ function PolicyForm({ summary, onSaved }: { summary: NotificationSummary; onSave
   </form>;
 }
 
-export function NotificationsPanel({ username, enabled }: { username: string; enabled: boolean }) {
+export function NotificationsPanel({ username, enabled, changed }: { username: string; enabled: boolean; changed?: () => void }) {
   const [summary, setSummary] = useState<NotificationSummary | null>(null);
   const [error, setError] = useState('');
   useEffect(() => { let live = true; void api.notifications.get().then(v => { if (live) setSummary(v); }).catch(e => { if (live) setError(messageOf(e, t('common.loadFailed'))); }); return () => { live = false; }; }, []);
+  const saved = (value: NotificationSummary) => { setSummary(value); changed?.(); };
   if (!summary) return <section className="panel settings-form">{error || t('notifications.loading')}</section>;
   return <section className="panel settings-form notification-panel" aria-label={t('notifications.title')}>
     <h2>{t('notifications.title')}</h2>
     <p className="muted">{t('notifications.lead', { username })}</p>
     <div className="channel-list">
-      {notificationChannels.map(channel => <ChannelCard key={channel} channel={channel} summary={summary} username={username} userEnabled={enabled} onSaved={setSummary} />)}
+      {notificationChannels.map(channel => <ChannelCard key={channel} channel={channel} summary={summary} username={username} userEnabled={enabled} onSaved={saved} />)}
     </div>
-    <PolicyForm summary={summary} onSaved={setSummary} />
+    <PolicyForm summary={summary} onSaved={saved} />
     <p className="hint">{t('notifications.hint')}</p>
   </section>;
 }

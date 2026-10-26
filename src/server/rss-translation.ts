@@ -218,8 +218,11 @@ export class RssTranslations {
   }
   cached(text: string, namespace = DEFAULT_CACHE_NAMESPACE): string | undefined {
     const key = digest(`${namespace}:${text}`);
-    const row = this.db.prepare('SELECT text FROM translation_cache WHERE key=?').get(key);
-    if (row) this.db.prepare('UPDATE translation_cache SET touched_at=? WHERE key=?').run(Date.now(), key);
+    const row = this.db.prepare('SELECT text,touched_at FROM translation_cache WHERE key=?').get(key);
+    // A fragment is often checked twice and shared by concurrent articles.
+    // Minute-level recency is enough for eviction without writing on every hit.
+    const now = Date.now();
+    if (row && now - Number(row.touched_at) >= 60_000) this.db.prepare('UPDATE translation_cache SET touched_at=? WHERE key=?').run(now, key);
     return row ? String(row.text) : undefined;
   }
   cache(text: string, translated: string, namespace = DEFAULT_CACHE_NAMESPACE): void {

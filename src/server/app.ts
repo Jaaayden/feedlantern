@@ -377,9 +377,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
           store.upsertItems(feed, items, counts);
           if (!counts.itemCount) throw new LocalizedError(msg('fetch.noItemsShort'));
         }
-        const updated = store.markFetchSuccess(feed.id, nextFetchAt);
         store.history.succeed(runId, feed.id, performance.now() - started, counts, pages ? { pages: pages.pages.filter(page => !page.error).length, note: reportSummary(pages) } : undefined);
-        return updated;
+        return store.markFetchSuccess(feed.id, nextFetchAt);
       });
       let checked = result;
       // Health statistics never change the fetch outcome or the stored items.
@@ -792,7 +791,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const patch = optionalObject(body.channels, msg('label.notificationChannels')) ?? {};
     for (const key of Object.keys(patch)) if (!['bark', 'webhook', 'ntfy', 'telegram'].includes(key)) throw new AppError(400, 'error.notificationChannelInvalid');
     const { channels: _channels, ...policyPatch } = body;
-    for (const key of Object.keys(policyPatch)) if (!['failureThreshold', 'timeoutSeconds', 'maxAttempts', 'retryDelaySeconds', 'laterRetryDelaySeconds', 'cooldownMinutes', 'ruleHealthAlerts'].includes(key)) throw new AppError(400, 'error.notificationSettingsInvalid');
+    for (const key of Object.keys(policyPatch)) if (!['failureThreshold', 'attentionFailureThreshold', 'timeoutSeconds', 'maxAttempts', 'retryDelaySeconds', 'laterRetryDelaySeconds', 'cooldownMinutes', 'ruleHealthAlerts'].includes(key)) throw new AppError(400, 'error.notificationSettingsInvalid');
     const barkPatch = optionalObject(patch.bark, msg('label.channelSettings', { channel: 'Bark' })) ?? {};
     for (const key of Object.keys(barkPatch)) if (!['enabled', 'url'].includes(key)) throw new AppError(400, 'error.barkInvalid');
     const bark = applicationSettingsSchema.shape.bark.safeParse({ ...previous.bark, ...policyPatch, ...barkPatch, ...(barkPatch.url === '' ? { enabled: false } : {}) });

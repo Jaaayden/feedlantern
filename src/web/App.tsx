@@ -22,7 +22,7 @@ import { PaginationPanel, paginationProblem } from './PaginationPanel';
 import { RuleHealthNotice, needsAttention } from './RuleHealth';
 import { PageScreen, linkModifier, loadedHeight, type ScreenChoice, type SegmentState } from './PageScreen';
 import { levelsBetween, liftNode } from '../shared/element-map';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type React from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { Archive, BookOpen, Microscope, ChevronRight, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bell, Check, CheckCircle2, ChevronDown, CircleAlert, CircleHelp, Cookie, Copy, ExternalLink, Globe2, Info, KeyRound, KeySquare, Languages, Layers, LayoutDashboard, ListPlus, LoaderCircle, LogOut, Monitor, Moon, Network, MousePointer2, Pencil, Plus, Radio, RefreshCw, Rss, Search, Server, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Sun, Trash2 } from 'lucide-react';
@@ -653,7 +653,7 @@ function settingsSections(admin: boolean, target?: UserSummary | null): Settings
 }
 
 // One settings group per page; the group is part of the address (#/settings/translation).
-function SettingsView({ auth, logout, notify, target, section, onSection, dirty, authChanged }: { auth: AuthState; logout: () => void; notify: Notify; authChanged: (state: AuthState) => void; target?: UserSummary | null; section: string | null; onSection: (id: string) => void; dirty: React.MutableRefObject<boolean> }) {
+function SettingsView({ auth, logout, notify, target, section, onSection, dirty, authChanged, changed }: { auth: AuthState; logout: () => void; notify: Notify; authChanged: (state: AuthState) => void; changed: () => void; target?: UserSummary | null; section: string | null; onSection: (id: string) => void; dirty: React.MutableRefObject<boolean> }) {
   const [settingsRevision, setSettingsRevision] = useState(0);
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -690,7 +690,7 @@ function SettingsView({ auth, logout, notify, target, section, onSection, dirty,
       <div className="settings-sections">
         <div id={`settings-${active.id}`} className="settings-section" key={active.id}>
           {(active.id === 'display' || active.id === 'translation' || active.id === 'server' || active.id === 'pubmed') && <ApplicationSettingsPanel group={active.id} revision={settingsRevision} onDirty={markDirty} />}
-          {active.id === 'notifications' && <NotificationsPanel key={settingsRevision} username={target?.username ?? auth.username!} enabled={target?.enabled !== false} />}
+          {active.id === 'notifications' && <NotificationsPanel key={settingsRevision} username={target?.username ?? auth.username!} enabled={target?.enabled !== false} changed={changed} />}
           {active.id === 'credentials' && <CredentialsView notify={notify} />}
           {active.id === 'network' && <NetworkProfilesView notify={notify} />}
           {active.id === 'account' && <form className="panel settings-form" onSubmit={submit} aria-label={t('account.title')}><div className="panel-heading"><h2>{t('account.title')}</h2><KeyRound size={19} /></div><p className="muted">{t('account.lead', { name: auth.username ?? '', role: auth.role === 'admin' ? t('role.admin') : t('role.user') })}</p><h3 className="settings-subheading">{t('language.label')}</h3><LanguageSelect account={auth} follow onSaved={state => { authChanged(state); notify(t('account.languageSaved')); }} onError={setError} /><h3 className="settings-subheading">{t('account.changePassword')}</h3><Field label={t('account.current')}><input required type="password" value={currentPassword} onChange={e => setCurrentPassword(e.target.value)} autoComplete="current-password" /></Field><div className="form-row"><Field label={t('account.new')}><input required type="password" minLength={8} maxLength={1024} value={newPassword} onChange={e => setNewPassword(e.target.value)} autoComplete="new-password" /></Field><Field label={t('account.confirm')}><input required type="password" minLength={8} value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} autoComplete="new-password" /></Field></div><ErrorNote error={error} /><button className="button primary" disabled={busy}>{busy ? <Busy /> : t('account.update')}</button></form>}
@@ -843,21 +843,25 @@ export default function App() {
   const forgetAuth = useCallback(() => { authGeneration.current++; targetRef.current = null; setUsers([]); setWorkspaceUser(undefined); setTarget(null); setCsrfToken(undefined); setAuth(previous => previous ? { ...previous, authenticated: false, csrfToken: undefined } : null); setFeeds([]); setBundles([]); setBundleEditor(undefined); setBundleTarget(null); setEditor(undefined); setPanel(null); setEditorReturnId(null); }, []);
   useEffect(() => { void api.auth.status().then(acceptAuth).catch(error => setBootError(messageOf(error))); return onUnauthorized(() => { forgetAuth(); setToast(t('app.signedOut')); }); }, [acceptAuth, forgetAuth]);
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''), 4000); return () => clearTimeout(timer); }, [toast]);
+  const feedsLoaded = useRef<number | null>(null);
+  const feedRequestId = useRef(0);
   const loadFeeds = useCallback(async () => {
-    const generation = authGeneration.current; setLoading(true);
-    try { const [next, nextBundles] = await Promise.all([api.feeds.list(), api.bundles.list()]); if (generation === authGeneration.current) { setFeeds(next); setBundles(nextBundles); setError(''); } }
-    catch (error) { if (generation === authGeneration.current) setError(messageOf(error)); }
-    finally { if (generation === authGeneration.current) setLoading(false); }
+    const generation = authGeneration.current, requestId = ++feedRequestId.current; setLoading(true);
+    try { const [next, nextBundles] = await Promise.all([api.feeds.list(), api.bundles.list()]); if (generation === authGeneration.current && requestId === feedRequestId.current) { feedsLoaded.current = generation; setFeeds(previous => JSON.stringify(previous) === JSON.stringify(next) ? previous : next); setBundles(previous => JSON.stringify(previous) === JSON.stringify(nextBundles) ? previous : nextBundles); setError(''); } }
+    catch (error) { if (generation === authGeneration.current && requestId === feedRequestId.current) setError(messageOf(error)); }
+    finally { if (generation === authGeneration.current && requestId === feedRequestId.current) setLoading(false); }
   }, []);
   useEffect(() => {
     if (!auth?.authenticated) return;
-    void loadFeeds();
+    const inactive = page === 'settings' || page === 'users';
+    if (!inactive || feedsLoaded.current !== authGeneration.current) void loadFeeds();
+    if (inactive) return;
     // Poll only while the tab is visible; refresh as soon as it comes back.
     const timer = setInterval(() => { if (!document.hidden) void loadFeeds(); }, 30000);
     const visible = () => { if (!document.hidden) void loadFeeds(); };
     document.addEventListener('visibilitychange', visible);
     return () => { clearInterval(timer); document.removeEventListener('visibilitychange', visible); };
-  }, [auth?.authenticated, session, target?.id, loadFeeds]);
+  }, [auth?.authenticated, session, target?.id, page, loadFeeds]);
   useEffect(() => { if (auth?.authenticated && auth.role === 'admin') void loadUsers(); }, [auth?.authenticated, auth?.role, session, loadUsers]);
   // Keep the address bar in step with the screen; back/forward replays it.
   const authenticated = !!auth?.authenticated;
@@ -896,10 +900,20 @@ export default function App() {
   }, [onDashboard]);
   const closePanel = useCallback(() => setPanel(null), []);
   async function logout() { try { await api.auth.logout(); forgetAuth(); } catch (error) { notify(messageOf(error)); } }
+  const filtered = useMemo(() => {
+    const search = query.toLowerCase();
+    return feeds.filter(feed => (page !== 'attention' || needsAttention(feed)) && `${feed.name} ${feed.url}`.toLowerCase().includes(search));
+  }, [feeds, page, query]);
+  const attention = useMemo(() => feeds.filter(needsAttention).length, [feeds]);
+  const collectionAuth = useMemo(() => target && auth ? { ...auth, userId: target.id, role: 'user' as const } : auth, [target, auth]);
+  const showItems = useCallback((id: string) => setPanel({ id, tab: 'items' }), []);
+  const showFeedSettings = useCallback((id: string) => setPanel({ id, tab: 'settings' }), []);
+  const showLogs = useCallback((id: string) => setPanel({ id, tab: 'logs' }), []);
+  const refreshFeeds = useCallback(() => { void loadFeeds(); }, [loadFeeds]);
+  const convertFeeds = useCallback((ids: string[]) => { const chosen = new Set(ids); setPubmedBatch(feeds.filter(feed => chosen.has(feed.id) && isPubmedRss(feed))); }, [feeds]);
   if (!auth) return <div className="boot"><Brand />{bootError ? <><ErrorNote error={bootError} /><button className="button" onClick={() => location.reload()}>{t('app.reconnect')}</button></> : <Busy label={t('app.connecting')} />}</div>;
   if (!auth.authenticated) return <><AuthScreen state={auth} authenticated={acceptAuth} />{toast && <div className="toast" role="status"><Check size={16} />{toast}</div>}</>;
-  const filtered = feeds.filter(feed => (page !== 'attention' || needsAttention(feed)) && `${feed.name} ${feed.url}`.toLowerCase().includes(query.toLowerCase()));
-  const attention = feeds.filter(needsAttention).length;
+
   function navigate(next: Page) {
     if (page === 'settings' && next !== 'settings' && settingsDirty.current && !confirm(t('settings.discardLeave'))) return;
     if (next !== 'settings') settingsDirty.current = false;
@@ -911,7 +925,7 @@ export default function App() {
     {target && <div className="workspace-banner" role="status"><div><strong>{t('nav.managingBanner', { name: target.username })}</strong><p>{target.enabled ? t('nav.managingHint') : t('nav.managingDisabled')}</p></div><button className="button small" onClick={() => changeWorkspace(null)}>{t('nav.backToMine')}</button></div>}
     {page === 'users' && auth.role === 'admin' ? <UsersPanel currentUserId={auth.userId!} manage={(user, attention) => changeWorkspace(user, { page: attention ? 'attention' : 'feeds', panel: null, create: null, workspace: user?.id ?? null })} changed={refreshUsers} identityChanged={() => void api.auth.status().then(acceptAuth)} />
       : page === 'batch' ? <BatchView notify={notify} changed={() => void loadFeeds()} back={() => navigate('feeds')} />
-      : page === 'settings' ? <SettingsView target={target} auth={auth} authChanged={setAuth} logout={forgetAuth} notify={notify} section={settingsSection} onSection={setSettingsSection} dirty={settingsDirty} />
+      : page === 'settings' ? <SettingsView changed={refreshFeeds} target={target} auth={auth} authChanged={setAuth} logout={forgetAuth} notify={notify} section={settingsSection} onSection={setSettingsSection} dirty={settingsDirty} />
       : editor !== undefined ? <FeedEditor key={editor ? `${editor.id}${editorConvert ? '-convert' : ''}` : `new-${editorSource}`} initial={editor ?? undefined} source={editorSource} convert={!!editor && editorConvert} check={editor && editorConvert ? editorCheck : undefined} existing={feeds} cancel={() => { setEditor(undefined); if (editorReturnId) setPanel({ id: editorReturnId, tab: 'settings' }); setEditorReturnId(null); }} saved={id => { setEditor(undefined); setPanel({ id, tab: editorReturnId && !editorConvert ? 'settings' : 'items' }); setEditorReturnId(null); notify(t('feed.saved')); void loadFeeds(); }} />
       : page === 'dashboard' ? <><ErrorNote error={error} /><Dashboard feeds={feeds} createMenu={<NewFeedMenu create={create} batch={() => navigate('batch')} bundle={() => setBundleEditor({})} />} refresh={() => void loadFeeds()} openFeeds={() => navigate('feeds')} openAttention={() => navigate('attention')} openNotices={() => { navigate('feeds'); setStatus('field-health'); }} openFeed={feed => setPanel({ id: feed.id, tab: feed.lastError ? 'logs' : 'items' })} /></>
       : page === 'bundles' ? <><ErrorNote error={error} /><BundleSection standalone bundles={bundles} feeds={feeds} create={() => setBundleEditor({})} edit={bundle => setBundleEditor({ initial: bundle })} changed={() => void loadFeeds()} notify={notify} /></>
@@ -920,7 +934,7 @@ export default function App() {
         <div className="list-toolbar"><h2>{t('home.list')} <span>{page === 'attention' ? attention : feeds.length}</span></h2><div className="input-icon search-input"><Search size={16} /><input ref={searchRef} aria-label={t('home.search')} placeholder={t('bundle.searchPlaceholder')} value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === 'Escape' && query) { e.preventDefault(); setQuery(''); } }} /><kbd className="search-key" aria-hidden="true">/</kbd></div></div>
         <ErrorNote error={error} />
         {loading && !feeds.length ? <Busy label={t('home.loading')} />
-          : filtered.length ? <FeedCollection auth={target ? { ...auth, userId: target.id, role: 'user' } : auth} feeds={filtered} bundles={bundles} addToBundle={ids => setBundleTarget(ids)} convertPubmed={ids => setPubmedBatch(feeds.filter(feed => ids.includes(feed.id) && isPubmedRss(feed)))} query={query} status={status} onStatus={setStatus} detail={id => setPanel({ id, tab: 'items' })} settings={id => setPanel({ id, tab: 'settings' })} logs={id => setPanel({ id, tab: 'logs' })} changed={() => void loadFeeds()} notify={notify} />
+          : filtered.length ? <FeedCollection auth={collectionAuth!} feeds={filtered} bundles={bundles} addToBundle={setBundleTarget} convertPubmed={convertFeeds} query={query} status={status} onStatus={setStatus} detail={showItems} settings={showFeedSettings} logs={showLogs} changed={refreshFeeds} notify={notify} />
           : page === 'attention' && !query && !attention ? <div className="empty-state"><span className="large-icon"><CheckCircle2 size={32} /></span><h2>{t('attention.emptyTitle')}</h2><p>{t('attention.emptyBody')}</p><button className="button" onClick={() => navigate('feeds')}>{t('nav.feeds')}</button></div>
           : <div className="empty-state"><span className="large-icon"><Rss size={32} /></span><h2>{query ? t('home.noMatch') : t('home.emptyTitle')}</h2><p>{query ? t('home.noMatchHint') : t('home.emptyBody')}</p>{query ? <button className="button" onClick={() => setQuery('')}>{t('home.clearSearch')}</button> : <button className="button" onClick={() => create('website')}><Plus size={16} />{t('home.createFirst')}</button>}</div>}
         <div className="dashboard-note"><Sparkles size={17} /><span>{t('home.note')}</span><span className="muted">{t('home.searchHint')}</span></div>

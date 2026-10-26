@@ -38,6 +38,7 @@ import {
 const VIEWPORT = { width: 1280, height: 800 } as const;
 const MAX_EDITOR_SESSIONS = 2;
 const SESSION_IDLE_MS = 5 * 60 * 1000;
+const BROWSER_IDLE_MS = 60_000;
 const NAVIGATION_TIMEOUT_MS = 30_000;
 const SELECTOR_TIMEOUT_MS = 15_000;
 const ACTION_SETTLE_MS = 80;
@@ -81,6 +82,8 @@ export interface BrowserServiceOptions {
   backgroundConcurrency?: number;
   allowedHosts?: string[];
   executablePath?: string;
+  /** Release an unused Chromium process after this delay; milliseconds. */
+  idleTimeoutMs?: number;
 }
 
 export class BrowserServiceError extends LocalizedError {
@@ -405,6 +408,9 @@ export class BrowserService {
   private readonly contextProxies = new WeakMap<BrowserContext, RestrictedForwardProxy>();
   private browser?: Browser;
   private browserPromise?: Promise<Browser>;
+  private browserClosing?: Promise<void>;
+  private browserIdleTimer?: NodeJS.Timeout;
+  private readonly idleTimeoutMs: number;
   private proxy?: RestrictedForwardProxy;
   private openingSessions = 0;
   private scrapeSessions = 0;
@@ -414,6 +420,7 @@ export class BrowserService {
   private readonly backgroundConcurrency: number;
 
   constructor(options: BrowserServiceOptions = {}) {
+    this.idleTimeoutMs = options.idleTimeoutMs ?? BROWSER_IDLE_MS;
     this.backgroundConcurrency = options.backgroundConcurrency ?? 1;
     if (!Number.isInteger(this.backgroundConcurrency) || this.backgroundConcurrency < 1 || this.backgroundConcurrency > 4) throw new BrowserServiceError(msg('error.backgroundConcurrency'));
     this.networkOptions = {
@@ -424,6 +431,9 @@ export class BrowserService {
   }
 
   private async ensureBrowser(): Promise<Browser> {
+    if (this.browserIdleTimer) clearTimeout(this.browserIdleTimer);
+    this.browserIdleTimer = undefined;
+    await this.browserClosing;
     if (this.disposing) throw new BrowserServiceError(msg('error.browserClosing'));
     if (this.browser) return this.browser;
     if (this.browserPromise) return this.browserPromise;
@@ -460,10 +470,29 @@ export class BrowserService {
     })();
     try {
       return await this.browserPromise;
-    } catch (error) {
+    } finally {
       this.browserPromise = undefined;
-      throw error;
     }
+  }
+
+  private scheduleBrowserIdle(): void {
+    if (this.browserIdleTimer) clearTimeout(this.browserIdleTimer);
+    if (this.disposing || !this.browser || this.activeContexts.size || this.openingSessions || this.scrapeSessions) return;
+    this.browserIdleTimer = setTimeout(() => { void this.releaseIdleBrowser(); }, this.idleTimeoutMs);
+    this.browserIdleTimer.unref();
+  }
+
+  private async releaseIdleBrowser(): Promise<void> {
+    this.browserIdleTimer = undefined;
+    if (this.disposing || this.activeContexts.size || this.openingSessions || this.scrapeSessions) return;
+    const browser = this.browser, proxy = this.proxy;
+    this.browser = undefined; this.proxy = undefined;
+    const closing = (async () => {
+      await browser?.close().catch(() => undefined);
+      await proxy?.close().catch(() => undefined);
+    })();
+    this.browserClosing = closing;
+    try { await closing; } finally { if (this.browserClosing === closing) this.browserClosing = undefined; }
   }
 
   /** Options passed to every browser.newContext(); exposed for isolation tests. */
@@ -505,6 +534,7 @@ export class BrowserService {
       context.once('close', () => { void contextProxy.close().catch(() => undefined); });
     }
     this.activeContexts.add(context);
+    context.once('close', () => { this.activeContexts.delete(context); this.scheduleBrowserIdle(); });
     try {
       await installNetworkPolicy(context, policyOptionsFor(this.networkOptions, network?.proxy), network?.headers?.length ? { scopeUrl: url, headers: network.headers } : undefined);
       if (cookies && cookies.length > 0) {
@@ -743,6 +773,7 @@ export class BrowserService {
     } finally {
       options.signal?.removeEventListener('abort', abort);
       this.openingSessions -= 1;
+      this.scheduleBrowserIdle();
     }
   }
 
@@ -950,6 +981,7 @@ export class BrowserService {
       if (context) this.activeContexts.delete(context);
       await context?.close().catch(() => undefined);
       this.scrapeSessions -= 1;
+      this.scheduleBrowserIdle();
     }
   }
 
@@ -972,6 +1004,7 @@ export class BrowserService {
     if (session.idleTimer) clearTimeout(session.idleTimer);
     this.activeContexts.delete(session.context);
     await session.context.close().catch(() => undefined);
+    this.scheduleBrowserIdle();
   }
 
   async close(id: string): Promise<void> {
@@ -986,6 +1019,8 @@ export class BrowserService {
   async dispose(): Promise<void> {
     if (this.disposing) return;
     this.disposing = true;
+    if (this.browserIdleTimer) clearTimeout(this.browserIdleTimer);
+    await this.browserClosing;
     const pendingBrowser = this.browserPromise;
     const ids = [...this.sessions.keys()];
     for (const id of ids) await this.closeInternal(id, true);

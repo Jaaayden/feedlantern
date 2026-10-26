@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
 import { Copy, ExternalLink, KeyRound, Layers, MoreHorizontal, Pencil, Plus, Search, Trash2 } from 'lucide-react';
 import { BUNDLE_ITEM_LIMIT, translationEnabled, type BundlePayload, type Feed } from '../shared/types';
@@ -60,14 +60,22 @@ export function BundleEditor({ initial, preset = [], feeds, close, saved }: {
   const [query, setQuery] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const shown = feeds.filter(feed => `${feed.name} ${feed.url}`.toLowerCase().includes(query.trim().toLowerCase()));
+  const feedIds = useMemo(() => new Set(feeds.map(feed => feed.id)), [feeds]);
+  const selected = new Set(members);
+  const search = query.trim().toLowerCase();
+  const shown = useMemo(() => feeds.filter(feed => `${feed.name} ${feed.url}`.toLowerCase().includes(search)), [feeds, search]);
+  const allShown = shown.length > 0 && shown.every(feed => selected.has(feed.id));
+  function selectShown() {
+    const ids = new Set(shown.map(feed => feed.id));
+    setMembers(previous => allShown ? previous.filter(id => !ids.has(id)) : [...new Set([...previous, ...ids])]);
+  }
   async function submit(event: FormEvent) {
     event.preventDefault();
     const itemLimit = Number(limit);
     if (!Number.isInteger(itemLimit) || itemLimit < BUNDLE_ITEM_LIMIT.min || itemLimit > BUNDLE_ITEM_LIMIT.max) { setError(t('error.integerRange', { label: t('label.bundleItemLimit'), min: String(BUNDLE_ITEM_LIMIT.min), max: String(BUNDLE_ITEM_LIMIT.max) })); return; }
     setBusy(true); setError('');
     // Members that were deleted meanwhile are dropped instead of failing the save.
-    const body = { name: name.trim(), itemLimit, feedIds: members.filter(id => feeds.some(feed => feed.id === id)) };
+    const body = { name: name.trim(), itemLimit, feedIds: members.filter(id => feedIds.has(id)) };
     try { saved(initial ? await api.bundles.update(initial.bundle.id, body) : await api.bundles.create(body), !initial); }
     catch (e) { setError(messageOf(e)); } finally { setBusy(false); }
   }
@@ -79,9 +87,9 @@ export function BundleEditor({ initial, preset = [], feeds, close, saved }: {
       <label className="field"><span>{t('bundle.maxItems')}</span><input type="number" required min={BUNDLE_ITEM_LIMIT.min} max={BUNDLE_ITEM_LIMIT.max} step={1} value={limit} onChange={e => setLimit(e.target.value)} /></label>
     </div>
     <fieldset className="bundle-picker" disabled={busy}>
-      <legend>{t('bundle.members')} <span className="muted">{t('collection.selected', { count: members.filter(id => feeds.some(feed => feed.id === id)).length })}</span></legend>
-      {feeds.length > 6 && <div className="input-icon"><Search size={16} /><input aria-label={t('bundle.searchMembers')} placeholder={t('bundle.searchPlaceholder')} value={query} onChange={e => setQuery(e.target.value)} /></div>}
-      {feeds.length ? <div className="bundle-options">{shown.map(feed => <label key={feed.id} className="bundle-option"><input type="checkbox" aria-label={t('bundle.addMember', { name: feed.name })} checked={members.includes(feed.id)} onChange={e => toggle(feed.id, e.target.checked)} /><span><strong>{feed.name}</strong><small>{feedKind(feed)}{feed.enabled ? '' : ` · ${t('feed.paused')}`}</small></span></label>)}{!shown.length && <p className="muted">{t('bundle.noMatch')}</p>}</div> : <p className="muted">{t('bundle.noFeeds')}</p>}
+      <legend>{t('bundle.members')} <span className="muted">{t('collection.selected', { count: members.filter(id => feedIds.has(id)).length })}</span></legend>
+      {feeds.length > 0 && <><div className="input-icon"><Search size={16} /><input aria-label={t('bundle.searchMembers')} placeholder={t('bundle.searchPlaceholder')} value={query} onChange={e => setQuery(e.target.value)} /></div><div className="bundle-selection"><span className="muted">{t('bundle.matches', { count: shown.length })}</span><button type="button" className="button small" disabled={!shown.length} onClick={selectShown}>{t(allShown ? 'bundle.clearMatches' : 'bundle.selectMatches')}</button></div></>}
+      {feeds.length ? <div className="bundle-options">{shown.map(feed => <label key={feed.id} className="bundle-option"><input type="checkbox" aria-label={t('bundle.addMember', { name: feed.name })} checked={selected.has(feed.id)} onChange={e => toggle(feed.id, e.target.checked)} /><span><strong>{feed.name}</strong><small>{feedKind(feed)}{feed.enabled ? '' : ` · ${t('feed.paused')}`}</small></span></label>)}{!shown.length && <p className="muted">{t('bundle.noMatch')}</p>}</div> : <p className="muted">{t('bundle.noFeeds')}</p>}
     </fieldset>
     {error && <div className="error-note" role="alert">{error}</div>}
     <div className="modal-actions"><button type="button" className="button" onClick={close}>{t('common.cancel')}</button><button className="button primary" disabled={busy}>{busy ? t('common.saving') : initial ? t('bundle.save') : t('bundle.create')}</button></div>

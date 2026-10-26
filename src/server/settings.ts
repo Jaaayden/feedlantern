@@ -39,6 +39,7 @@ export const barkObjectSchema = z.object({
     catch { ctx.addIssue({ code: 'custom', message: 'error.barkUrlInvalid' }); return z.NEVER; }
   }),
   failureThreshold: z.number().int().min(1).max(1000).default(defaultApplicationSettings.bark.failureThreshold),
+  attentionFailureThreshold: z.number().int().min(1).max(1000).default(defaultApplicationSettings.bark.attentionFailureThreshold),
   timeoutSeconds: z.number().int().min(1).max(60),
   maxAttempts: z.number().int().min(1).max(5),
   retryDelaySeconds: z.number().int().min(1).max(3600),

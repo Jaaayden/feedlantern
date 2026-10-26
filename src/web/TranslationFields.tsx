@@ -4,13 +4,14 @@ import { api } from './api';
 import { t } from './i18n';
 
 /** Which services exist, which are configured, and the instance default (any signed-in user may read this). */
-export function useTranslationProviders(): TranslationProvidersInfo | undefined {
+export function useTranslationProviders(active = true): TranslationProvidersInfo | undefined {
   const [info, setInfo] = useState<TranslationProvidersInfo>();
   useEffect(() => {
+    if (!active) return;
     let live = true;
     void api.translation.providers().then(value => { if (live) setInfo(value); }).catch(() => { /* the select still offers "follow default" */ });
     return () => { live = false; };
-  }, []);
+  }, [active]);
   return info;
 }
 

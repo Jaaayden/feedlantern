@@ -87,13 +87,13 @@ let csrfToken: string | undefined;
 let sessionGeneration = 0;
 let workspaceUser: string | undefined;
 export function setWorkspaceUser(id?: string) {
-  if (workspaceUser !== id) sessionGeneration++;
+  if (workspaceUser !== id) { sessionGeneration++; invalidateSettings(); }
   workspaceUser = id;
 }
 let unauthorizedHandler: (() => void) | undefined;
 
 export function setCsrfToken(token?: string) {
-  if (csrfToken !== token) sessionGeneration++;
+  if (csrfToken !== token) { sessionGeneration++; invalidateSettings(); }
   csrfToken = token;
 }
 
@@ -106,8 +106,32 @@ export function onUnauthorized(handler: () => void) {
 
 type RequestOptions = Omit<RequestInit, 'body'> & { body?: unknown };
 
+// One short-lived, in-memory snapshot for the current account/workspace only.
+// Concurrent mounts share a request; saving/importing invalidates older reads.
+let settingsRevision = 0;
+let settingsSnapshot: { value: ApplicationSettings; at: number } | undefined;
+let settingsRequest: Promise<ApplicationSettings> | undefined;
+function invalidateSettings() { settingsRevision++; settingsSnapshot = undefined; settingsRequest = undefined; }
+function cachedSettings(): ApplicationSettings | null {
+  return settingsSnapshot && Date.now() - settingsSnapshot.at < 30_000 ? settingsSnapshot.value : null;
+}
+function loadSettings(): Promise<ApplicationSettings> {
+  const cached = cachedSettings();
+  if (cached) return Promise.resolve(cached);
+  if (settingsRequest) return settingsRequest;
+  const revision = settingsRevision;
+  const pending = request<ApplicationSettings>('/api/settings').then(value => {
+    if (revision === settingsRevision) settingsSnapshot = { value, at: Date.now() };
+    return value;
+  }).finally(() => { if (settingsRequest === pending) settingsRequest = undefined; });
+  return settingsRequest = pending;
+}
+
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const generation = sessionGeneration;
+  const changesSettings = options.method !== undefined && options.method !== 'GET' &&
+    (path === '/api/settings' || path === '/api/backups/config' || path === '/api/backups/restore');
+  if (changesSettings) invalidateSettings();
   const headers = new Headers(options.headers);
   headers.set('X-FeedLantern', '1');
   // The server answers errors in this language unless the account chose one (which the UI then uses too).
@@ -134,8 +158,12 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   if (generation !== sessionGeneration) throw new ApiError(t('error.sessionChanged'), 0);
   if (!response.ok) {
     // A wrong password on the sign-in form is not an expired session.
-    if (response.status === 401 && !/^\/api\/auth\/(login|setup)$/.test(path)) unauthorizedHandler?.();
+    if (response.status === 401 && !/^\/api\/auth\/(login|setup)$/.test(path)) { invalidateSettings(); unauthorizedHandler?.(); }
     throw errorMessage(payload, response.status, response.statusText);
+  }
+  if (changesSettings) {
+    invalidateSettings();
+    if (path === '/api/settings' && options.method === 'PUT') settingsSnapshot = { value: payload as ApplicationSettings, at: Date.now() };
   }
   return payload as T;
 }
@@ -185,7 +213,8 @@ export const api = {
     testBark: (body: ApplicationSettings['bark']) => request<{ ok: boolean }>('/api/settings/bark/test', { method: 'POST', body }),
     /** Partial update: only the fields given are changed (an empty or omitted API key keeps the saved one, null removes it). */
     save: ({ bark: _bark, ...body }: Partial<ApplicationSettings>) => request<ApplicationSettings>('/api/settings', { method: 'PUT', body }),
-    get: () => request<ApplicationSettings>('/api/settings'),
+    get: loadSettings,
+    cached: cachedSettings,
     /** Tests NCBI settings as typed; an empty key tests the saved one, null tests without a key. */
     testNcbi: (apiKey: string | null, email: string) => request<NcbiKeyTest>('/api/settings/ncbi/test', { method: 'POST', body: { apiKey, email } }),
     ncbiStatus: () => request<{ apiKeyConfigured: boolean; lastTest?: NcbiKeyTest }>('/api/settings/ncbi/status'),
