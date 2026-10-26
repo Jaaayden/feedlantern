@@ -1197,14 +1197,17 @@ export class Store {
   }
 
   listFeeds(ownerId?: string): Feed[] {
-    const rows = this.db.prepare(`SELECT f.*, (SELECT COUNT(*) FROM feed_items i WHERE i.feed_id = f.id) AS item_count FROM feeds f WHERE (? IS NULL OR f.owner_id=?) ORDER BY f.created_at DESC`).all(ownerId ?? null, ownerId ?? null) as Array<Record<string, unknown>>;
-    return rows.map(row => {
-      const feed = rowToFeed(row);
-      if (translationEnabled(feed)) feed.translation = this.translations.stats(feed.id);
-      const ruleHealth = this.ruleHealth.warning(feed.id);
+    const rows = this.db.prepare(`SELECT f.*, (SELECT COUNT(*) FROM feed_items i WHERE i.feed_id = f.id) AS item_count FROM feeds f
+      ${ownerId === undefined ? '' : 'WHERE f.owner_id=?'} ORDER BY f.created_at DESC`).all(...(ownerId === undefined ? [] : [ownerId])) as Array<Record<string, unknown>>;
+    const feeds = rows.map(rowToFeed);
+    const translations = this.translations.statsForFeeds(feeds.filter(translationEnabled).map(feed => feed.id));
+    const warnings = this.ruleHealth.warnings(feeds.map(feed => feed.id));
+    for (const feed of feeds) {
+      if (translationEnabled(feed)) feed.translation = translations.get(feed.id)!;
+      const ruleHealth = warnings.get(feed.id);
       if (ruleHealth) feed.ruleHealth = ruleHealth;
-      return feed;
-    });
+    }
+    return feeds;
   }
 
   deleteFeed(id: string): boolean {

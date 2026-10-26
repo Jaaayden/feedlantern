@@ -133,6 +133,17 @@ export class RuleHealth {
     return parseWarning(this.db.prepare('SELECT warning_json FROM feed_health WHERE feed_id=?').get(feedId)?.warning_json);
   }
 
+  warnings(feedIds: readonly string[]): Map<string, RuleHealthWarning> {
+    const warnings = new Map<string, RuleHealthWarning>();
+    if (!feedIds.length) return warnings;
+    for (const row of this.db.prepare(`SELECT feed_id,warning_json FROM feed_health
+      WHERE feed_id IN (SELECT value FROM json_each(?)) AND warning_json IS NOT NULL`).all(JSON.stringify(feedIds))) {
+      const warning = parseWarning(row.warning_json);
+      if (warning) warnings.set(String(row.feed_id), warning);
+    }
+    return warnings;
+  }
+
   /** Record a successful website fetch and return the active warning, if any. */
   record(feed: Feed, logId: number, items: ExtractedItem[], now = Date.now()): RuleHealthWarning | null {
     if (isFeedSource(feed)) return null;

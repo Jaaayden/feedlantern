@@ -84,6 +84,7 @@ export class RssTranslations {
         revision TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
         next_at INTEGER NOT NULL DEFAULT 0, error TEXT, body_json TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS translations_due ON translations(status,next_at);
+      CREATE INDEX IF NOT EXISTS translations_feed_status ON translations(feed_id,status);
       CREATE TABLE IF NOT EXISTS translation_events (id INTEGER PRIMARY KEY AUTOINCREMENT, feed_id TEXT NOT NULL REFERENCES feeds(id) ON DELETE CASCADE, item_id TEXT, at INTEGER NOT NULL, message TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS translation_events_feed ON translation_events(feed_id,id);
       CREATE TABLE IF NOT EXISTS translation_cache (key TEXT PRIMARY KEY, text TEXT NOT NULL, touched_at INTEGER NOT NULL);`);
@@ -165,10 +166,16 @@ export class RssTranslations {
     });
   }
   stats(id: string) {
-    const result = { pending: 0, success: 0, failed: 0 };
-    for (const row of this.db.prepare('SELECT status,COUNT(*) AS count FROM translations WHERE feed_id=? GROUP BY status').all(id)) {
+    return this.statsForFeeds([id]).get(id)!;
+  }
+  /** Read only the requested feeds, including zero counts for feeds without jobs. */
+  statsForFeeds(ids: readonly string[]): Map<string, NonNullable<Feed['translation']>> {
+    const result = new Map(ids.map(id => [id, { pending: 0, success: 0, failed: 0 }]));
+    if (!ids.length) return result;
+    for (const row of this.db.prepare(`SELECT feed_id,status,COUNT(*) AS count FROM translations
+      WHERE feed_id IN (SELECT value FROM json_each(?)) GROUP BY feed_id,status`).all(JSON.stringify(ids))) {
       const status = row.status === 'success' ? 'success' : row.status === 'failed' ? 'failed' : 'pending';
-      result[status] += Number(row.count);
+      result.get(String(row.feed_id))![status] += Number(row.count);
     }
     return result;
   }
