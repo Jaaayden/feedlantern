@@ -60,6 +60,21 @@ export function isLocalizedText(value: unknown): value is LocalizedText {
 
 const pluralRules = new Map<Locale, Intl.PluralRules>();
 const numberFormats = new Map<Locale, Intl.NumberFormat>();
+// Constructing Intl formatters for every feed is expensive. Bound the option
+// cache so user-selected time zones and formats cannot grow it indefinitely.
+const dateFormats = new Map<string, Intl.DateTimeFormat>();
+const relativeFormats = new Map<Locale, Intl.RelativeTimeFormat>();
+const listFormats = new Map<Locale, Intl.ListFormat>();
+function dateFormat(locale: Locale, options: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
+  const key = JSON.stringify([locale, Object.entries(options).sort(([a], [b]) => a.localeCompare(b))]);
+  let format = dateFormats.get(key);
+  if (!format) {
+    format = new Intl.DateTimeFormat(intlTag(locale), { hourCycle: 'h23', ...options });
+    if (dateFormats.size >= 64) dateFormats.delete(dateFormats.keys().next().value!);
+    dateFormats.set(key, format);
+  }
+  return format;
+}
 function numberFormat(locale: Locale): Intl.NumberFormat {
   let format = numberFormats.get(locale);
   // `min2` groups only from five digits, so ports and years stay as written.
@@ -138,13 +153,15 @@ export function formatNumber(locale: Locale, value: number, options?: Intl.Numbe
 export function formatDateTime(locale: Locale, value: string | number | Date | null | undefined, options: Intl.DateTimeFormatOptions = { dateStyle: 'medium', timeStyle: 'short' }): string {
   if (value === null || value === undefined || value === '') return '';
   const date = value instanceof Date ? value : new Date(value);
-  return Number.isNaN(date.getTime()) ? '' : new Intl.DateTimeFormat(intlTag(locale), { hourCycle: 'h23', ...options }).format(date);
+  return Number.isNaN(date.getTime()) ? '' : dateFormat(locale, options).format(date);
 }
 
 /** "a, b and c"; `unit` is a plain enumeration ("a, b, c" / "a、b、c") without a conjunction. */
 export function formatList(locale: Locale, items: readonly string[], type: 'conjunction' | 'unit' = 'conjunction'): string {
   if (type === 'unit') return items.join(translate(locale, 'punctuation.listSeparator'));
-  return new Intl.ListFormat(intlTag(locale), { style: 'long', type }).format(items);
+  let format = listFormats.get(locale);
+  if (!format) listFormats.set(locale, format = new Intl.ListFormat(intlTag(locale), { style: 'long', type }));
+  return format.format(items);
 }
 
 /**
@@ -158,12 +175,13 @@ export function formatRelative(locale: Locale, value: string | number | Date | n
   const diff = time - now, abs = Math.abs(diff);
   const minute = 60_000, hour = 60 * minute, day = 24 * hour;
   if (abs < 45_000) return translate(locale, diff > 0 ? 'time.soon' : 'time.justNow');
-  const relative = new Intl.RelativeTimeFormat(intlTag(locale), { numeric: 'auto' });
+  let relative = relativeFormats.get(locale);
+  if (!relative) relativeFormats.set(locale, relative = new Intl.RelativeTimeFormat(intlTag(locale), { numeric: 'auto' }));
   const sign = diff > 0 ? 1 : -1;
   if (abs < hour) return relative.format(sign * Math.max(1, Math.round(abs / minute)), 'minute');
   if (abs < day) return relative.format(sign * Math.round(abs / hour), 'hour');
   if (abs < 7 * day) return relative.format(sign * Math.max(1, Math.round(abs / day)), 'day');
   const date = new Date(time);
   const sameYear = date.getFullYear() === new Date(now).getFullYear();
-  return new Intl.DateTimeFormat(intlTag(locale), sameYear ? { month: 'short', day: 'numeric' } : { year: 'numeric', month: 'short', day: 'numeric' }).format(date);
+  return dateFormat(locale, sameYear ? { month: 'short', day: 'numeric' } : { year: 'numeric', month: 'short', day: 'numeric' }).format(date);
 }

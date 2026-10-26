@@ -54,6 +54,7 @@ test('需要检查筛选与搜索、来源和输出组合，仅选择失败订�
       const response = await page.request.post('/api/feeds', { headers, data: { name, url, rules: { item: '.article-card', title: '.article-title', link: 'a.article-link' } } });
       expect(response.ok()).toBeTruthy(); const { feed } = await response.json(); ids.push(feed.id);
       expect(!!feed.lastError).toBe(name.endsWith('失败'));
+      if (feed.lastError) for (let i = 0; i < 2; i++) await page.request.post(`/api/feeds/${feed.id}/refresh`, { headers });
     }
     await page.goto('/#/'); await page.getByLabel('搜索订阅').fill('状态筛选');
     const collection = page.getByRole('region', { name: '订阅集合' });

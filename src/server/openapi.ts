@@ -139,11 +139,11 @@ const schemas: Record<string, Schema> = {
   ItemFilter: object({ include: array(str({ maxLength: 200 }), { maxItems: 30 }), exclude: array(str({ maxLength: 200 }), { maxItems: 30 }), regex: bool }, ['include', 'exclude', 'regex'], { description: 'Item filter: exclusion wins, and a non-empty include list must match; only affects the output' }),
   FeedSettingsInput: object({ translationMode, targetLanguage, translationProvider, channelTitle: str({ minLength: 1, maxLength: 200 }), intervalMinutes: int({ minimum: 5, maximum: 1440 }), itemFilter: nullable(ref('ItemFilter')), outputLimit: int({ minimum: 10, maximum: 500 }), retentionLimit: nullable(int({ minimum: 10, maximum: 1000, description: 'Items kept in the database, at least the output limit; null is automatic (200 for web pages, 100 for RSS)' })), networkProfileId }, [], { description: 'Provide at least one field; itemFilter null removes the filter; networkProfileId null switches back to the default network' }),
   OutputStatus: object({ outputStatus: { type: 'object', additionalProperties: str({ enum: ['published', 'untranslated', 'excluded', 'not-included', 'over-limit'] }), description: 'Item ID → whether it is published, and why not' }, filterTimedOut: bool }, ['outputStatus']),
-  NotificationSummary: { type: 'object', description: 'Alert policy (threshold, timeout, retries, cooldown, ruleHealthAlerts) and the state of each channel; never returns secrets', properties: { channels: { type: 'object' } } },
-  NotificationUpdate: { type: 'object', description: 'Partial update: omitted fields keep their value, an empty string clears a secret; headers are replaced as a whole', properties: { channels: { type: 'object', properties: { bark: { type: 'object' }, webhook: { type: 'object' }, ntfy: { type: 'object' }, telegram: { type: 'object' } } } } },
+  NotificationSummary: { type: 'object', description: 'Alert policy (threshold, timeout, retries, cooldown, ruleHealthAlerts) and the state of each channel; never returns secrets', properties: { attentionFailureThreshold: int({ minimum: 1, maximum: 1000, default: 3 }), channels: { type: 'object' } } },
+  NotificationUpdate: { type: 'object', description: 'Partial update: omitted fields keep their value, an empty string clears a secret; headers are replaced as a whole', properties: { attentionFailureThreshold: int({ minimum: 1, maximum: 1000, description: 'Personal Needs attention threshold; independent of failureThreshold for push notifications' }), channels: { type: 'object', properties: { bark: { type: 'object' }, webhook: { type: 'object' }, ntfy: { type: 'object' }, telegram: { type: 'object' } } } } },
   Feed: { allOf: [ref('FeedInput'), object({
     id: str(), ownerId: str(), channelTitle: str(), enabled: bool, createdAt: dateTime, lastFetchedAt: nullable(dateTime), lastSuccessAt: nullable(dateTime),
-    nextFetchAt: dateTime, lastError: nullable(str()), itemCount: int(), itemFilter: ref('ItemFilter'), outputLimit: int({ minimum: 10, maximum: 500, default: 100 }), retentionLimit: nullable(int({ minimum: 10, maximum: 1000 })), translation: object({ pending: int(), success: int(), failed: int() }),
+    nextFetchAt: dateTime, lastError: nullable(str()), consecutiveFailures: int({ description: 'Consecutive completed fetch failures; success resets to zero' }), attentionFailureThreshold: int({ minimum: 1, maximum: 1000, default: 3, description: 'Owning account threshold for Needs attention, independent of push alerts' }), itemCount: int(), itemFilter: ref('ItemFilter'), outputLimit: int({ minimum: 10, maximum: 500, default: 100 }), retentionLimit: nullable(int({ minimum: 10, maximum: 1000 })), translation: object({ pending: int(), success: int(), failed: int() }),
     ruleHealth: ref('RuleHealthWarning'),
   }, ['id', 'enabled', 'createdAt', 'lastFetchedAt', 'lastSuccessAt', 'nextFetchAt', 'lastError', 'itemCount'])] },
   FeedItem: object({
@@ -191,11 +191,11 @@ const schemas: Record<string, Schema> = {
   CredentialInput: object({ name: str({ minLength: 1 }), url: str({ format: 'uri' }), format: str({ enum: ['header', 'json'] }), value: { description: 'Cookie header text or cookie JSON' } }, ['name', 'url', 'format', 'value']),
   CredentialSummary: object({ id: str(), name: str(), url: str(), format: str({ enum: ['header', 'json'] }), domains: array(str()), count: int(), updatedAt: dateTime, expiresAt: nullable(dateTime) }, ['id', 'name', 'url', 'format', 'domains', 'count', 'updatedAt', 'expiresAt']),
   BarkSettings: object({
-    enabled: bool, url: str(), failureThreshold: int(), timeoutSeconds: int(), maxAttempts: int(), retryDelaySeconds: int(), laterRetryDelaySeconds: int(), cooldownMinutes: int(),
+    enabled: bool, url: str(), failureThreshold: int(), attentionFailureThreshold: int({ minimum: 1, maximum: 1000, default: 3 }), timeoutSeconds: int(), maxAttempts: int(), retryDelaySeconds: int(), laterRetryDelaySeconds: int(), cooldownMinutes: int(),
     ruleHealthAlerts: { ...bool, description: 'Notify when rules may have stopped working; default true' },
   }),
   BarkSummary: object({
-    enabled: bool, configured: bool, maskedUrl: str(), failureThreshold: int(), timeoutSeconds: int(), maxAttempts: int(), retryDelaySeconds: int(), laterRetryDelaySeconds: int(), cooldownMinutes: int(),
+    enabled: bool, configured: bool, maskedUrl: str(), failureThreshold: int(), attentionFailureThreshold: int({ minimum: 1, maximum: 1000, default: 3 }), timeoutSeconds: int(), maxAttempts: int(), retryDelaySeconds: int(), laterRetryDelaySeconds: int(), cooldownMinutes: int(),
     ruleHealthAlerts: bool,
   }),
   ApplicationSettings: object({

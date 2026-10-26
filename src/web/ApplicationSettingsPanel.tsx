@@ -64,13 +64,13 @@ function ncbiTestText(test: NcbiKeyTest): string {
 }
 
 export function ApplicationSettingsPanel({ group, revision, onDirty }: { group: AppSettingsGroup; revision: number; onDirty: (dirty: boolean) => void }) {
-  const [saved, setSaved] = useState<ApplicationSettings | null>(null);
-  const [value, setValue] = useState<ApplicationSettings | null>(null);
+  const [saved, setSaved] = useState<ApplicationSettings | null>(() => api.settings.cached());
+  const [value, setValue] = useState<ApplicationSettings | null>(() => api.settings.cached());
   const [error, setError] = useState(''), [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
   /** Saved API keys are never sent back; these mark keys the administrator chose to remove. */
   const [clearKey, setClearKey] = useState<Record<KeyOwner, boolean>>({ deepl: false, openai: false, ncbi: false });
-  const [open, setOpen] = useState<Set<TranslationProviderId>>(new Set());
+  const [open, setOpen] = useState<Set<TranslationProviderId>>(() => new Set([api.settings.cached()?.translation.defaultProvider ?? 'google']));
   const [testing, setTesting] = useState<TranslationProviderId | ''>(''), [testResult, setTestResult] = useState<{ provider: TranslationProviderId; ok: boolean; text: string }>();
   // NCBI: the saved key's last test, and a test of the values as typed.
   const [ncbiStatus, setNcbiStatus] = useState<{ apiKeyConfigured: boolean; lastTest?: NcbiKeyTest }>();
@@ -104,7 +104,7 @@ export function ApplicationSettingsPanel({ group, revision, onDirty }: { group: 
     } catch (e) { setError(e instanceof Error ? e.message : t('common.saveFailed')); } finally { setBusy(false); }
   }
   const [title, intro] = titles(group);
-  if (!value || !saved) return <section className="panel settings-form" aria-label={title}>{error || t('appSettings.loading')}</section>;
+  if (!value || !saved) return <section className="panel settings-form" aria-label={title} aria-busy={!error}>{error || t('appSettings.loading', { title })}</section>;
   const translation = value.translation;
   const server = <K extends keyof ApplicationSettings['server']>(key: K, v: ApplicationSettings['server'][K]) => setValue({ ...value, server: { ...value.server, [key]: v } });
   const service = <S extends Service>(name: S, change: Partial<Translation[S]>) => setValue({ ...value, translation: { ...translation, [name]: { ...translation[name], ...change } } });

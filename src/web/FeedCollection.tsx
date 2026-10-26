@@ -1,12 +1,12 @@
-import { useEffect, useState } from 'react';
+import { memo, useEffect, useMemo, useState } from 'react';
 import { OUTPUT_LIMIT, RETENTION_LIMIT, translationEnabled, translationLabel, type AuthState, type BulkFeedSettingsInput, type BundlePayload, type Feed, type TargetLanguage, type TranslationProviderId } from '../shared/types';
 import { LanguageOptions, ProviderOptions, useTranslationProviders } from './TranslationFields';
 import { api } from './api';
 import { Copy, FileDown, LayoutGrid, List, Settings2, X } from 'lucide-react';
 import { absoluteTime, avatarHue, buildOpml, copyText, downloadText, initial, relativeTime } from './format';
 import { needsAttention, ruleHealthSummary } from './RuleHealth';
-import { isRuleHealthNotice } from '../shared/rule-health';
-import { t } from './i18n';
+import { isRuleHealthNotice, repeatedFetchFailure } from '../shared/rule-health';
+import { t, useLocale } from './i18n';
 import { isPubmedRss } from './PubmedConvert';
 
 export type StatusFilter = 'all' | 'attention' | 'failing' | 'rule-health' | 'field-health';
@@ -24,28 +24,37 @@ function sortFeeds(feeds: Feed[], key: SortKey): Feed[] {
   const list = [...feeds];
   if (key === 'name') list.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
   if (key === 'updated') list.sort((a, b) => (b.lastSuccessAt ?? '').localeCompare(a.lastSuccessAt ?? ''));
-  if (key === 'attention') list.sort((a, b) => Number(!!b.lastError) - Number(!!a.lastError) || Number(needsAttention(b)) - Number(needsAttention(a)) || Number(!a.enabled) - Number(!b.enabled));
+  if (key === 'attention') list.sort((a, b) => Number(needsAttention(b)) - Number(needsAttention(a)) || Number(!!b.lastError) - Number(!!a.lastError) || Number(!a.enabled) - Number(!b.enabled));
   return list;
 }
 
-export function FeedCollection({ auth, feeds, bundles = [], addToBundle, convertPubmed, query, status, onStatus, detail, settings, logs, changed, notify }: {
+export const FeedCollection = memo(function FeedCollection({ auth, feeds, bundles = [], addToBundle, convertPubmed, query, status, onStatus, detail, settings, logs, changed, notify }: {
   auth: AuthState; feeds: Feed[]; bundles?: BundlePayload[]; addToBundle?: (ids: string[]) => void; convertPubmed?: (ids: string[]) => void; query: string; status: StatusFilter; onStatus: (status: StatusFilter) => void;
   detail: (id: string) => void; settings: (id: string) => void; logs: (id: string) => void;
   changed: () => void; notify: (text: string) => void;
 }) {
+  useLocale();
+  // Unchanged API data can now skip rendering; relative dates must still age.
+  const [, refreshTime] = useState(0);
+  useEffect(() => {
+    const update = () => { if (!document.hidden) refreshTime(value => value + 1); };
+    const timer = window.setInterval(update, 30_000);
+    document.addEventListener('visibilitychange', update);
+    return () => { window.clearInterval(timer); document.removeEventListener('visibilitychange', update); };
+  }, []);
   const [sourceFilter, setSourceFilter] = useState('all');
   const [outputFilter, setOutputFilter] = useState('all');
   const statusFilter = status;
   const [sort, setSort] = useState<SortKey>(readSort);
-  const visible = sortFeeds(feeds.filter(feed => statusMatches[statusFilter](feed) && (sourceFilter === 'all' || (feed.sourceType ?? 'website') === sourceFilter) && (outputFilter === 'all' || (translationEnabled(feed) ? 'translated' : 'original') === outputFilter)), sort);
-  const [view, setView] = useState<'list' | 'cards'>('list');
+  const visible = useMemo(() => sortFeeds(feeds.filter(feed => statusMatches[statusFilter](feed) && (sourceFilter === 'all' || (feed.sourceType ?? 'website') === sourceFilter) && (outputFilter === 'all' || (translationEnabled(feed) ? 'translated' : 'original') === outputFilter)), sort), [feeds, statusFilter, sourceFilter, outputFilter, sort]);
+  const [view, setView] = useState<'list' | 'cards'>(() => auth.role === 'admin' ? api.settings.cached()?.feedView ?? 'list' : 'list');
   const [selected, setSelected] = useState<string[]>([]);
   const [editing, setEditing] = useState(false);
   const [mode, setMode] = useState<NonNullable<BulkFeedSettingsInput['translationMode']> | ''>('');
   const [interval, setInterval] = useState('');
   const [language, setLanguage] = useState<TargetLanguage | ''>('');
   const [provider, setProvider] = useState<TranslationProviderId | 'default' | ''>('');
-  const providers = useTranslationProviders();
+  const providers = useTranslationProviders(editing);
   const [outputLimit, setOutputLimit] = useState('');
   const [retentionMode, setRetentionMode] = useState<'' | 'auto' | 'set'>('');
   const [retention, setRetention] = useState('');
@@ -133,13 +142,14 @@ export function FeedCollection({ auth, feeds, bundles = [], addToBundle, convert
     {visible.length > 0 && <div className={`collection-head ${view === 'cards' ? 'is-cards' : ''}`}><label className="feed-select"><input type="checkbox" aria-label={t('collection.selectAll')} checked={all} disabled={busy} onChange={e => setSelected(e.target.checked ? visible.map(f => f.id) : [])} /></label><span className="collection-count">{t('users.feedCount', { count: visible.length })}</span><button className="button small collection-export" disabled={busy} title={bundles.length ? t('collection.exportHintBundles') : t('collection.exportHint')} onClick={() => void exportOpml(visible.map(feed => feed.id), true)}><FileDown size={14} />{t('collection.exportOpml')}</button></div>}
     <div className={view === 'cards' ? 'feed-grid' : 'feed-list'}>{visible.map(feed => {
       const notice = !!feed.ruleHealth && isRuleHealthNotice(feed.ruleHealth);
-      return <article className={view === 'cards' ? 'feed-card' : 'feed-row'} key={feed.id} data-state={feed.lastError ? 'error' : feed.ruleHealth ? notice ? 'notice' : 'warning' : feed.enabled ? 'active' : 'paused'}>
+      const failed = repeatedFetchFailure(feed);
+      return <article className={view === 'cards' ? 'feed-card' : 'feed-row'} key={feed.id} data-state={failed ? 'error' : feed.ruleHealth ? notice ? 'notice' : 'warning' : feed.lastError ? 'notice' : feed.enabled ? 'active' : 'paused'}>
       <label className="feed-select"><input type="checkbox" aria-label={t('collection.selectFeed', { name: feed.name })} disabled={busy} checked={selected.includes(feed.id)} onChange={e => setSelected(previous => e.target.checked ? [...previous, feed.id] : previous.filter(id => id !== feed.id))} /></label>
-      <div className="feed-identity"><span className="feed-avatar" aria-hidden="true" style={{ '--hue': avatarHue(feed.name) } as React.CSSProperties}>{initial(feed.name)}</span><div className="feed-text"><button className="card-title" aria-label={t('collection.viewFeed', { name: feed.name })} onClick={() => detail(feed.id)}>{feed.name}</button><div className="inline feed-kind"><span className="badge">{feed.sourceType === 'pubmed' ? t('feedKind.pubmed') : feed.sourceType === 'rss' ? t('feedKind.rss') : t('feedKind.website')}</span><span className={`badge ${translationEnabled(feed) ? 'good' : ''}`}>{translationEnabled(feed) ? translationLabel(feed, t) : t('feedKind.original')}</span></div><p className="feed-host" title={feed.pubmed?.query ?? feed.url}>{feed.pubmed?.query ?? feed.url}</p>{!feed.lastError && feed.ruleHealth && <button className={notice ? 'card-notice' : 'card-warning'} title={t('collection.healthTitle', { summary: ruleHealthSummary(feed) })} onClick={() => detail(feed.id)}>{ruleHealthSummary(feed)}</button>}{feed.lastError && <button className="card-error" title={t('collection.errorTitle', { error: feed.lastError })} onClick={() => logs(feed.id)}>{feed.lastError}</button>}</div></div>
-      {feed.lastError ? <button type="button" className="badge bad badge-button" title={statusFilter === 'attention' ? t('collection.attentionShown') : t('collection.attentionOnly')} onClick={() => onStatus('attention')}>{t('collection.attention')}</button> : feed.ruleHealth ? <button type="button" className={`badge badge-button ${notice ? '' : 'warn'}`} title={notice ? t(statusFilter === 'field-health' ? 'collection.fieldsShown' : 'collection.fieldsOnly') : t(statusFilter === 'rule-health' ? 'collection.healthShown' : 'collection.healthOnly')} onClick={() => onStatus(notice ? 'field-health' : 'rule-health')}>{t(notice ? 'health.noticeBadge' : 'health.badge')}</button> : <span className={`badge ${feed.enabled ? 'good' : ''}`}>{feed.enabled ? t('feed.active') : t('feed.paused')}</span>}
+      <div className="feed-identity"><span className="feed-avatar" aria-hidden="true" style={{ '--hue': avatarHue(feed.name) } as React.CSSProperties}>{initial(feed.name)}</span><div className="feed-text"><button className="card-title" aria-label={t('collection.viewFeed', { name: feed.name })} onClick={() => detail(feed.id)}>{feed.name}</button><div className="inline feed-kind"><span className="badge">{feed.sourceType === 'pubmed' ? t('feedKind.pubmed') : feed.sourceType === 'rss' ? t('feedKind.rss') : t('feedKind.website')}</span><span className={`badge ${translationEnabled(feed) ? 'good' : ''}`}>{translationEnabled(feed) ? translationLabel(feed, t) : t('feedKind.original')}</span></div><p className="feed-host" title={feed.pubmed?.query ?? feed.url}>{feed.pubmed?.query ?? feed.url}</p>{!feed.lastError && feed.ruleHealth && <button className={notice ? 'card-notice' : 'card-warning'} title={t('collection.healthTitle', { summary: ruleHealthSummary(feed) })} onClick={() => detail(feed.id)}>{ruleHealthSummary(feed)}</button>}{feed.lastError && <button className={failed ? "card-error" : "card-notice"} title={t('collection.errorTitle', { error: feed.lastError })} onClick={() => logs(feed.id)}>{feed.lastError}</button>}</div></div>
+      {failed ? <button type="button" className="badge bad badge-button" title={statusFilter === 'attention' ? t('collection.attentionShown') : t('collection.attentionOnly')} onClick={() => onStatus('attention')}>{t('collection.attention')}</button> : feed.ruleHealth ? <button type="button" className={`badge badge-button ${notice ? '' : 'warn'}`} title={notice ? t(statusFilter === 'field-health' ? 'collection.fieldsShown' : 'collection.fieldsOnly') : t(statusFilter === 'rule-health' ? 'collection.healthShown' : 'collection.healthOnly')} onClick={() => onStatus(notice ? 'field-health' : 'rule-health')}>{t(notice ? 'health.noticeBadge' : 'health.badge')}</button> : feed.lastError ? <button type="button" className="badge badge-button" onClick={() => logs(feed.id)}>{t(feed.enabled ? 'collection.retrying' : 'collection.failing')}</button> : <span className={`badge ${feed.enabled ? 'good' : ''}`}>{feed.enabled ? t('feed.active') : t('feed.paused')}</span>}
       <div className="feed-metrics"><span>{t('collection.metrics', { count: feed.itemCount, minutes: feed.intervalMinutes })}</span><small title={absoluteTime(feed.lastSuccessAt)}>{t('collection.lastSuccess', { time: feed.lastSuccessAt ? relativeTime(feed.lastSuccessAt) : t('feed.neverUpdated') })}</small></div>
       <div className="detail-actions"><button className="button small" disabled={busy} aria-label={t('collection.copyRssOf', { name: feed.name })} onClick={() => void operate('copy', [feed.id])}><Copy size={14} />{t('collection.copyRssShort')}</button><button className="button small" aria-label={t('collection.settingsOf', { name: feed.name })} onClick={() => settings(feed.id)}><Settings2 size={14} />{t('feed.settings')}</button></div>
     </article>;
     })}</div>
   </section>;
-}
+});

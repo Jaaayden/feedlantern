@@ -242,10 +242,12 @@ export class FetchHistory {
   resetNotifications(userId?: string): void {
     if (userId !== undefined) {
       this.db.prepare("UPDATE fetch_alerts SET status='canceled' WHERE status='pending' AND feed_id IN (SELECT id FROM feeds WHERE owner_id=?)").run(userId);
-      for (const table of ['fetch_incidents','translation_incidents']) this.db.prepare(`DELETE FROM ${table} WHERE feed_id IN (SELECT id FROM feeds WHERE owner_id=?)`).run(userId);
+      // Changing a delivery destination does not repair a failing feed.
+      this.db.prepare('UPDATE fetch_incidents SET alert_id=NULL WHERE feed_id IN (SELECT id FROM feeds WHERE owner_id=?)').run(userId);
+      this.db.prepare('DELETE FROM translation_incidents WHERE feed_id IN (SELECT id FROM feeds WHERE owner_id=?)').run(userId);
       return;
     }
-    this.db.exec("UPDATE fetch_alerts SET status='canceled' WHERE status='pending'; DELETE FROM fetch_incidents; DELETE FROM translation_incidents;");
+    this.db.exec("UPDATE fetch_alerts SET status='canceled' WHERE status='pending'; UPDATE fetch_incidents SET alert_id=NULL; DELETE FROM translation_incidents;");
   }
 
   interrupt(runId: number): void {

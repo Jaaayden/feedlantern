@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { BrowserService } from '../src/server/browser.js';
 import { createApp } from '../src/server/app.js';
 import { Store } from '../src/server/store.js';
@@ -11,6 +12,13 @@ const browser = new BrowserService({ allowedHosts: ['127.0.0.1:8877'] });
 const store = new Store(process.env.SMOKE_DATA_DIR ?? '/app/data');
 const app = await createApp({ store, browserService: browser, publicOrigin: 'http://127.0.0.1:4321', startScheduler: false });
 try {
+  const home = await app.inject('/');
+  assert.equal(home.statusCode, 200);
+  const assets = [...home.body.matchAll(/(?:src|href)="(\/assets\/[^\"]+\.(?:js|css))"/g)].map(match => match[1]);
+  assert.ok(assets.some(asset => asset.endsWith('.js')) && assets.some(asset => asset.endsWith('.css')), 'Built web assets must be present');
+  for (const asset of assets) assert.equal((await app.inject(asset)).statusCode, 200, asset);
+  assert.match(execFileSync(process.execPath, ['packages/cli/dist/feedlantern.js', '--help'], { encoding: 'utf8' }), /feedlantern/i);
+  console.log('Built web assets and packaged CLI passed');
   const discovery = await browser.discover({ url: 'http://127.0.0.1:8877', waitMs: 0 });
   assert.ok(discovery.detection.candidates.some(c => c.count >= 3));
   const base = { host: '127.0.0.1:4321', 'x-feedlantern': '1' };

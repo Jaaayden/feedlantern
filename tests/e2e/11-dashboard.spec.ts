@@ -26,6 +26,7 @@ test('首页仪表盘、原订阅列表、需要检查和聚合入口；用户�
     expect(failed.ok()).toBeTruthy();
     const failedFeed = (await failed.json()).feed;
     expect(failedFeed.lastError).toBeTruthy();
+    for (let i = 0; i < 2; i++) await page.request.post(`/api/feeds/${failedFeed.id}/refresh`, { headers: own });
 
     await nav.getByRole('button', { name: '用户管理', exact: true }).click();
     const row = page.locator('.user-row').filter({ hasText: username });

@@ -6,6 +6,8 @@
 
 Linux amd64 and arm64 are supported. Allow about 2 GB of memory and a few GB of disk; actual use depends on the sites you follow. The server needs to reach the target sites, and pulling the image needs access to GitHub Container Registry.
 
+On smaller hosts, keep background concurrency at 1 and lower translation concurrency as needed. With no editing session or fetch running, Chromium exits after 60 seconds idle and starts again on demand. This reduces idle memory at the cost of a browser start on the next fetch. The image uses a multi-stage build containing only runtime dependencies and Chromium's headless shell, with installation caches removed. Frontend dependencies are used only during the build; the web interface uses the built assets. Complex pages can still need substantial memory; these changes do not alter item retention or lifetime collection and translation counters.
+
 Install Docker Engine following [Docker's documentation](https://docs.docker.com/engine/install/), then the [Compose plugin](https://docs.docker.com/compose/install/linux/). Check that your user can run:
 
 ```sh

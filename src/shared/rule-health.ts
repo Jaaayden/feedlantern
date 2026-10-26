@@ -1,8 +1,12 @@
-import type { Feed, RuleHealthReason, RuleHealthSeverity, RuleHealthWarning } from './types.js';
+import { defaultApplicationSettings, type Feed, type RuleHealthReason, type RuleHealthSeverity, type RuleHealthWarning } from './types.js';
+
+export function repeatedFetchFailure(feed: Pick<Feed, 'lastError' | 'consecutiveFailures' | 'attentionFailureThreshold'>): boolean {
+  return !!feed.lastError && (feed.consecutiveFailures ?? 0) >= (feed.attentionFailureThreshold ?? defaultApplicationSettings.bark.attentionFailureThreshold);
+}
 
 /** Keep sidebar, dashboard, admin counts and list filters on the same definition. */
-export function feedNeedsAttention(feed: Pick<Feed, 'lastError' | 'ruleHealth'>): boolean {
-  return !!feed.lastError || !!feed.ruleHealth && !isRuleHealthNotice(feed.ruleHealth);
+export function feedNeedsAttention(feed: Pick<Feed, 'lastError' | 'ruleHealth' | 'consecutiveFailures' | 'attentionFailureThreshold'>): boolean {
+  return repeatedFetchFailure(feed) || !!feed.ruleHealth && !isRuleHealthNotice(feed.ruleHealth);
 }
 
 /** Optional metadata can disappear while the feed's articles remain usable. */

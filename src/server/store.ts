@@ -161,6 +161,7 @@ function rowToFeed(row: Record<string, unknown>): Feed {
     lastSuccessAt: row.last_success_at ? String(row.last_success_at) : null,
     nextFetchAt: String(row.next_fetch_at),
     lastError: row.last_error ? String(row.last_error) : null,
+    consecutiveFailures: Number(row.failure_count ?? 0),
     itemCount: Number(row.item_count ?? 0),
     ...(itemFilter ? { itemFilter } : {}),
     outputLimit: clampOutputLimit(row.output_limit === undefined || row.output_limit === null ? undefined : Number(row.output_limit)),
@@ -594,11 +595,16 @@ export class Store {
     }
     const credentials = new Map<string, number>();
     const attention = new Map<string, number>();
-    for (const row of this.db.prepare(`SELECT f.owner_id,f.last_error,h.warning_json FROM feeds f LEFT JOIN feed_health h ON h.feed_id=f.id
+    const thresholds = new Map<string, number>();
+    for (const row of this.db.prepare(`SELECT f.owner_id,f.last_error,h.warning_json,c.failure_count,n.value AS notification_settings
+      FROM feeds f LEFT JOIN feed_health h ON h.feed_id=f.id LEFT JOIN fetch_incidents c ON c.feed_id=f.id
+      LEFT JOIN user_notifications n ON n.user_id=f.owner_id
       WHERE f.last_error IS NOT NULL OR h.warning_json IS NOT NULL`).all()) {
+      const owner = String(row.owner_id);
+      if (!thresholds.has(owner)) thresholds.set(owner, this.notificationsFromValue(row.notification_settings).bark.attentionFailureThreshold);
       const warning = parseJson<Feed['ruleHealth']>(row.warning_json, undefined);
-      if (feedNeedsAttention({ lastError: row.last_error ? String(row.last_error) : null, ruleHealth: warning && Array.isArray(warning.reasons) ? warning : undefined })) {
-        const owner = String(row.owner_id); attention.set(owner, (attention.get(owner) ?? 0) + 1);
+      if (feedNeedsAttention({ lastError: row.last_error ? String(row.last_error) : null, consecutiveFailures: Number(row.failure_count ?? 0), attentionFailureThreshold: thresholds.get(owner), ruleHealth: warning && Array.isArray(warning.reasons) ? warning : undefined })) {
+        attention.set(owner, (attention.get(owner) ?? 0) + 1);
       }
     }
     for (const row of this.db.prepare('SELECT owner_id, COUNT(*) AS total FROM credentials GROUP BY owner_id').all() as Array<Record<string, unknown>>) credentials.set(String(row.owner_id), Number(row.total));
@@ -1082,8 +1088,11 @@ export class Store {
   /** One account's Bark settings, shared alert policy and other channels (stored encrypted together). */
   getNotifications(userId: string): { bark: ApplicationSettings['bark']; channels: NotificationChannelSettings } {
     const row = this.db.prepare('SELECT value FROM user_notifications WHERE user_id=?').get(userId);
-    if (!row) return { bark: structuredClone(defaultApplicationSettings.bark), channels: structuredClone(defaultNotificationChannels) };
-    const { channels, ...bark } = storedNotificationSchema.parse(JSON.parse(decrypt(this.masterKey, String(row.value))));
+    return this.notificationsFromValue(row?.value);
+  }
+  private notificationsFromValue(value: unknown): { bark: ApplicationSettings['bark']; channels: NotificationChannelSettings } {
+    if (value == null) return { bark: structuredClone(defaultApplicationSettings.bark), channels: structuredClone(defaultNotificationChannels) };
+    const { channels, ...bark } = storedNotificationSchema.parse(JSON.parse(decrypt(this.masterKey, String(value))));
     return { bark, channels: notificationChannelsSchema.parse(channels ?? {}) };
   }
   getBark(userId: string): ApplicationSettings['bark'] { return this.getNotifications(userId).bark; }
@@ -1187,9 +1196,12 @@ export class Store {
   }
 
   getFeed(id: string): Feed | null {
-    const row = this.db.prepare(`SELECT f.*, (SELECT COUNT(*) FROM feed_items i WHERE i.feed_id = f.id) AS item_count FROM feeds f WHERE f.id = ?`).get(id) as Record<string, unknown> | undefined;
+    const row = this.db.prepare(`SELECT f.*, c.failure_count,n.value AS notification_settings,
+      (SELECT COUNT(*) FROM feed_items i WHERE i.feed_id = f.id) AS item_count FROM feeds f
+      LEFT JOIN fetch_incidents c ON c.feed_id=f.id LEFT JOIN user_notifications n ON n.user_id=f.owner_id WHERE f.id = ?`).get(id) as Record<string, unknown> | undefined;
     if (!row) return null;
     const feed = rowToFeed(row);
+    feed.attentionFailureThreshold = this.notificationsFromValue(row.notification_settings).bark.attentionFailureThreshold;
     if (translationEnabled(feed)) feed.translation = this.translations.stats(feed.id);
     const ruleHealth = this.ruleHealth.warning(feed.id);
     if (ruleHealth) feed.ruleHealth = ruleHealth;
@@ -1197,14 +1209,24 @@ export class Store {
   }
 
   listFeeds(ownerId?: string): Feed[] {
-    const rows = this.db.prepare(`SELECT f.*, (SELECT COUNT(*) FROM feed_items i WHERE i.feed_id = f.id) AS item_count FROM feeds f WHERE (? IS NULL OR f.owner_id=?) ORDER BY f.created_at DESC`).all(ownerId ?? null, ownerId ?? null) as Array<Record<string, unknown>>;
-    return rows.map(row => {
-      const feed = rowToFeed(row);
-      if (translationEnabled(feed)) feed.translation = this.translations.stats(feed.id);
-      const ruleHealth = this.ruleHealth.warning(feed.id);
-      if (ruleHealth) feed.ruleHealth = ruleHealth;
-      return feed;
+    const rows = this.db.prepare(`SELECT f.*, c.failure_count,n.value AS notification_settings,
+      (SELECT COUNT(*) FROM feed_items i WHERE i.feed_id = f.id) AS item_count FROM feeds f
+      LEFT JOIN fetch_incidents c ON c.feed_id=f.id LEFT JOIN user_notifications n ON n.user_id=f.owner_id
+      ${ownerId === undefined ? '' : 'WHERE f.owner_id=?'} ORDER BY f.created_at DESC`).all(...(ownerId === undefined ? [] : [ownerId])) as Array<Record<string, unknown>>;
+    const thresholds = new Map<string, number>();
+    const feeds = rows.map(row => {
+      const owner = String(row.owner_id);
+      if (!thresholds.has(owner)) thresholds.set(owner, this.notificationsFromValue(row.notification_settings).bark.attentionFailureThreshold);
+      return { ...rowToFeed(row), attentionFailureThreshold: thresholds.get(owner)! };
     });
+    const translations = this.translations.statsForFeeds(feeds.filter(translationEnabled).map(feed => feed.id));
+    const warnings = this.ruleHealth.warnings(feeds.map(feed => feed.id));
+    for (const feed of feeds) {
+      if (translationEnabled(feed)) feed.translation = translations.get(feed.id)!;
+      const ruleHealth = warnings.get(feed.id);
+      if (ruleHealth) feed.ruleHealth = ruleHealth;
+    }
+    return feeds;
   }
 
   deleteFeed(id: string): boolean {

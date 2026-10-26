@@ -30,7 +30,7 @@ test('管理员用户列表附带订阅、出错、暂停、凭据数量和最�
     assert.equal(response.statusCode, 200);
     const users = response.json() as UserSummary[];
     const byName = Object.fromEntries(users.map(user => [user.username, user]));
-    assert.deepEqual({ ...byName.alice.stats, lastSeenAt: typeof byName.alice.stats?.lastSeenAt }, { feeds: 3, failingFeeds: 1, attentionFeeds: 1, pausedFeeds: 1, credentials: 1, lastSeenAt: 'string' });
+    assert.deepEqual({ ...byName.alice.stats, lastSeenAt: typeof byName.alice.stats?.lastSeenAt }, { feeds: 3, failingFeeds: 1, attentionFeeds: 0, pausedFeeds: 1, credentials: 1, lastSeenAt: 'string' });
     assert.deepEqual(byName.bob.stats, { feeds: 0, failingFeeds: 0, attentionFeeds: 0, pausedFeeds: 0, credentials: 0, lastSeenAt: null });
     assert.ok(byName.admin.stats?.lastSeenAt);
     assert.ok(!response.body.includes('password'));

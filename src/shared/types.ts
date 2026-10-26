@@ -133,6 +133,10 @@ export interface Feed extends FeedInput {
   lastSuccessAt: string | null;
   nextFetchAt: string;
   lastError: string | null;
+  /** Persistent consecutive completed fetch failures; success resets this. */
+  consecutiveFailures?: number;
+  /** The owning account's Needs attention threshold, independent of push alerts. */
+  attentionFailureThreshold?: number;
   itemCount: number;
   translation?: { pending: number; success: number; failed: number };
   /** A warning about article extraction, or a quiet notice about optional metadata. */
@@ -235,7 +239,7 @@ export interface ApplicationSettings {
   feedView: 'list' | 'cards';
   logRetentionDays: number;
   bark: {
-    enabled: boolean; url: string; failureThreshold: number; timeoutSeconds: number; maxAttempts: number;
+    enabled: boolean; url: string; failureThreshold: number; attentionFailureThreshold: number; timeoutSeconds: number; maxAttempts: number;
     retryDelaySeconds: number; laterRetryDelaySeconds: number; cooldownMinutes: number;
     /** Also notify when a feed's rules may have stopped matching (deduplicated apart from failures). */
     ruleHealthAlerts: boolean;
@@ -254,7 +258,7 @@ export const defaultApplicationSettings: ApplicationSettings = {
   },
   ncbi: { apiKey: '', email: '' },
   feedView: 'list', logRetentionDays: 30,
-  bark: { enabled: false, url: '', failureThreshold: 10, timeoutSeconds: 10, maxAttempts: 3, retryDelaySeconds: 60, laterRetryDelaySeconds: 300, cooldownMinutes: 30, ruleHealthAlerts: true },
+  bark: { enabled: false, url: '', failureThreshold: 10, attentionFailureThreshold: 3, timeoutSeconds: 10, maxAttempts: 3, retryDelaySeconds: 60, laterRetryDelaySeconds: 300, cooldownMinutes: 30, ruleHealthAlerts: true },
   server: { backgroundConcurrency: 1, allowedHosts: [], dnsOverHttps: false, trustedProxies: [], publicOrigin: 'http://127.0.0.1:4321', cookieSecure: false, sessionTtlDays: 30, host: '127.0.0.1', port: 4321 },
 };
 /** A reusable network profile. Proxy logins and header values are write-only and never returned. */

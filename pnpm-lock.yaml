@@ -35,18 +35,9 @@ importers:
       ipaddr.js:
         specifier: ^2.2.0
         version: 2.5.0
-      lucide-react:
-        specifier: ^1.56.0
-        version: 1.56.0(@types/react@19.2.18)(react@19.2.8)
       playwright:
         specifier: ^1.55.0
         version: 1.63.0
-      react:
-        specifier: ^19.1.1
-        version: 19.2.8
-      react-dom:
-        specifier: ^19.1.1
-        version: 19.2.8(react@19.2.8)
       sanitize-html:
         specifier: ^2.18.1
         version: 2.18.1
@@ -81,6 +72,15 @@ importers:
       concurrently:
         specifier: ^10.0.6
         version: 10.0.6
+      lucide-react:
+        specifier: ^1.56.0
+        version: 1.56.0(@types/react@19.2.18)(react@19.2.8)
+      react:
+        specifier: ^19.1.1
+        version: 19.2.8
+      react-dom:
+        specifier: ^19.1.1
+        version: 19.2.8(react@19.2.8)
       typescript:
         specifier: ^7.0.2
         version: 7.0.2

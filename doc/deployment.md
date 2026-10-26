@@ -6,6 +6,8 @@
 
 支持 Linux amd64、arm64。建议预留 2 GB 内存及数 GB 磁盘，实际用量取决于目标网页。服务器需要访问目标网站；镜像下载需要访问 GitHub Container Registry。
 
+低配置机器保持后台并发为 1，按需要降低翻译服务的并发。没有编辑会话或抓取任务时，Chromium 空闲 60 秒后自动退出，下次需要时重新启动；这会减少空闲内存，但下次抓取包含一次浏览器启动开销。镜像使用多阶段构建，仅保留运行依赖和 Chromium 无头版本，清理安装缓存；前端依赖只参与构建，网页使用打包产物。复杂网页仍可能占用较多内存，这些优化不改变条目保留设置和累计采集、翻译计数。测量口径及限额测试见[性能验证](performance.md#订阅列表与资源占用-2026-10-26)。
+
 按 [Docker 官方安装文档](https://docs.docker.com/engine/install/)安装 Engine，再安装 [Compose 插件](https://docs.docker.com/compose/install/linux/)。确认当前用户可以运行：
 
 ```sh
