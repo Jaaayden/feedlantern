@@ -6,7 +6,7 @@ import { api } from './api';
 import { fmt, t } from './i18n';
 import { needsAttention, ruleHealthSummary } from './RuleHealth';
 
-type Series = { key: 'collected' | 'translated' | 'subscriptions'; label: string; secondary?: boolean };
+type Series = { key: 'collected' | 'translated' | 'subscriptions'; label: string; secondary?: boolean; bar?: boolean };
 const dateLabel = (date: string) => fmt.date(`${date}T00:00:00Z`, { month: 'numeric', day: 'numeric', timeZone: 'UTC' });
 
 function TrendChart({ data, series, label, unit }: { data: DashboardDay[]; series: Series[]; label: string; unit: string }) {
@@ -28,7 +28,13 @@ function TrendChart({ data, series, label, unit }: { data: DashboardDay[]; serie
   const step = Math.max(1, Math.pow(10, Math.floor(Math.log10(Math.max(1, maximum - minimum)))));
   const high = Math.ceil((maximum + (maximum > 1 ? step * .2 : 0)) / step) * step;
   const y = (value: number) => bottom - (value - minimum) / (high - minimum) * (bottom - top);
-  const x = (index: number) => data.length <= 1 ? (left + right) / 2 : left + index / (data.length - 1) * (right - left);
+  const bars = series.some(s => s.bar), band = (right - left) / Math.max(1, data.length), barWidth = Math.min(22, Math.max(2, band * .62));
+  const x = (index: number) => bars ? left + (index + .5) * band : data.length <= 1 ? (left + right) / 2 : left + index / (data.length - 1) * (right - left);
+  const barPath = (index: number, value: number) => {
+    const x0 = x(index) - barWidth / 2, x1 = x0 + barWidth, top0 = y(value), r = Math.min(3, barWidth / 2, bottom - top0);
+    return `M${x0},${bottom}V${top0 + r}Q${x0},${top0} ${x0 + r},${top0}H${x1 - r}Q${x1},${top0} ${x1},${top0 + r}V${bottom}Z`;
+  };
+  const labelX = (i: number) => bars ? (i === 0 ? left : i === data.length - 1 ? right : x(i)) : x(i);
   const ticks = [...new Set([minimum, Math.round((minimum + high) / 2), high])];
   const xTicks = [...new Set(data.length ? (width < 300 ? [0, data.length - 1] : [0, Math.floor((data.length - 1) / 2), data.length - 1]) : [])];
   const index = active === null ? null : Math.min(data.length - 1, active);
@@ -36,7 +42,7 @@ function TrendChart({ data, series, label, unit }: { data: DashboardDay[]; serie
   const details = selected ? `${dateLabel(selected.date)} · ${series.map(s => `${s.label} ${fmt.number(selected[s.key])}`).join(' · ')}` : '';
   return <div className="dashboard-chart" ref={container}>
     <svg viewBox={`0 0 ${width} ${height}`} width="100%" height={height} role="img" aria-label={label} aria-describedby={selected ? id : undefined} tabIndex={0}
-      onPointerMove={event => { const box = event.currentTarget.getBoundingClientRect(); setActive(Math.max(0, Math.min(data.length - 1, Math.round((event.clientX - box.left - left) / (right - left) * (data.length - 1))))); }}
+      onPointerMove={event => { const box = event.currentTarget.getBoundingClientRect(); const ratio = (event.clientX - box.left - left) / (right - left); setActive(Math.max(0, Math.min(data.length - 1, bars ? Math.floor(ratio * data.length) : Math.round(ratio * (data.length - 1))))); }}
       onPointerLeave={() => setActive(null)} onFocus={() => setActive(data.length - 1)} onBlur={() => setActive(null)}
       onKeyDown={event => {
         if (!['ArrowLeft','ArrowRight','Home','End','Escape'].includes(event.key)) return;
@@ -46,9 +52,11 @@ function TrendChart({ data, series, label, unit }: { data: DashboardDay[]; serie
       <title>{label}</title>
       <text x={left} y={13}>{unit}</text>
       {ticks.map(value => <g key={value}><line className="dashboard-gridline" x1={left} x2={right} y1={y(value)} y2={y(value)} /><text x={left - 8} y={y(value) + 4} textAnchor="end">{fmt.number(value, { notation: 'compact', maximumFractionDigits: 1 })}</text></g>)}
-      {xTicks.map(i => <text key={i} x={x(i)} y={height - 10} textAnchor={data.length === 1 ? 'middle' : i === 0 ? 'start' : i === data.length - 1 ? 'end' : 'middle'}>{dateLabel(data[i].date)}</text>)}
-      {series.map(s => <g key={s.key} className={s.secondary ? 'dashboard-series secondary' : 'dashboard-series'}><polyline data-series={s.key} points={data.map((day,i) => `${x(i)},${y(day[s.key])}`).join(' ')} />{data.length === 1 && <circle cx={x(0)} cy={y(data[0][s.key])} r={3} />}</g>)}
-      {selected && index !== null && <g><line className="dashboard-guide" x1={x(index)} x2={x(index)} y1={top} y2={bottom} />{series.map(s => <circle key={s.key} className={`dashboard-marker ${s.secondary ? 'secondary' : ''}`} cx={x(index)} cy={y(selected[s.key])} r={3.5} />)}</g>}
+      {xTicks.map(i => <text key={i} x={labelX(i)} y={height - 10} textAnchor={data.length === 1 ? 'middle' : i === 0 ? 'start' : i === data.length - 1 ? 'end' : 'middle'}>{dateLabel(data[i].date)}</text>)}
+      {selected && index !== null && bars && <rect className="dashboard-band" x={left + index * band} y={top} width={band} height={bottom - top} rx={4} />}
+      {series.filter(s => s.bar).map(s => <g key={s.key} className="dashboard-bars" data-series={s.key}>{data.map((day, i) => <path key={day.date} className={day[s.key] ? undefined : 'empty'} d={barPath(i, Math.max(day[s.key], day[s.key] ? 0 : (high - minimum) * .012))} />)}</g>)}
+      {series.filter(s => !s.bar).map(s => <g key={s.key} className={s.secondary ? 'dashboard-series secondary' : 'dashboard-series'}>{bars && <polyline className="halo" points={data.map((day,i) => `${x(i)},${y(day[s.key])}`).join(' ')} />}<polyline data-series={s.key} points={data.map((day,i) => `${x(i)},${y(day[s.key])}`).join(' ')} />{(data.length === 1 || (bars && data.length <= 14)) && data.map((day, i) => <circle key={day.date} cx={x(i)} cy={y(day[s.key])} r={bars ? 2.5 : 3} />)}</g>)}
+      {selected && index !== null && <g><line className="dashboard-guide" x1={x(index)} x2={x(index)} y1={top} y2={bottom} />{series.filter(s => !s.bar).map(s => <circle key={s.key} className={`dashboard-marker ${s.secondary ? 'secondary' : ''}`} cx={x(index)} cy={y(selected[s.key])} r={3.5} />)}</g>}
     </svg>
     {selected && index !== null && <div className="dashboard-tooltip" style={{ left: Math.max(0, Math.min(width - 180, x(index) - 80)) }} aria-hidden="true"><strong>{dateLabel(selected.date)}</strong>{series.map(s => <span key={s.key}>{s.label}<b>{fmt.number(selected[s.key])}</b></span>)}</div>}
     <span id={id} className="visually-hidden" aria-live="polite">{details}</span>
@@ -73,7 +81,7 @@ export function Dashboard({ feeds, createMenu, openFeeds, openAttention, openNot
   const attention = feeds.filter(needsAttention), notices = feeds.filter(feed => feed.ruleHealth && isRuleHealthNotice(feed.ruleHealth) && !feed.lastError);
   const itemCount = feeds.reduce((sum, feed) => sum + feed.itemCount, 0);
   const totals = current?.daily.reduce((sum, day) => ({ collected: sum.collected + day.collected, translated: sum.translated + day.translated, added: sum.added + day.added, removed: sum.removed + day.removed }), { collected: 0, translated: 0, added: 0, removed: 0 });
-  const messageSeries: Series[] = [{ key: 'collected', label: t('dashboard.collected') }, { key: 'translated', label: t('dashboard.translated'), secondary: true }];
+  const messageSeries: Series[] = [{ key: 'collected', label: t('dashboard.collected'), bar: true }, { key: 'translated', label: t('dashboard.translated'), secondary: true }];
   return <div className="dashboard-view">
     <div className="page-heading"><div><span className="section-kicker">LESS CHECKING. MORE READING.</span><h1>{t('nav.dashboard')}</h1><p>{t('dashboard.lead')}</p></div>{createMenu}</div>
     <div className="stats-row dashboard-stats">
@@ -86,7 +94,7 @@ export function Dashboard({ feeds, createMenu, openFeeds, openAttention, openNot
     <section className="panel dashboard-trends" aria-label={t('dashboard.trends')} aria-busy={loading}>
       <div className="dashboard-panel-head"><div><h2>{t('dashboard.trends')}</h2>{current?.daily.length ? <span title={t('dashboard.timeZone')}>{dateLabel(current.daily[0].date)} – {dateLabel(current.daily.at(-1)!.date)}</span> : <span>{t('dashboard.loading')}</span>}</div><div className="inline" role="group" aria-label={t('dashboard.trends')}>{([7,30,90] as const).map(period => <button key={period} className="button small" aria-pressed={days === period} onClick={() => setDays(period)}>{t('dashboard.days', { count: period })}</button>)}</div></div>
       {current && totals ? <div className="dashboard-trend-grid">
-        <div><div className="dashboard-chart-summary">{messageSeries.map(s => <span key={s.key}><i className={s.secondary ? 'secondary' : ''} />{s.label}<strong>{fmt.number(totals[s.key as 'collected' | 'translated'])}</strong></span>)}</div><TrendChart data={current.daily} series={messageSeries} label={t('dashboard.messageChart')} unit={t('dashboard.chartItems')} /></div>
+        <div><div className="dashboard-chart-summary stacked">{messageSeries.map(s => <span key={s.key}><em><i className={s.bar ? 'bar' : 'secondary'} />{s.label}</em><strong>{fmt.number(totals[s.key as 'collected' | 'translated'])}</strong></span>)}</div><TrendChart data={current.daily} series={messageSeries} label={t('dashboard.messageChart')} unit={t('dashboard.chartItems')} /></div>
         <div><div className="dashboard-chart-summary"><span>{t('dashboard.subscriptions')}<strong>{fmt.number(feeds.length)}</strong></span><span>{t('dashboard.net', { count: totals.added - totals.removed })}</span></div><TrendChart data={current.daily} series={[{ key: 'subscriptions', label: t('dashboard.subscriptions') }]} label={t('dashboard.subscriptionChart')} unit={t('dashboard.chartFeeds')} /><div className="dashboard-chart-foot"><span>{t('dashboard.added', { count: totals.added })}</span><span>{t('dashboard.removed', { count: totals.removed })}</span></div></div>
       </div> : <div className="dashboard-chart-loading" role="status">{loading ? t('dashboard.loading') : t('common.retry')}</div>}
     </section>
