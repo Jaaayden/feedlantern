@@ -53,13 +53,14 @@ test('日志接口鉴权、分页校验、所有交互入口、错误与恢复�
     assert.equal((await logs()).length, count + 1); assert.equal((await logs())[0].source, 'resume');
     await app.inject({ method: 'POST', url: '/api/feeds/bulk', headers, payload: { ids: [id], action: 'refresh' } });
     assert.equal((await logs())[0].source, 'manual');
-    const before = calls, beforeLogs = (await logs()).length;
+    const before = calls, beforeLogs = (await logs()).length, beforeRepeat = (await logs())[0].repeatCount ?? 1;
     block = true;
     const first = refresh().then(r => r); await until(() => entered);
     const second = refresh().then(r => r); await new Promise(r => setTimeout(r, 10));
     assert.equal((await logs())[0].status, 'running');
     release!(); await Promise.all([first, second]); block = false;
-    assert.equal(calls, before + 1); assert.equal((await logs()).length, beforeLogs + 1);
+    // Two overlapping refreshes run once, and an unchanged result folds into the previous manual entry.
+    assert.equal(calls, before + 1); assert.equal((await logs()).length, beforeLogs); assert.equal((await logs())[0].repeatCount, beforeRepeat + 1);
     const page = await app.inject({ method: 'GET', url: `/api/feeds/${id}/logs?status=success&limit=1`, headers });
     assert.equal(page.headers['cache-control'], 'no-store'); assert.equal(page.json().logs.length, 1); assert.ok(page.json().nextCursor);
     behavior = 'error';

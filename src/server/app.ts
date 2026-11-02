@@ -383,6 +383,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       let checked = result;
       // Health statistics never change the fetch outcome or the stored items.
       if (!rss) try { store.transaction(() => store.ruleHealth.record(feed, runId, firstPage ?? items)); checked = store.getFeed(feed.id) ?? result; } catch (error) { logHiddenError(`Rule health statistics of feed ${feed.id}`, error, rawText('')); }
+      // Folding an unchanged run into the previous entry is bookkeeping only.
+      try { store.transaction(() => store.history.fold(runId)); } catch (error) { logHiddenError(`Fetch log folding of feed ${feed.id}`, error, rawText('')); }
       notifier.wake();
       translations.wake();
       return checked;
@@ -395,6 +397,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       store.transaction(() => {
         store.markFetchFailure(feed.id, message, nextFetchAt);
         store.history.fail(runId, feed, source, performance.now() - started, message, store.getSettings().bark.enabled);
+        store.history.fold(runId);
       });
       notifier.wake();
       return store.getFeed(feed.id);

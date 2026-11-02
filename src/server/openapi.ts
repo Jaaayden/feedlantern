@@ -173,7 +173,7 @@ const schemas: Record<string, Schema> = {
   }, ['name', 'feedIds']),
   BundlePayload: object({ bundle: ref('Bundle'), bundleUrl: str({ format: 'uri', description: 'Bundle RSS address including its secret key; replace .xml with .atom or .json for Atom / JSON Feed' }) }, ['bundle', 'bundleUrl']),
   FeedDetail: { allOf: [ref('FeedPayload'), ref('OutputStatus'), object({ items: array(ref('FeedItem')) }, ['items'])] },
-  FetchLogPage: object({ logs: array({ type: 'object' }), nextCursor: nullable(str()), retentionDays: int() }, ['logs', 'nextCursor', 'retentionDays']),
+  FetchLogPage: object({ logs: array({ type: 'object' }), nextCursor: nullable(str()), retentionDays: int(), maxEntries: int({ description: 'Most finished entries kept per feed; consecutive identical runs share one entry' }) }, ['logs', 'nextCursor', 'retentionDays', 'maxEntries']),
   NetworkProfileInput: object({
     name: str({ minLength: 1, maxLength: NETWORK_LIMITS.name }),
     proxyUrl: nullable(str({ description: 'http://, https:// or socks5:// plus host and port; null or empty means no proxy. Proxy addresses are subject to the private-network block; an administrator must add them to allowedHosts to point inside the network', examples: ['socks5://proxy.example.com:1080'] })),
@@ -208,7 +208,7 @@ const schemas: Record<string, Schema> = {
       apiKey: str({ description: 'NCBI API key (optional, used by PubMed journal feeds). Write-only, like deepl.apiKey' }), apiKeyConfigured: bool,
       email: str({ description: 'Contact email sent with E-utilities requests; empty sends none' }),
     }),
-    feedView: str({ enum: ['list', 'cards'] }), logRetentionDays: int(),
+    feedView: str({ enum: ['list', 'cards'] }), logRetentionDays: int(), logMaxEntries: int({ minimum: 10, maximum: 1000, description: 'Most fetch log entries kept per feed' }),
     bark: ref('BarkSettings'), server: { type: 'object', description: 'Server settings such as background concurrency, the target allowlist, proxies and sessions' },
   }),
   ImportJob: object({ id: str(), createdAt: dateTime, ownerId: str(), actorId: str(), entries: array({ type: 'object', description: 'Detection state, result and error of each URL' }) }, ['id', 'createdAt', 'entries']),

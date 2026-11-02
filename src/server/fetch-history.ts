@@ -11,6 +11,9 @@ export function safeDiagnostic(value: string): string {
     .replace(/Bearer\s+\S+/gi, tl('diag.hidden')).split(/\r?\n/)[0].slice(0, 300);
 }
 
+/** Columns two consecutive runs must share to be recorded as one entry. */
+const sameResult = ['source', 'status', 'item_count', 'pages', 'note', 'error', 'warning', 'warning_severity', 'alert_id', 'notification_disabled'] as const;
+
 /** Structured alert details kept beside the text body for channels such as Webhook. */
 export interface AlertPayload { feedName: string; error: string; time: string }
 /** One channel delivery of an alert; `id` is the delivery id (`<alert id>:<channel>`). */
@@ -47,6 +50,8 @@ export class FetchHistory {
     if (!db.prepare('PRAGMA table_info(fetch_incidents)').all().some(row => row.name === 'failure_count')) db.exec('ALTER TABLE fetch_incidents ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0');
     // Multi-page feeds: pages fetched, and where and why collection stopped.
     if (!db.prepare('PRAGMA table_info(fetch_logs)').all().some(row => row.name === 'pages')) db.exec('ALTER TABLE fetch_logs ADD COLUMN pages INTEGER; ALTER TABLE fetch_logs ADD COLUMN note TEXT;');
+    // Consecutive runs with an identical result share one entry (see `fold`).
+    if (!db.prepare('PRAGMA table_info(fetch_logs)').all().some(row => row.name === 'repeat_count')) db.exec('ALTER TABLE fetch_logs ADD COLUMN repeat_count INTEGER NOT NULL DEFAULT 1; ALTER TABLE fetch_logs ADD COLUMN last_run_at TEXT;');
     db.exec(`CREATE TABLE IF NOT EXISTS translation_incidents (feed_id TEXT PRIMARY KEY REFERENCES feeds(id) ON DELETE CASCADE, alert_id TEXT REFERENCES fetch_alerts(id) ON DELETE SET NULL);`);
     if (!db.prepare('PRAGMA table_info(fetch_alerts)').all().some(row => row.name === 'payload')) db.exec('ALTER TABLE fetch_alerts ADD COLUMN payload TEXT');
     // Each alert is delivered to every channel enabled when it was raised. The
@@ -135,7 +140,7 @@ export class FetchHistory {
   }
 
   prune(now = Date.now()): void {
-    this.db.prepare("DELETE FROM fetch_logs WHERE status != 'running' AND started_at < ?").run(new Date(now - this.settings().logRetentionDays * 86400_000).toISOString());
+    this.db.prepare("DELETE FROM fetch_logs WHERE status != 'running' AND COALESCE(last_run_at, started_at) < ?").run(new Date(now - this.settings().logRetentionDays * 86400_000).toISOString());
     this.db.exec(`DELETE FROM fetch_alerts WHERE status != 'pending'
       AND id NOT IN (SELECT alert_id FROM fetch_logs WHERE alert_id IS NOT NULL)
       AND id NOT IN (SELECT alert_id FROM fetch_incidents WHERE alert_id IS NOT NULL)
@@ -175,6 +180,27 @@ export class FetchHistory {
       .run(new Date(now).toISOString(), Math.max(0, Math.round(durationMs)), error, alertId, !enabled && !alertId ? 1 : 0, id);
   }
 
+  /**
+   * Call once a run has finished (and rule health has been recorded). A run that
+   * repeats the previous entry's result — same outcome, counts, error, warning and
+   * alert, with no new items — is folded into that entry instead of adding another
+   * line, so an unchanged feed checked every few minutes stays a single entry.
+   * Then only the newest `logMaxEntries` finished entries of the feed are kept.
+   */
+  fold(runId: number): void {
+    const run = this.db.prepare("SELECT * FROM fetch_logs WHERE id=? AND status IN ('success','failure')").get(runId);
+    if (!run) return;
+    const feedId = String(run.feed_id);
+    const previous = this.db.prepare('SELECT * FROM fetch_logs WHERE feed_id=? AND id<? ORDER BY id DESC LIMIT 1').get(feedId, runId);
+    if (previous && !Number(run.new_item_count ?? 0) && !Number(previous.new_item_count ?? 0) && sameResult.every(key => (previous[key] ?? null) === (run[key] ?? null))) {
+      this.db.prepare('UPDATE fetch_logs SET repeat_count=repeat_count+1, last_run_at=?, finished_at=?, duration_ms=? WHERE id=?')
+        .run(String(run.started_at), run.finished_at as string | null, run.duration_ms as number | null, Number(previous.id));
+      this.db.prepare('DELETE FROM fetch_logs WHERE id=?').run(runId);
+    }
+    this.db.prepare(`DELETE FROM fetch_logs WHERE feed_id=? AND status!='running'
+      AND id NOT IN (SELECT id FROM fetch_logs WHERE feed_id=? AND status!='running' ORDER BY id DESC LIMIT ?)`).run(feedId, feedId, this.settings().logMaxEntries ?? defaultApplicationSettings.logMaxEntries);
+  }
+
   list(feedId: string, status?: FetchStatus, cursor?: number, limit = 20): FetchLogPage {
     const rows = this.db.prepare(`SELECT l.*, a.status AS alert_status, a.error AS alert_error FROM fetch_logs l
       LEFT JOIN fetch_alerts a ON a.id=l.alert_id WHERE l.feed_id=? ${status ? 'AND l.status=?' : ''} ${cursor ? 'AND l.id<?' : ''}
@@ -194,12 +220,13 @@ export class FetchHistory {
       startedAt: String(row.started_at), finishedAt: row.finished_at as string | null, durationMs: row.duration_ms as number | null,
       itemCount: row.item_count as number | null, newItemCount: row.new_item_count as number | null, error: row.error as string | null,
       ...(row.pages !== null && row.pages !== undefined ? { pages: Number(row.pages), note: row.note as string | null } : {}),
+      ...(Number(row.repeat_count) > 1 && row.last_run_at ? { repeatCount: Number(row.repeat_count), lastRunAt: String(row.last_run_at) } : {}),
       notification: row.alert_status ? { status: row.alert_status as AlertStatus, error: row.alert_error as string | null, channels: deliveries.get(String(row.alert_id)) ?? [] }
         : row.notification_disabled ? { status: 'disabled', error: null } : null,
       ...(row.warning ? { warning: String(row.warning) } : {}),
       ...(row.warning_severity === 'warning' || row.warning_severity === 'notice' ? { warningSeverity: row.warning_severity } : {}),
     }));
-    return { logs, nextCursor: rows.length > limit ? String(logs.at(-1)!.id) : null, retentionDays: this.settings().logRetentionDays };
+    return { logs, nextCursor: rows.length > limit ? String(logs.at(-1)!.id) : null, retentionDays: this.settings().logRetentionDays, maxEntries: this.settings().logMaxEntries ?? defaultApplicationSettings.logMaxEntries };
   }
 
   /** The next due channel delivery of a pending alert whose owner is enabled. */

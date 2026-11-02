@@ -44,7 +44,7 @@ The interface, server error messages, stored log text and alerts are available i
 
 ## Application and server settings on the web
 
-Administrators open Settings → Logs & display to set the feed view and the log retention days (1–365, 30 by default). Translation services and server & network settings are under Settings → Translation services and Settings → Server & network, each saved separately. Every user sets up their own notification channels (Bark, webhook, ntfy, Telegram) and alert policy (failure threshold, push timeout, maximum attempts, retry delays, cooldown and whether to push rule warnings) under Notifications.
+Administrators open Settings → Logs & display to set the feed view and the log retention days (1–365, 30 by default) and the number of log entries kept per feed (10–1000, 100 by default). Translation services and server & network settings are under Settings → Translation services and Settings → Server & network, each saved separately. Every user sets up their own notification channels (Bark, webhook, ntfy, Telegram) and alert policy (failure threshold, push timeout, maximum attempts, retry delays, cooldown and whether to push rule warnings) under Notifications.
 
 Translation services selects the default service (free Google Translate, DeepL, an OpenAI-compatible API) and configures the DeepL API key and plan, the OpenAI-compatible endpoint, model, API key and optional system prompt, and each service's concurrency (1–16) and request interval (0–5000 ms). The default service must be configured before saving. API keys are stored encrypted and never shown; local or LAN models need their exact `host:port` in the network allowlist. See the [user guide](user-guide.md#translation-services).
 

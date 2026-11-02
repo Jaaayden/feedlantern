@@ -205,3 +205,45 @@ test('旧故障表迁移保留已发送去重状态，新故障从零累计', ()
     assert.match(store.history.nextAlert()!.body, /连续失败：1 次/);
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('结果相同的连续检查合并为一条，有变化才新增，每个订阅最多保留可配置条数（默认 100）', () => {
+  const { store, feed, close } = fixture();
+  try {
+    const h = store.history;
+    const ok = (itemCount: number, newItemCount = 0, source: 'scheduled' | 'manual' = 'scheduled') => {
+      const id = h.start(feed.id, source);
+      h.succeed(id, feed.id, 8, { itemCount, newItemCount }); h.fold(id); return id;
+    };
+    const first = ok(36);
+    for (let i = 0; i < 5; i++) ok(36);
+    let logs = h.list(feed.id).logs;
+    assert.equal(logs.length, 1); assert.equal(logs[0].id, first);
+    assert.equal(logs[0].repeatCount, 6); assert.ok(logs[0].lastRunAt);
+
+    // New items, a different count, another source or a failure each start a new entry.
+    ok(36, 2); ok(37); ok(37, 0, 'manual');
+    assert.equal(h.list(feed.id).logs.length, 4);
+    const fail = () => { const id = h.start(feed.id, 'scheduled'); h.fail(id, feed, 'scheduled', 5, '无法加载页面', false); h.fold(id); };
+    fail(); fail(); fail();
+    logs = h.list(feed.id).logs;
+    assert.equal(logs.length, 5); assert.equal(logs[0].status, 'failure'); assert.equal(logs[0].repeatCount, 3);
+    ok(37);
+    assert.equal(h.list(feed.id).logs.length, 6);
+
+    // A running fetch is never folded into or counted against the limit, which follows the setting (default 100).
+    assert.equal(store.getSettings().logMaxEntries, 100); assert.equal(h.list(feed.id).maxEntries, 100);
+    const running = h.start(feed.id, 'scheduled');
+    for (let i = 0; i < 130; i++) ok(100 + i);
+    const finished = () => h.list(feed.id, undefined, undefined, 200).logs.filter(log => log.status !== 'running').length;
+    assert.equal(finished(), 100);
+    store.setSettings({ ...store.getSettings(), logMaxEntries: 20 });
+    ok(300); assert.equal(finished(), 20); assert.equal(h.list(feed.id).maxEntries, 20);
+    assert.equal(h.list(feed.id, 'running').logs[0].id, running);
+
+    // Retention counts from the latest merged check, not from the entry's first run.
+    store.setSettings({ ...store.getSettings(), logRetentionDays: 1 });
+    const stable = ok(500); ok(500);
+    h.prune(Date.now() + 86400_000 - 60_000);
+    assert.ok(h.list(feed.id).logs.some(log => log.id === stable));
+  } finally { close(); }
+});

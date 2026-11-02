@@ -37,7 +37,7 @@ function patchFor(group: AppSettingsGroup, saved: ApplicationSettings, draft: Ap
     else if (draft.ncbi.apiKey) ncbi.apiKey = draft.ncbi.apiKey;
     return Object.keys(ncbi).length ? { ncbi } : {};
   }
-  if (group === 'display') return Object.fromEntries((['feedView', 'logRetentionDays'] as const).filter(key => draft[key] !== saved[key]).map(key => [key, draft[key]]));
+  if (group === 'display') return Object.fromEntries((['feedView', 'logRetentionDays', 'logMaxEntries'] as const).filter(key => draft[key] !== saved[key]).map(key => [key, draft[key]]));
   if (group === 'server') {
     const server = Object.fromEntries(Object.entries(draft.server).filter(([key, value]) => !same(value, saved.server[key as keyof ApplicationSettings['server']])));
     return Object.keys(server).length ? { server } : {};
@@ -162,6 +162,8 @@ export function ApplicationSettingsPanel({ group, revision, onDirty }: { group: 
       <label className="field"><span>{t('appSettings.feedView')}</span><select value={value.feedView} onChange={e => setValue({ ...value, feedView: e.target.value as 'list' | 'cards' })}><option value="list">{t('collection.list')}</option><option value="cards">{t('collection.cards')}</option></select></label>
       {number(t('appSettings.logRetention'), value.logRetentionDays, 1, 365, n => setValue({ ...value, logRetentionDays: n }))}
       <p className="hint">{t('appSettings.logRetentionHint')}</p>
+      {number(t('appSettings.logMaxEntries'), value.logMaxEntries, 10, 1000, n => setValue({ ...value, logMaxEntries: n }))}
+      <p className="hint">{t('appSettings.logMaxEntriesHint')}</p>
     </fieldset>}
     {group === 'translation' && <fieldset disabled={busy} className="service-cards">
       {providers.map(provider => {

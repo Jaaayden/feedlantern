@@ -14,6 +14,7 @@ function notificationText(notification: NonNullable<FetchLog['notification']>): 
 
 export function FetchLogs({ id, revision }: { id: string; revision: number }) {
   const [retention, setRetention] = useState(30);
+  const [maxEntries, setMaxEntries] = useState(100);
   const [status, setStatus] = useState<FetchStatus | ''>('');
   const [logs, setLogs] = useState<FetchLog[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
@@ -31,7 +32,7 @@ export function FetchLogs({ id, revision }: { id: string; revision: number }) {
       const page = await api.feeds.logs(id, status || undefined, next);
       if (generation.current !== current) return;
       setLogs(previous => next ? [...previous, ...page.logs] : page.logs);
-      setRetention(page.retentionDays ?? 30);
+      setRetention(page.retentionDays ?? 30); setMaxEntries(page.maxEntries ?? 100);
       setCursor(page.nextCursor); setError('');
     } catch (e) {
       if (generation.current === current) setError(e instanceof Error ? e.message : t('fetchLog.loadFailed'));
@@ -61,7 +62,7 @@ export function FetchLogs({ id, revision }: { id: string; revision: number }) {
       </select></label>
       <button className="button small" onClick={() => setRetry(v => v + 1)}>{t('fetchLog.refresh')}</button>
     </div>
-    <p className="hint">{t('fetchLog.retention', { count: retention })} {expanded ? t('fetchLog.paused') : t('fetchLog.auto')}</p>
+    <p className="hint">{t('fetchLog.retention', { count: retention })} {t('fetchLog.merged', { count: maxEntries })} {expanded ? t('fetchLog.paused') : t('fetchLog.auto')}</p>
     {error && <div className="error-note" role="alert">{error}<button className="button small" onClick={() => setRetry(v => v + 1)}>{t('common.retry')}</button></div>}
     {loading && <p role="status">{t('fetchLog.loading')}</p>}
     {!loading && !error && logs.length === 0 && <p className="muted">{t('fetchLog.empty')}</p>}
@@ -71,6 +72,7 @@ export function FetchLogs({ id, revision }: { id: string; revision: number }) {
       </div>
       <p className="muted">{t('fetchLog.duration', { value: log.durationMs === null ? log.status === 'running' ? statusLabel('running') : t('fetchLog.unknown') : t('fetchLog.seconds', { value: fmt.number(log.durationMs / 1000, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }) })}
         {log.itemCount !== null && ` · ${t('fetchLog.counts', { valid: log.itemCount, added: log.newItemCount ?? 0 })}`}</p>
+      {log.repeatCount && log.lastRunAt && <p className="fetch-log-note muted">{t('fetchLog.repeat', { count: log.repeatCount, time: new Date(log.lastRunAt).toLocaleString('zh-CN', { hour12: false }) })}</p>}
       {log.note && <p className="fetch-log-note muted">{t('fetchLog.pages', { note: log.note })}</p>}
       {log.error && <p className="card-error">{log.error}</p>}
       {log.warning && <p className={log.warningSeverity === 'warning' ? 'card-warning' : 'card-notice'}>{log.warning}</p>}
