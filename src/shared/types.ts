@@ -175,6 +175,8 @@ export interface FetchLog {
   itemCount: number | null; newItemCount: number | null; error: string | null;
   /** Multi-page feeds: pages fetched and where/why collection stopped. */
   pages?: number | null; note?: string | null;
+  /** Consecutive runs with the same result folded into this entry; `lastRunAt` is when the latest one started. */
+  repeatCount?: number; lastRunAt?: string;
   /** Aggregate alert state; `channels` lists the result of every channel the alert was sent to. */
   notification: { status: AlertStatus; error: string | null; channels?: ChannelDelivery[] } | null;
   /** Rules-health warning recorded on an otherwise successful fetch. */
@@ -219,7 +221,7 @@ export interface NotificationUpdate extends Partial<NotificationPolicy> {
     telegram?: Partial<NotificationChannelSettings['telegram']>;
   };
 }
-export interface FetchLogPage { logs: FetchLog[]; nextCursor: string | null; retentionDays: number }
+export interface FetchLogPage { logs: FetchLog[]; nextCursor: string | null; retentionDays: number; maxEntries: number }
 export interface TranslationRate { concurrency: number; requestIntervalMs: number }
 export interface ApplicationSettings {
   /** `concurrency` / `requestIntervalMs` apply to the Google channel; other services have their own. */
@@ -238,6 +240,8 @@ export interface ApplicationSettings {
   ncbi: { apiKey: string; apiKeyConfigured?: boolean; email: string };
   feedView: 'list' | 'cards';
   logRetentionDays: number;
+  /** Most finished fetch log entries kept per feed; consecutive identical runs share one entry. */
+  logMaxEntries: number;
   bark: {
     enabled: boolean; url: string; failureThreshold: number; attentionFailureThreshold: number; timeoutSeconds: number; maxAttempts: number;
     retryDelaySeconds: number; laterRetryDelaySeconds: number; cooldownMinutes: number;
@@ -257,7 +261,7 @@ export const defaultApplicationSettings: ApplicationSettings = {
     openai: { baseUrl: '', model: '', apiKey: '', systemPrompt: '', concurrency: 2, requestIntervalMs: 0 },
   },
   ncbi: { apiKey: '', email: '' },
-  feedView: 'list', logRetentionDays: 30,
+  feedView: 'list', logRetentionDays: 30, logMaxEntries: 100,
   bark: { enabled: false, url: '', failureThreshold: 10, attentionFailureThreshold: 3, timeoutSeconds: 10, maxAttempts: 3, retryDelaySeconds: 60, laterRetryDelaySeconds: 300, cooldownMinutes: 30, ruleHealthAlerts: true },
   server: { backgroundConcurrency: 1, allowedHosts: [], dnsOverHttps: false, trustedProxies: [], publicOrigin: 'http://127.0.0.1:4321', cookieSecure: false, sessionTtlDays: 30, host: '127.0.0.1', port: 4321 },
 };

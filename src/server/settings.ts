@@ -55,6 +55,7 @@ export const applicationSettingsSchema = z.object({
   ncbi: ncbiSettingsSchema.default(defaultApplicationSettings.ncbi),
   feedView: z.enum(['list', 'cards']),
   logRetentionDays: z.number().int().min(1).max(365),
+  logMaxEntries: z.number().int().min(10).max(1000).default(defaultApplicationSettings.logMaxEntries),
   bark: barkSchema,
   server: z.object({
     backgroundConcurrency: z.number().int().min(1).max(4),

@@ -267,7 +267,7 @@ SQLite 版本 8 移除单管理员索引并增加加密 `user_notifications`。�
 | 每个订阅的文章 | 网页订阅 max(200, 输出条数)，RSS 翻译订阅 max(100, 输出条数)，下次抓取时清理 | `storedItemLimit`（`Store.upsertItems`、`RssTranslations.upsert`） |
 | 翻译进度事件 | 每个订阅最新 200 条，且不超过 7 天；界面只读最近 100 条 | `RssTranslations.prune` |
 | 翻译片段缓存 | 最近使用的 20000 条（`TRANSLATION_CACHE_LIMIT`，备份格式共用同一上限） | `RssTranslations.prune` |
-| 抓取日志 | 按「日志保留天数」，默认 30 天 | `FetchHistory.prune` |
+| 抓取日志 | 按「日志保留天数」，默认 30 天；每个订阅最多 `logMaxEntries` 条（默认 100），结果相同的连续检查由 `FetchHistory.fold` 合并为一条 | `FetchHistory.prune` / `FetchHistory.fold` |
 | 规则健康样本 | 每个订阅最近 10 条正常样本和 10 条可疑样本，并按「日志保留天数」清理 | `RuleHealth.record` / `RuleHealth.prune` |
 | 登录会话 | 过期后每小时清理 | `Store.purgeExpiredSessions` |
 | 访问令牌 | 过期 30 天后每小时清理；每个账号最多 50 个 | `ApiTokens.purgeExpired` |

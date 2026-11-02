@@ -49,9 +49,9 @@ test('网页设置即时生效、配置完整往返、预览不泄密及旧配�
     const headers = { host, cookie: `${setup.cookies[0].name}=${setup.cookies[0].value}`, 'x-feedlantern': '1', 'x-csrf-token': setup.json().csrfToken };
     assert.equal(store.getSettings().bark.url, endpoint);
     const set = (payload: Record<string, unknown>) => app.inject({ method: 'PUT', url: '/api/settings', headers, payload });
-    const changed = await set({ bark: { enabled: false, failureThreshold: 3 }, logRetentionDays: 90, server: { backgroundConcurrency: 2, allowedHosts: ['private.test:443'], dnsOverHttps: true } });
+    const changed = await set({ bark: { enabled: false, failureThreshold: 3 }, logRetentionDays: 90, logMaxEntries: 200, server: { backgroundConcurrency: 2, allowedHosts: ['private.test:443'], dnsOverHttps: true } });
     assert.equal(changed.statusCode, 200); assert.equal(changed.json().bark.url, ''); assert.equal(calls, 0);
-    for (const payload of [{ bark: { enabled: true, url: '' } }, { server: { allowedHosts: ['localhost'] } }, { server: { trustedProxies: ['*'] } }, { logRetentionDays: 0 }, { server: { port: 0 } }, { bark: { maxAttempts: 6 } }]) assert.equal((await set(payload)).statusCode, 400);
+    for (const payload of [{ bark: { enabled: true, url: '' } }, { server: { allowedHosts: ['localhost'] } }, { server: { trustedProxies: ['*'] } }, { logRetentionDays: 0 }, { logMaxEntries: 9 }, { logMaxEntries: 1001 }, { server: { port: 0 } }, { bark: { maxAttempts: 6 } }]) assert.equal((await set(payload)).statusCode, 400);
     assert.equal(store.getSettings().bark.failureThreshold, 3);
     for (const failureThreshold of [0, -1, 1.5, 1001, '10', null]) assert.equal((await set({ bark: { failureThreshold } })).statusCode, 400);
     const archive = (await app.inject({ url: '/api/backups/config', headers })).json();
