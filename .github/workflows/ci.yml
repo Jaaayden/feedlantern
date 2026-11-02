@@ -15,7 +15,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  verify:
+  # Type check, build and the unit/integration tests. Many of them drive a real
+  # Chromium, so it is installed here too. Runs beside e2e and containers.
+  check:
     # Ubuntu 24.04's AppArmor policy blocks the downloaded Chromium user
     # namespace sandbox. Keep sandboxing enabled on the supported 22.04 VM.
     runs-on: ubuntu-22.04
@@ -36,21 +38,62 @@ jobs:
         run: pnpm build
       - name: Unit and integration tests
         run: pnpm test
-      - name: Browser acceptance tests
-        run: pnpm test:e2e
+
+  # The browser acceptance suite runs serially against one backend, so it is the
+  # slowest step. Split it by spec file across runners; each shard starts its own
+  # backend with a fresh data directory, so shards cannot interfere.
+  e2e:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Install pnpm
+        run: npm install --global pnpm@11.25.0
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Browser acceptance tests (shard ${{ matrix.shard }}/4)
+        run: pnpm test:e2e --shard=${{ matrix.shard }}/4
       - name: Preserve browser test diagnostics
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: browser-test-diagnostics
+          name: browser-test-diagnostics-${{ matrix.shard }}
           path: |
             test-results/
             playwright-report/
           retention-days: 7
           if-no-files-found: ignore
 
+  # Single gate that stands for the whole verification stage. It must fail when
+  # any part failed, was cancelled or was skipped: a skipped job would otherwise
+  # look like a pass to anything that waits on this check.
+  verify:
+    if: ${{ !cancelled() }}
+    needs: [check, e2e]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - name: Require type check, unit tests and every browser shard
+        env:
+          CHECK: ${{ needs.check.result }}
+          E2E: ${{ needs.e2e.result }}
+        run: |
+          echo "check=$CHECK e2e=$E2E"
+          test "$CHECK" = success && test "$E2E" = success
+
+  # Independent of verify, so the container checks overlap with the tests. The
+  # publish job still requires both.
   containers:
-    needs: verify
     strategy:
       fail-fast: false
       matrix:
