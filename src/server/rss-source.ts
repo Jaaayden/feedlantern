@@ -17,7 +17,7 @@ class SourceTooLargeError extends LocalizedError {}
 /** How long one source fetch (all redirects included) may take. */
 export const SOURCE_TIMEOUT_SECONDS = 20;
 
-export interface SourceItem { key: string; title: string; link: string; html: string; publishedAt?: string }
+export interface SourceItem { key: string; title: string; link: string; html: string; image?: string; publishedAt?: string }
 export interface SourceResult { title: string; items: SourceItem[]; etag?: string; modified?: string; unchanged?: boolean }
 export interface SourceOptions {
   etag?: string; modified?: string; signal?: AbortSignal; network?: FetchNetworkOptions;
@@ -27,6 +27,14 @@ export interface SourceOptions {
 export type SourceFetcher = (url: string, options?: SourceOptions) => Promise<SourceResult>;
 export const digest = (text: string) => createHash('sha256').update(text).digest('hex');
 
+/** Lazy-loading feeds keep the real address in `data-src` or `srcset` and a placeholder (or nothing) in `src`. */
+function lazyImageSource(attribs: Record<string, string>): void {
+  if (attribs.src && !attribs.src.startsWith('data:')) return;
+  const first = (srcset?: string) => srcset?.split(',')[0]?.trim().split(/\s+/)[0];
+  const real = attribs['data-src'] || attribs['data-original'] || attribs['data-lazy-src'] || first(attribs.srcset) || first(attribs['data-srcset']);
+  if (real) attribs.src = real; else delete attribs.src;
+}
+
 export function safeHtml(html: string, base: string): string {
   return sanitizeHtml(html, {
     allowedTags: ['p', 'div', 'span', 'br', 'hr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'blockquote', 'strong', 'b', 'em', 'i', 'u', 's', 'a', 'img', 'pre', 'code', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'figure', 'figcaption', 'sup', 'sub'],
@@ -34,6 +42,7 @@ export function safeHtml(html: string, base: string): string {
     allowedSchemes: ['http', 'https'], allowProtocolRelative: false,
     transformTags: {
       '*': (tagName, attribs) => {
+        if (tagName === 'img') lazyImageSource(attribs);
         for (const key of ['href', 'src']) if (attribs[key]) {
           try { const url = new URL(attribs[key], base); if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) delete attribs[key]; else attribs[key] = url.href; }
           catch { delete attribs[key]; }
@@ -46,6 +55,33 @@ export function safeHtml(html: string, base: string): string {
 const list = (value: any): any[] => value === undefined ? [] : Array.isArray(value) ? value : [value];
 const valueText = (value: any): string => typeof value === 'string' || typeof value === 'number' ? String(value) : value?.['#text'] ? String(value['#text']) : '';
 const plain = (text: string) => sanitizeHtml(text, { allowedTags: [], allowedAttributes: {} }).replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+
+const imageUrl = /\.(?:jpe?g|png|gif|webp|avif|svg|bmp)(?:[?#]|$)/i;
+const isImage = (node: any): boolean => {
+  const medium = String(node['@_medium'] ?? '').toLowerCase(), type = String(node['@_type'] ?? '').toLowerCase();
+  return medium === 'image' || type.startsWith('image/') || (!medium && !type && imageUrl.test(String(node['@_url'] ?? node['@_href'] ?? '')));
+};
+
+/**
+ * The item's cover image: Media RSS, enclosures and iTunes artwork carry it
+ * outside the article body, which the body sanitiser never sees.
+ */
+function coverImage(row: any, atom: boolean, link: string, html: string): string | undefined {
+  const media = [...list(row['media:content']), ...list(row['media:group']).flatMap(group => list(group?.['media:content']))].filter(node => node && typeof node === 'object');
+  const thumbnails = [...list(row['media:thumbnail']), ...list(row['media:group']).flatMap(group => list(group?.['media:thumbnail'])), ...media.flatMap(node => list(node['media:thumbnail']))];
+  const candidates: unknown[] = [
+    ...media.filter(isImage).map(node => node['@_url']),
+    ...thumbnails.map(node => node?.['@_url']),
+    ...(atom ? list(row.link).filter(l => l?.['@_rel'] === 'enclosure' && isImage(l)).map(l => l['@_href']) : list(row.enclosure).filter(e => e && typeof e === 'object' && isImage(e)).map(e => e['@_url'])),
+    ...list(row['itunes:image']).map(node => node?.['@_href']),
+    /<img\b[^>]*?\bsrc="([^"]+)"/i.exec(html)?.[1],
+  ];
+  for (const raw of candidates) {
+    if (typeof raw !== 'string' || !raw.trim()) continue;
+    try { const url = new URL(raw.trim(), link); if (['http:', 'https:'].includes(url.protocol) && !url.username && !url.password) return url.href; } catch { /* try the next one */ }
+  }
+  return undefined;
+}
 
 export function parseSource(xml: string, base: string): SourceResult {
   // An HTML page (a bot check, a login page) is named as such before the XML checks below.
@@ -80,7 +116,8 @@ export function parseSource(xml: string, base: string): SourceResult {
     seen.add(key);
     const date = valueText(atom ? row.published ?? row.updated : row.pubDate ?? row['dc:date']);
     const timestamp = Date.parse(date);
-    items.push({ key, title, link, html, ...(Number.isFinite(timestamp) ? { publishedAt: new Date(timestamp).toISOString() } : {}) });
+    const image = coverImage(row, atom, link, html);
+    items.push({ key, title, link, html, ...(image ? { image } : {}), ...(Number.isFinite(timestamp) ? { publishedAt: new Date(timestamp).toISOString() } : {}) });
   }
   // Most sources are newest-first; valid dates make the initial history limit reliable.
   if (items.every(item => item.publishedAt)) items.sort((a, b) => b.publishedAt!.localeCompare(a.publishedAt!));

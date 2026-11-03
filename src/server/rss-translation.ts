@@ -137,11 +137,11 @@ export class RssTranslations {
       const id = existing ? String(existing.id) : `item_${randomUUID()}`;
       const changed = !existing || existing.title !== item.title || existing.description !== item.html;
       if (!existing) {
-        this.db.prepare('INSERT INTO feed_items(id,feed_id,normalized_key,title,link,description,published_at,published_at_source,first_seen_at) VALUES (?,?,?,?,?,?,?,?,?)')
-          .run(id, feed.id, item.key, item.title, item.link, item.html, item.publishedAt ?? null, item.publishedAt ? 'absolute' : null, new Date().toISOString());
+        this.db.prepare('INSERT INTO feed_items(id,feed_id,normalized_key,title,link,description,image,published_at,published_at_source,first_seen_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
+          .run(id, feed.id, item.key, item.title, item.link, item.html, item.image ?? null, item.publishedAt ?? null, item.publishedAt ? 'absolute' : null, new Date().toISOString());
         newItemCount++;
       } else {
-        this.db.prepare('UPDATE feed_items SET title=?,link=?,description=?,published_at=COALESCE(?,published_at) WHERE id=?').run(item.title, item.link, item.html, item.publishedAt ?? null, id);
+        this.db.prepare('UPDATE feed_items SET title=?,link=?,description=?,image=?,published_at=COALESCE(?,published_at) WHERE id=?').run(item.title, item.link, item.html, item.image ?? null, item.publishedAt ?? null, id);
       }
       if (changed) this.db.prepare(`INSERT INTO translations(item_id,feed_id,revision,body_json) VALUES (?,?,?,?)
         ON CONFLICT(item_id) DO UPDATE SET revision=excluded.revision,body_json=excluded.body_json,status='pending',attempts=0,next_at=0,error=NULL`)

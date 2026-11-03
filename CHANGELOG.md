@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.11.1 — 2026-11-03
+
+### RSS 来源的图片
+
+- 修复 RSS/Atom 订阅（包括只做过滤的“原文”输出）丢失图片的问题。此前只读取正文里的 `<img>`，放在 `media:content`、`media:thumbnail`、`enclosure`、`itunes:image` 或 Atom `link rel="enclosure"` 里的封面图被整个忽略。
+- 每个条目现在取一张封面图：依次是 Media RSS 图片、图片类型的 enclosure、iTunes 封面，最后是正文第一张图；视频和音频附件不当作封面。封面图随条目保存，管理页显示缩略图，RSS 输出补上 `media:thumbnail`，JSON Feed 补上 `image`。
+- 正文里没有图片时，输出会在正文开头补上封面图，不识别 `media:thumbnail` 的阅读器也能看到；正文已有图片的条目不会重复。
+- 懒加载图片（`src` 为空或 `data:` 占位，真实地址在 `data-src`、`data-original` 或 `srcset`）不再变成空图片。
+- 翻译和关键词过滤不受影响，已翻译的条目不会因此重新翻译。
+
+### 升级提示
+
+- 可从 v0.11.0 直接更新，数据库仍为 schema 23，无需手工迁移。
+- 已保存的条目会在下一次拿到完整响应（不是 304）时补上图片；想立即补上，在订阅里手动刷新一次。
+- 服务端与 CLI 同步更新到 0.11.1；版本镜像为 `ghcr.io/jaaayden/feedlantern:0.11.1`。
+
 ## v0.11.0 — 2026-11-02
 
 ### 抓取日志
