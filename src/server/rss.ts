@@ -63,9 +63,18 @@ export function isoDate(value: string | undefined, fallback: string): string {
   return Number.isNaN(parsed.getTime()) ? new Date(0).toISOString() : parsed.toISOString();
 }
 
+/**
+ * A source item whose cover image lives outside the body (an enclosure or
+ * Media RSS) gets it in front, so readers that ignore `media:thumbnail` show it.
+ */
+function withCover(html: string, item: FeedItem): string {
+  const image = item.image ? validHttpUrl(item.image, item.link) : null;
+  return image && !/<img\b/i.test(html) ? `<p><img src="${escapeAttribute(image)}" alt=""></p>${html}` : html;
+}
+
 /** The HTML body every format publishes for an item. */
 function itemHtml(feed: Feed, item: FeedItem): string {
-  return translationEnabled(feed) && item.contentHtml !== undefined ? safeHtml(item.contentHtml, item.link) : isFeedSource(feed) ? safeHtml(item.description ?? '', item.link) : sanitizeDescription(item.description, feed.url, item.image);
+  return translationEnabled(feed) && item.contentHtml !== undefined ? withCover(safeHtml(item.contentHtml, item.link), item) : isFeedSource(feed) ? withCover(safeHtml(item.description ?? '', item.link), item) : sanitizeDescription(item.description, feed.url, item.image);
 }
 
 function feedHost(feed: Feed): string {

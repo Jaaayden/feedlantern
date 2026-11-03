@@ -33,6 +33,40 @@ test('RSS/Atom parse full content, stable IDs, HTML safety and unsupported XML',
   assert.doesNotMatch(safeHtml('<a href="javascript:alert(1)">a</a><iframe src="/x"></iframe>', input.url), /javascript|iframe/);
 });
 
+test('RSS/Atom cover images come from Media RSS, enclosures, iTunes artwork, lazy images and the body', () => {
+  const rss = (extra: string, body = 'text only') => parseSource(`<rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd"><channel><title>T</title><item><guid>g</guid><title>X</title><link>https://example.test/p/x</link><description><![CDATA[${body}]]></description>${extra}</item></channel></rss>`, input.url).items[0];
+  assert.equal(rss('<media:content url="https://cdn.test/m.jpg" medium="image"/><media:thumbnail url="https://cdn.test/t.jpg"/>').image, 'https://cdn.test/m.jpg');
+  assert.equal(rss('<media:content url="https://cdn.test/v.mp4" type="video/mp4"/><media:thumbnail url="/t.jpg"/>').image, 'https://example.test/t.jpg', 'a video is not a cover; its thumbnail is');
+  assert.equal(rss('<media:group><media:thumbnail url="https://cdn.test/g.jpg"/></media:group>').image, 'https://cdn.test/g.jpg');
+  assert.equal(rss('<enclosure url="https://cdn.test/e.jpg" type="image/jpeg" length="1"/>').image, 'https://cdn.test/e.jpg');
+  assert.equal(rss('<enclosure url="https://cdn.test/a.mp3" type="audio/mpeg" length="1"/>').image, undefined);
+  assert.equal(rss('<itunes:image href="https://cdn.test/i.jpg"/>').image, 'https://cdn.test/i.jpg');
+  assert.equal(rss('<media:thumbnail url="javascript:alert(1)"/>').image, undefined);
+  assert.equal(rss('', '<p>hi <img src="/body.jpg"></p>').image, 'https://example.test/body.jpg');
+  assert.equal(rss('').image, undefined);
+  const lazy = rss('', '<img src="data:image/gif;base64,R0lGOD" data-src="/real.jpg"><img srcset="/a.jpg 1x, /b.jpg 2x">');
+  assert.match(lazy.html, /<img src="https:\/\/example.test\/real.jpg"/); assert.match(lazy.html, /<img src="https:\/\/example.test\/a.jpg"/); assert.doesNotMatch(lazy.html, /data:/);
+  const atom = parseSource('<feed xmlns="http://www.w3.org/2005/Atom"><title>F</title><entry><id>e</id><title>E</title><link href="/e"/><link rel="enclosure" type="image/jpeg" href="https://cdn.test/e.jpg"/><summary>text</summary></entry></feed>', input.url);
+  assert.equal(atom.items[0].image, 'https://cdn.test/e.jpg');
+});
+
+test('RSS source images are stored and published as a thumbnail and a leading image only when the body has none', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fl-rss-image-')); const store = new Store(dir);
+  try {
+    const { feed } = store.createFeed({ ...input, translationMode: 'original', name: 'Images' });
+    store.translations.upsert(feed, [
+      { key: digest('a'), title: 'No image in body', link: 'https://example.test/a', html: '<p>Hello</p>', image: 'https://cdn.test/a.jpg' },
+      { key: digest('b'), title: 'Image in body', link: 'https://example.test/b', html: '<p>Hi <img src="https://cdn.test/b.jpg"></p>', image: 'https://cdn.test/b.jpg' },
+    ]);
+    const items = store.getItems(feed.id);
+    assert.deepEqual(items.map(i => i.image).sort(), ['https://cdn.test/a.jpg', 'https://cdn.test/b.jpg']);
+    const xml = renderRss(store.getFeed(feed.id)!, items, 'https://feeds.test/f.xml');
+    assert.equal((xml.match(/<media:thumbnail /g) ?? []).length, 2);
+    assert.equal((xml.match(/https:\/\/cdn\.test\/a\.jpg/g) ?? []).length, 2, 'thumbnail plus one leading image');
+    assert.equal((xml.match(/<img /g) ?? []).length, 2, 'the body that already has an image gets no second one');
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('HTML translation preserves list/table structure, images and code without submitting markup', async () => {
   const sent: string[] = [];
   const result = await translateBody('<ul><li>Hello <b>world</b><img src="https://e.test/i" /></li></ul><table><tr><td>Cell</td></tr></table><pre>do not translate</pre>', async text => { sent.push(text); return '中文'; });
