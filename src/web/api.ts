@@ -10,6 +10,7 @@ import type {
   UserSummary,
   BundleInput,
   BundlePayload,
+  BundlePreview,
   NotificationChannel,
   NotificationSummary,
   NotificationUpdate,
@@ -327,6 +328,8 @@ export const api = {
   bundles: {
     list: () => request<BundlePayload[]>('/api/bundles'),
     create: (body: BundleInput) => request<BundlePayload>('/api/bundles', { method: 'POST', body }),
+    preview: (body: Partial<BundleInput> & { feedIds: string[] }) => request<BundlePreview>('/api/bundles/preview', { method: 'POST', body }),
+    previewSaved: (id: string) => request<BundlePreview>(`/api/bundles/${encodeURIComponent(id)}/preview`),
     update: (id: string, body: Partial<BundleInput>) => request<BundlePayload>(`/api/bundles/${encodeURIComponent(id)}`, { method: 'PUT', body }),
     addFeeds: (id: string, feedIds: string[]) => request<BundlePayload>(`/api/bundles/${encodeURIComponent(id)}/feeds`, { method: 'POST', body: { feedIds } }),
     rotate: (id: string) => request<BundlePayload>(`/api/bundles/${encodeURIComponent(id)}/rotate-token`, { method: 'POST', body: {} }),

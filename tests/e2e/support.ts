@@ -13,6 +13,7 @@ export const TEST_ACCOUNT = {
 
 export const FIXTURE_URLS = {
   static: `${fixtureBaseUrl}/static`,
+  staticTracked: `${fixtureBaseUrl}/static-tracked`,
   relativeDates: `${fixtureBaseUrl}/relative-dates`,
   divCards: `${fixtureBaseUrl}/div-cards`,
   hub: `${fixtureBaseUrl}/hub`,

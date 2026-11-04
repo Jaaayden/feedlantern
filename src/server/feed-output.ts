@@ -153,8 +153,9 @@ export function itemFields(feed: Feed, item: FeedItem): [string, string] {
   return [item.title.slice(0, TITLE_LIMIT), summary.replace(/\s+/g, ' ').trim().slice(0, SUMMARY_LIMIT)];
 }
 
-type Verdict = 'excluded' | 'not-included' | null;
-type Fields = [string, string];
+/** `pattern` is the exclude pattern that matched; a `not-included` item matched none of the include patterns. */
+export type Verdict = { status: 'excluded'; pattern: string } | { status: 'not-included' } | null;
+type Fields = string[];
 
 const sandbox = vm.createContext(Object.create(null) as object);
 const runner = new vm.Script('run()');
@@ -173,20 +174,37 @@ const warned = new Set<string>();
 
 function judge(texts: Fields[], test: (pattern: string, text: string) => boolean, filter: ItemFilter): Verdict[] {
   const matches = (patterns: string[], fields: Fields) => patterns.some(pattern => fields.some(text => test(pattern, text)));
-  return texts.map(fields => matches(filter.exclude, fields) ? 'excluded' : filter.include.length && !matches(filter.include, fields) ? 'not-included' : null);
+  return texts.map((fields): Verdict => {
+    const excluded = filter.exclude.find(pattern => fields.some(text => test(pattern, text)));
+    return excluded !== undefined ? { status: 'excluded', pattern: excluded } : filter.include.length && !matches(filter.include, fields) ? { status: 'not-included' } : null;
+  });
 }
 
-function regexVerdicts(filter: ItemFilter, texts: Fields[]): Verdict[] | 'timeout' {
-  const key = createHash('sha256').update(JSON.stringify([filter, texts])).digest('hex');
+function regexVerdicts(filter: ItemFilter, texts: Fields[], budgetMs: number): Verdict[] | 'timeout' {
+  const hash = createHash('sha256').update(JSON.stringify([filter, budgetMs]));
+  for (const fields of texts) hash.update(JSON.stringify(fields));
+  const key = hash.digest('hex');
   const cached = regexCache.get(key);
   if (cached) { regexCache.delete(key); regexCache.set(key, cached); return cached; }
   const compiled = new Map([...filter.include, ...filter.exclude].map(pattern => [pattern, new RegExp(pattern, 'iu')]));
   let result: Verdict[] | 'timeout';
-  try { result = withTimeout(() => judge(texts, (pattern, text) => compiled.get(pattern)!.test(text), filter), REGEX_BUDGET_MS); }
+  try { result = withTimeout(() => judge(texts, (pattern, text) => compiled.get(pattern)!.test(text), filter), budgetMs); }
   catch { result = 'timeout'; }
   regexCache.set(key, result);
   if (regexCache.size > REGEX_CACHE_SIZE) regexCache.delete(regexCache.keys().next().value!);
   return result;
+}
+
+/**
+ * Judge items by the fields a filter looks at (each item: title, summary and
+ * anything else the caller wants matched). Shared by feeds and bundles, so a
+ * filter means the same everywhere. `timeout`: the regex ran out of its
+ * `budgetMs`, and nothing was filtered.
+ */
+export function evaluateFilter(filter: ItemFilter, fields: Fields[], budgetMs = REGEX_BUDGET_MS): Verdict[] | 'timeout' {
+  return filter.regex
+    ? regexVerdicts(filter, fields, budgetMs)
+    : judge(fields.map(texts => texts.map(text => text.toLowerCase())), (pattern, text) => text.includes(pattern.toLowerCase()), filter);
 }
 
 export interface OutputSelection {
@@ -210,14 +228,12 @@ export function classifyItems(feed: Feed, items: FeedItem[], override: { itemFil
   if (filter && (filter.include.length || filter.exclude.length)) {
     const candidates = statuses.flatMap((status, index) => status === 'published' ? [index] : []);
     const texts = candidates.map(index => itemFields(feed, items[index]));
-    const verdicts = filter.regex
-      ? regexVerdicts(filter, texts)
-      : judge(texts.map(([title, summary]) => [title.toLowerCase(), summary.toLowerCase()]), (pattern, text) => text.includes(pattern.toLowerCase()), filter);
+    const verdicts = evaluateFilter(filter, texts);
     if (verdicts === 'timeout') {
       timedOut = true;
       if (!warned.has(feed.id)) { warned.add(feed.id); console.warn(`Regex filter of feed ${feed.id} exceeded ${REGEX_BUDGET_MS} ms; output was not filtered this time`); }
     } else {
-      verdicts.forEach((verdict, position) => { if (verdict) statuses[candidates[position]] = verdict; });
+      verdicts.forEach((verdict, position) => { if (verdict) statuses[candidates[position]] = verdict.status; });
     }
   }
   let published = 0;

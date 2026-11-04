@@ -399,6 +399,11 @@ const server = createServer(async (request, response) => {
     sendHtml(response, 200, staticPage());
     return;
   }
+  // The static page again, as a newsletter would link it: tracking parameters and a trailing slash.
+  if (requestUrl.pathname === '/static-tracked') {
+    sendHtml(response, 200, staticPage().replace(/href="(\/article\/[a-z-]+)"/g, 'href="$1/?utm_source=newsletter&amp;fbclid=fixture"'));
+    return;
+  }
   if (requestUrl.pathname === '/div-cards') {
     sendHtml(response, 200, divCardPage());
     return;

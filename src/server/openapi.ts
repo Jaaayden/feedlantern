@@ -1,5 +1,5 @@
 import { API_TOKEN_MAX_DAYS, tokenAllowedRoute } from './api-tokens.js';
-import { API_ERROR_CODES, BUNDLE_ITEM_LIMIT, BUNDLE_MAX_FEEDS } from '../shared/types.js';
+import { API_ERROR_CODES, BUNDLE_DEDUPE_MODES, BUNDLE_DEDUPE_PREFER, BUNDLE_DEDUPE_WINDOW, BUNDLE_ITEM_LIMIT, BUNDLE_MAX_FEEDS } from '../shared/types.js';
 import { NETWORK_LIMITS } from '../shared/network-rules.js';
 import { PUBMED_DEFAULT_LIMIT, PUBMED_LIMITS, PUBMED_QUERY_MAX } from '../shared/pubmed.js';
 import { locales } from '../shared/i18n.js';
@@ -162,15 +162,39 @@ const schemas: Record<string, Schema> = {
   RulePreview: object({ count: int(), items: array(ref('ExtractedItem'), { maxItems: 5 }), error: str({ description: 'Why nothing was extracted' }) }, ['count', 'items']),
   RuleRedetectResult: object({ current: ref('RulePreview'), detection: ref('DetectionResult') }, ['current', 'detection']),
   FeedPayload: object({ feed: ref('Feed'), feedUrl: str({ format: 'uri', description: 'RSS address including its secret key' }) }, ['feed', 'feedUrl']),
+  BundleDedupe: object({
+    mode: str({ enum: [...BUNDLE_DEDUPE_MODES], description: 'off: keep every item · link: same link after the usual normalisation (the default, how bundles always worked) · url: also ignore tracking parameters (utm_*, fbclid, gclid, spm, ref…), http/https, www., a trailing slash and parameter order · title: url, or the same normalised title (case, spaces, full-width forms and punctuation ignored)' }),
+    windowDays: nullable(int({ minimum: BUNDLE_DEDUPE_WINDOW.min, maximum: BUNDLE_DEDUPE_WINDOW.max, description: 'Only with mode title: items with the same title are duplicates only when published at most this many days apart. null: no limit. Ignored (stored as null) for the other modes' })),
+    prefer: str({ enum: [...BUNDLE_DEDUPE_PREFER], description: 'Which copy of a duplicate is kept: earliest = the one collected first (default), order = the one from the member listed first in feedIds, then the one collected first' }),
+  }, ['mode', 'windowDays', 'prefer'], { description: 'Order of processing: member filters and limits → bundle filter → duplicates → newest first → bundle itemLimit' }),
+  BundleDedupeInput: object({
+    mode: str({ enum: [...BUNDLE_DEDUPE_MODES] }), windowDays: nullable(int({ minimum: BUNDLE_DEDUPE_WINDOW.min, maximum: BUNDLE_DEDUPE_WINDOW.max })), prefer: str({ enum: [...BUNDLE_DEDUPE_PREFER] }),
+  }, [], { description: 'Only the fields given change; the others keep their current value (the defaults for a new bundle)' }),
+  BundleFilter: object({ include: array(str({ maxLength: 200 }), { maxItems: 30 }), exclude: array(str({ maxLength: 200 }), { maxItems: 30 }), regex: bool, matchSource: bool }, ['include', 'exclude', 'regex', 'matchSource'],
+    { description: 'The same filter as a feed\'s (ItemFilter: exclusion wins, a non-empty include list must match, regular expressions are checked for safety), judged on the merged items after each member\'s own filter; matchSource also tries the keywords on the member feed\'s name' }),
+  BundleFilterInput: object({ include: array(str({ maxLength: 200 }), { maxItems: 30 }), exclude: array(str({ maxLength: 200 }), { maxItems: 30 }), regex: bool, matchSource: bool }, [], { description: 'matchSource defaults to false; an empty filter is stored as null' }),
   Bundle: object({
-    id: str(), name: str(), feedIds: array(str(), { description: 'Member feed IDs, in the order added' }),
-    itemLimit: int({ minimum: BUNDLE_ITEM_LIMIT.min, maximum: BUNDLE_ITEM_LIMIT.max }), createdAt: dateTime, updatedAt: dateTime,
-  }, ['id', 'name', 'feedIds', 'itemLimit', 'createdAt', 'updatedAt']),
+    id: str(), name: str(), feedIds: array(str(), { description: 'Member feed IDs in priority order (new members go last)' }),
+    itemLimit: int({ minimum: BUNDLE_ITEM_LIMIT.min, maximum: BUNDLE_ITEM_LIMIT.max, description: 'Counted after the filter and duplicates are removed' }),
+    dedupe: ref('BundleDedupe'), itemFilter: nullable(ref('BundleFilter')), createdAt: dateTime, updatedAt: dateTime,
+  }, ['id', 'name', 'feedIds', 'itemLimit', 'dedupe', 'itemFilter', 'createdAt', 'updatedAt']),
   BundleInput: object({
     name: str({ minLength: 1, maxLength: 200 }),
-    feedIds: array(str(), { maxItems: BUNDLE_MAX_FEEDS, description: 'Feeds of the same account only; duplicates are removed' }),
+    feedIds: array(str(), { maxItems: BUNDLE_MAX_FEEDS, description: 'Feeds of the same account only; duplicates are removed; the order is the priority' }),
     itemLimit: int({ minimum: BUNDLE_ITEM_LIMIT.min, maximum: BUNDLE_ITEM_LIMIT.max, default: BUNDLE_ITEM_LIMIT.default }),
+    dedupe: ref('BundleDedupeInput'), itemFilter: nullable(ref('BundleFilterInput')),
   }, ['name', 'feedIds']),
+  BundleItemRef: object({ id: str(), title: str(), link: str(), feedId: str(), feedName: str(), at: dateTime }, ['id', 'title', 'link', 'feedId', 'feedName', 'at']),
+  BundlePreview: object({
+    members: int(), candidates: int({ description: 'Items the members publish themselves' }), filtered: int({ description: 'Dropped by the bundle filter' }), merged: int({ description: 'Dropped as duplicates' }), overLimit: int({ description: 'Cut by itemLimit' }), output: int(),
+    items: array(ref('BundleItemRef'), { description: 'First items of the output, newest first' }),
+    filteredItems: array({ allOf: [ref('BundleItemRef'), object({ status: str({ enum: ['excluded', 'not-included'] }), pattern: str({ description: 'The exclude pattern that matched' }) }, ['status'])] }),
+    groups: array(object({
+      kept: ref('BundleItemRef'),
+      merged: array({ allOf: [ref('BundleItemRef'), object({ reason: str({ enum: ['link', 'url', 'title', 'indirect'], description: 'Why it is a duplicate of the kept copy; indirect: only through another duplicate of the group' }) }, ['reason'])] }),
+    }, ['kept', 'merged'])),
+    listLimit: int({ description: 'The lists above are cut to this many entries; the counts are exact' }), filterTimedOut: bool,
+  }, ['members', 'candidates', 'filtered', 'merged', 'overLimit', 'output', 'items', 'filteredItems', 'groups', 'listLimit']),
   BundlePayload: object({ bundle: ref('Bundle'), bundleUrl: str({ format: 'uri', description: 'Bundle RSS address including its secret key; replace .xml with .atom or .json for Atom / JSON Feed' }) }, ['bundle', 'bundleUrl']),
   FeedDetail: { allOf: [ref('FeedPayload'), ref('OutputStatus'), object({ items: array(ref('FeedItem')) }, ['items'])] },
   FetchLogPage: object({ logs: array({ type: 'object' }), nextCursor: nullable(str()), retentionDays: int(), maxEntries: int({ description: 'Most finished entries kept per feed; consecutive identical runs share one entry' }) }, ['logs', 'nextCursor', 'retentionDays', 'maxEntries']),
@@ -320,9 +344,11 @@ const operations: Operation[] = [
   { method: 'POST', path: '/api/rss/preview', tag: 'feeds', summary: 'Preview the first 3 items of an RSS source', workspace: true, body: object({ url: str({ format: 'uri' }), networkProfileId }, ['url']), response: object({ title: str(), items: array(ref('ExtractedItem')) }) },
   // Bundles
   { method: 'GET', path: '/api/bundles', tag: 'bundles', summary: 'List bundles', workspace: true, response: array(ref('BundlePayload')) },
-  { method: 'POST', path: '/api/bundles', tag: 'bundles', summary: 'Create a bundle', description: 'Combines several feeds of one account into one address. It reads stored items only and never triggers a fetch. Up to 200 per account.', workspace: true, body: ref('BundleInput'), response: ref('BundlePayload') },
+  { method: 'POST', path: '/api/bundles', tag: 'bundles', summary: 'Create a bundle', description: 'Combines several feeds of one account into one address. It reads stored items only and never triggers a fetch. Up to 200 per account. Order of processing: each member\'s own filter and output limit → the bundle filter (itemFilter) → duplicates (dedupe) → newest first → itemLimit. The default, mode link with earliest, is what bundles did before dedupe and itemFilter existed.', workspace: true, body: ref('BundleInput'), response: ref('BundlePayload') },
+  { method: 'POST', path: '/api/bundles/preview', tag: 'bundles', summary: 'Preview a bundle with unsaved settings', description: 'What the output would be for these members, item limit, dedupe and itemFilter: the counts, the first items, which items the filter drops and why, and which duplicates are merged into which kept copy. Changes nothing; it is still a POST, so it needs a write token. A regular expression that is unsafe is refused like for a feed; one that times out reports filterTimedOut.', workspace: true, body: object({ feedIds: array(str(), { maxItems: BUNDLE_MAX_FEEDS }), itemLimit: int({ minimum: BUNDLE_ITEM_LIMIT.min, maximum: BUNDLE_ITEM_LIMIT.max }), dedupe: ref('BundleDedupeInput'), itemFilter: nullable(ref('BundleFilterInput')) }, ['feedIds']), response: ref('BundlePreview') },
   { method: 'GET', path: '/api/bundles/:id', tag: 'bundles', summary: 'Bundle details', workspace: true, response: ref('BundlePayload') },
-  { method: 'PUT', path: '/api/bundles/:id', tag: 'bundles', summary: 'Update a bundle', description: 'Changes only the fields given; feedIds replaces the members as a whole.', workspace: true, body: object({ name: str({ minLength: 1, maxLength: 200 }), feedIds: array(str(), { maxItems: BUNDLE_MAX_FEEDS }), itemLimit: int({ minimum: BUNDLE_ITEM_LIMIT.min, maximum: BUNDLE_ITEM_LIMIT.max }) }), response: ref('BundlePayload') },
+  { method: 'GET', path: '/api/bundles/:id/preview', tag: 'bundles', summary: 'Merge details of a saved bundle', description: 'The same report as the preview, for the bundle\'s saved settings.', workspace: true, response: ref('BundlePreview') },
+  { method: 'PUT', path: '/api/bundles/:id', tag: 'bundles', summary: 'Update a bundle', description: 'Changes only the fields given; feedIds replaces the members (and their priority) as a whole, dedupe changes only the fields given, itemFilter replaces the whole filter and null removes it.', workspace: true, body: object({ name: str({ minLength: 1, maxLength: 200 }), feedIds: array(str(), { maxItems: BUNDLE_MAX_FEEDS }), itemLimit: int({ minimum: BUNDLE_ITEM_LIMIT.min, maximum: BUNDLE_ITEM_LIMIT.max }), dedupe: ref('BundleDedupeInput'), itemFilter: nullable(ref('BundleFilterInput')) }), response: ref('BundlePayload') },
   { method: 'DELETE', path: '/api/bundles/:id', tag: 'bundles', summary: 'Delete a bundle', description: 'Member feeds are not affected.', workspace: true, response: ok },
   { method: 'POST', path: '/api/bundles/:id/feeds', tag: 'bundles', summary: 'Add feeds to a bundle', description: 'Existing members keep their place; duplicates are ignored.', workspace: true, body: object({ feedIds: array(str(), { maxItems: BUNDLE_MAX_FEEDS }) }, ['feedIds']), response: ref('BundlePayload') },
   { method: 'POST', path: '/api/bundles/:id/rotate-token', tag: 'bundles', summary: 'Rotate the bundle address key', description: 'The old RSS, Atom and JSON Feed bundle addresses stop working at once.', workspace: true, response: ref('BundlePayload') },

@@ -44,7 +44,7 @@ export const backupTables = {
     .transform(row => ({ ...row, translation_mode: row.translation_mode === 'chinese' ? 'translated' as const : row.translation_mode ?? (row.source_type === 'rss' ? 'bilingual' as const : 'original' as const) }))).max(10000),
   feed_items: z.array(z.object({ id: short, feed_id: short, normalized_key: short, title: text, link: url, description: nullable, image: nullable, published_at: date.nullable(), published_at_source: z.enum(['absolute', 'relative']).nullable().default(null), first_seen_at: date }).strict()).max(2_000_000),
   // Optional so that backups made before feed bundles still restore.
-  bundles: z.array(z.object({ id: short, owner_id: short, name: z.string().min(1).max(200), item_limit: z.number().int().min(BUNDLE_ITEM_LIMIT.min).max(BUNDLE_ITEM_LIMIT.max), created_at: date, updated_at: date, token_ciphertext: z.string().regex(/^[A-Za-z0-9_-]{43}$/), token_hash: z.string().regex(/^[a-f0-9]{64}$/) }).strict()).max(10000).default([]),
+  bundles: z.array(z.object({ id: short, owner_id: short, name: z.string().min(1).max(200), item_limit: z.number().int().min(BUNDLE_ITEM_LIMIT.min).max(BUNDLE_ITEM_LIMIT.max), dedupe_json: nullable.default(null), item_filter_json: nullable.default(null), created_at: date, updated_at: date, token_ciphertext: z.string().regex(/^[A-Za-z0-9_-]{43}$/), token_hash: z.string().regex(/^[a-f0-9]{64}$/) }).strict()).max(10000).default([]),
   bundle_feeds: z.array(z.object({ bundle_id: short, feed_id: short, position: z.number().int().min(0).max(BUNDLE_MAX_FEEDS) }).strict()).max(200_000).default([]),
   settings: z.array(z.union([
     z.object({ key: z.literal('feedView'), value: z.enum(['list', 'cards']) }).strict(),

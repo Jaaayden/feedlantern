@@ -102,7 +102,7 @@ test('列表查询次数不随订阅数增长', t => {
     const large = read();
     assert.equal(large.feeds.length, 101);
     assert.equal(large.count, small.count);
-    assert.equal(Number(db.prepare('PRAGMA user_version').get()?.user_version), 23);
+    assert.equal(Number(db.prepare('PRAGMA user_version').get()?.user_version), 24);
   } finally { close(); }
 });
 
@@ -117,7 +117,7 @@ test('v0.9.0 数据库自动补建统计索引，重启保留数据、累计值�
     store.close();
     const old = new DatabaseSync(join(dir, 'app.db'));
     old.exec('DROP INDEX translations_feed_status');
-    assert.equal(Number(old.prepare('PRAGMA user_version').get()?.user_version), 23);
+    assert.equal(Number(old.prepare('PRAGMA user_version').get()?.user_version), 24);
     old.close();
 
     for (let i = 0; i < 2; i++) {
@@ -125,7 +125,7 @@ test('v0.9.0 数据库自动补建统计索引，重启保留数据、累计值�
       const db = new DatabaseSync(store.dbPath, { readOnly: true });
       try {
         assert.deepEqual(db.prepare('PRAGMA index_info(translations_feed_status)').all().map(row => row.name), ['feed_id', 'status']);
-        assert.equal(Number(db.prepare('PRAGMA user_version').get()?.user_version), 23);
+        assert.equal(Number(db.prepare('PRAGMA user_version').get()?.user_version), 24);
         assert.deepEqual(store.exportTables(), before);
         assert.equal(store.getFeedToken(feed.id)?.token, token);
         assert.deepEqual(store.getFeed(feed.id)?.translation, { pending: 1, success: 0, failed: 0 });

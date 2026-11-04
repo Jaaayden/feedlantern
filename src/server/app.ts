@@ -78,6 +78,7 @@ import { parseTargetLanguage, parseTranslationMode, parseTranslationProvider, as
 import { reportSummary } from './pagination.js';
 import { Store, type CredentialValue } from './store.js';
 import { registerRuleHealthRoutes } from './rule-health-routes.js';
+import { parseBundleDedupe, parseBundleFilter } from './bundle-settings.js';
 import { exportConfigBundles, importConfigBundles, parseConfigBundles, previewConfigBundles, registerBundleRoutes } from './bundle-routes.js';
 import { API_TOKEN_LIMIT_PER_USER, API_TOKEN_MAX_DAYS, READ_METHODS, tokenAllowedRoute } from './api-tokens.js';
 import { buildOpenApi } from './openapi.js';
@@ -1033,6 +1034,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     try {
       snapshot = openBackup(body.archive, asNonEmptyString(body.password, msg('label.backupPassword'), 1024));
       for (const row of snapshot.tables.feeds) if (row.item_filter_json) parseItemFilter(JSON.parse(row.item_filter_json));
+      for (const row of snapshot.tables.bundles) { if (row.dedupe_json) parseBundleDedupe(JSON.parse(row.dedupe_json)); if (row.item_filter_json) parseBundleFilter(JSON.parse(row.item_filter_json)); }
       for (const row of snapshot.tables.feeds) parseFeedInput({ pagination: row.pagination_json ? JSON.parse(row.pagination_json) : null, sourceType: row.source_type, translationMode: row.translation_mode, name: row.name, url: row.url, rules: JSON.parse(row.rules_json), ruleOrigins: row.rule_origins_json ? JSON.parse(row.rule_origins_json) : undefined, intervalMinutes: row.interval_minutes, waitMs: row.wait_ms, waitForSelector: row.wait_for_selector });
       for (const row of snapshot.tables.credentials) {
         const metadata = cookieMetadata(parseCookies(JSON.parse(row.encrypted_value), row.format, row.url), row.url);

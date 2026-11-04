@@ -61,6 +61,10 @@ const pubmedConditions = {
   }).optional().describe(d('pubmedFilters')),
 };
 const itemFilter = z.object({ include: z.array(z.string()), exclude: z.array(z.string()), regex: z.boolean() }).nullable().optional().describe(d('itemFilter'));
+const bundleDedupe = z.object({
+  mode: z.enum(['off', 'link', 'url', 'title']).optional(), windowDays: z.number().int().min(1).max(365).nullable().optional(), prefer: z.enum(['earliest', 'order']).optional(),
+}).optional().describe(d('bundleDedupe'));
+const bundleFilter = z.object({ include: z.array(z.string()).optional(), exclude: z.array(z.string()).optional(), regex: z.boolean().optional(), matchSource: z.boolean().optional() }).nullable().optional().describe(d('bundleFilter'));
 
 const read: ToolAnnotations = { readOnlyHint: true, openWorldHint: false };
 const fetches: ToolAnnotations = { readOnlyHint: true, openWorldHint: true };
@@ -210,16 +214,17 @@ const tools: ToolDef[] = [
   },
   { name: 'bundles_list', scope: 'read', annotations: read, input: {}, run: client => ops.listBundles(client) },
   { name: 'bundle_get', scope: 'read', annotations: read, input: { id: z.string().min(1).describe(d('bundleId')) }, run: (client, args) => ops.getBundle(client, s(args.id)) },
+  { name: 'bundle_preview', scope: 'read', annotations: read, input: { id: z.string().min(1).describe(d('bundleId')) }, run: (client, args) => ops.previewBundle(client, s(args.id)) },
   {
     name: 'bundle_create', scope: 'write', annotations: write,
-    input: { name: z.string().min(1).max(200), feedIds: z.array(z.string()).max(200).describe(d('feedIds')), itemLimit: z.number().int().min(10).max(500).optional(), dryRun },
+    input: { name: z.string().min(1).max(200), feedIds: z.array(z.string()).max(200).describe(d('bundleFeedsOrdered')), itemLimit: z.number().int().min(10).max(500).optional(), dedupe: bundleDedupe, itemFilter: bundleFilter, dryRun },
     run: (client, args) => { const { dryRun: _dryRun, ...input } = args; return ops.createBundle(client, input as never); },
   },
   {
     name: 'bundle_update', scope: 'write', annotations: write,
     input: {
       id: z.string().min(1).describe(d('bundleId')), name: z.string().min(1).max(200).optional(), feedIds: z.array(z.string()).max(200).optional().describe(d('bundleFeeds')),
-      addFeedIds: z.array(z.string()).max(200).optional().describe(d('bundleAddFeeds')), itemLimit: z.number().int().min(10).max(500).optional(), dryRun,
+      addFeedIds: z.array(z.string()).max(200).optional().describe(d('bundleAddFeeds')), itemLimit: z.number().int().min(10).max(500).optional(), dedupe: bundleDedupe, itemFilter: bundleFilter, dryRun,
     },
     run: (client, args) => { const { id: bundleId, dryRun: _dryRun, ...changes } = args; return ops.updateBundle(client, s(bundleId), changes as never); },
   },

@@ -1,8 +1,9 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
-import { BUNDLE_ITEM_LIMIT, BUNDLE_MAX_FEEDS, type Bundle, type BundleInput } from '../shared/types.js';
+import { BUNDLE_DEDUPE_DEFAULT, BUNDLE_ITEM_LIMIT, BUNDLE_MAX_FEEDS, type Bundle, type BundleDedupe, type BundleFilter } from '../shared/types.js';
 import { AppError } from './auth.js';
 import { msg } from './i18n.js';
+import { storedBundleDedupe, storedBundleFilter } from './bundle-settings.js';
 
 /** Bundles and their members. Members are feeds of the same owner; deleting a feed removes it from every bundle (ON DELETE CASCADE). */
 export const BUNDLE_SCHEMA = `
@@ -26,7 +27,18 @@ export const BUNDLE_SCHEMA = `
   CREATE INDEX IF NOT EXISTS bundle_feeds_feed ON bundle_feeds(feed_id);
 `;
 
+/** Migration 24: how a bundle merges its members (`dedupe_json`) and filters the merged items (`item_filter_json`); null is the behaviour from before they existed. */
+export const BUNDLE_SETTINGS_COLUMNS = ['dedupe_json', 'item_filter_json'] as const;
+
+/** A fully validated bundle, as the routes, the configuration import and the tests hand it to the store. */
+export interface BundleSettings { name: string; feedIds: string[]; itemLimit?: number; dedupe?: BundleDedupe; itemFilter?: BundleFilter | null }
+
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
+
+/** The default is stored as null, so a bundle nobody configured stays byte-for-byte what older versions wrote. */
+const dedupeColumn = (dedupe: BundleDedupe | undefined): string | null =>
+  dedupe && (dedupe.mode !== BUNDLE_DEDUPE_DEFAULT.mode || dedupe.windowDays !== BUNDLE_DEDUPE_DEFAULT.windowDays || dedupe.prefer !== BUNDLE_DEDUPE_DEFAULT.prefer) ? JSON.stringify(dedupe) : null;
+const filterColumn = (filter: BundleFilter | null | undefined): string | null => filter ? JSON.stringify(filter) : null;
 
 export class BundleStore {
   constructor(
@@ -43,7 +55,7 @@ export class BundleStore {
   private fromRow(row: Record<string, unknown>): Bundle {
     return {
       id: String(row.id), ownerId: String(row.owner_id), name: String(row.name), feedIds: this.members(String(row.id)),
-      itemLimit: Number(row.item_limit), createdAt: String(row.created_at), updatedAt: String(row.updated_at),
+      itemLimit: Number(row.item_limit), dedupe: storedBundleDedupe(row.dedupe_json), itemFilter: storedBundleFilter(row.item_filter_json), createdAt: String(row.created_at), updatedAt: String(row.updated_at),
     };
   }
 
@@ -77,23 +89,24 @@ export class BundleStore {
     catch (error) { this.db.exec('ROLLBACK TO bundle; RELEASE bundle'); throw error; }
   }
 
-  create(input: BundleInput, ownerId: string): { bundle: Bundle; token: string } {
+  create(input: BundleSettings, ownerId: string): { bundle: Bundle; token: string } {
     return this.inTransaction(() => {
       const feedIds = this.checkMembers(ownerId, input.feedIds);
       const id = `bundle_${randomBytes(16).toString('hex')}`, token = randomBytes(32).toString('base64url'), now = new Date().toISOString();
-      this.db.prepare('INSERT INTO bundles(id,owner_id,name,item_limit,created_at,updated_at,token_ciphertext,token_hash) VALUES (?,?,?,?,?,?,?,?)')
-        .run(id, ownerId, input.name, input.itemLimit ?? BUNDLE_ITEM_LIMIT.default, now, now, this.seal(token), hash(token));
+      this.db.prepare('INSERT INTO bundles(id,owner_id,name,item_limit,dedupe_json,item_filter_json,created_at,updated_at,token_ciphertext,token_hash) VALUES (?,?,?,?,?,?,?,?,?,?)')
+        .run(id, ownerId, input.name, input.itemLimit ?? BUNDLE_ITEM_LIMIT.default, dedupeColumn(input.dedupe), filterColumn(input.itemFilter), now, now, this.seal(token), hash(token));
       this.writeMembers(id, feedIds);
       return { bundle: this.get(id)!, token };
     });
   }
 
-  update(id: string, patch: Partial<BundleInput>): Bundle | null {
+  update(id: string, patch: Partial<BundleSettings>): Bundle | null {
     return this.inTransaction(() => {
       const bundle = this.get(id);
       if (!bundle) return null;
       if (patch.feedIds) this.writeMembers(id, this.checkMembers(bundle.ownerId!, patch.feedIds));
-      this.db.prepare('UPDATE bundles SET name=?,item_limit=?,updated_at=? WHERE id=?').run(patch.name ?? bundle.name, patch.itemLimit ?? bundle.itemLimit, new Date().toISOString(), id);
+      this.db.prepare('UPDATE bundles SET name=?,item_limit=?,dedupe_json=?,item_filter_json=?,updated_at=? WHERE id=?')
+        .run(patch.name ?? bundle.name, patch.itemLimit ?? bundle.itemLimit, dedupeColumn(patch.dedupe ?? bundle.dedupe), filterColumn('itemFilter' in patch ? patch.itemFilter : bundle.itemFilter), new Date().toISOString(), id);
       return this.get(id);
     });
   }

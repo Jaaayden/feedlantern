@@ -8,6 +8,7 @@ import {
   type BulkFeedSettingsInput,
   type BundleInput,
   type BundlePayload,
+  type BundlePreview,
   type DetectionResult,
   type ExtractedItem,
   type PubmedPreview,
@@ -189,6 +190,7 @@ export class FeedLanternClient {
 
   // Bundles
   listBundles(): Promise<BundlePayload[]> { return this.request('GET', '/api/bundles'); }
+  previewBundle(id: string): Promise<BundlePreview> { return this.request('GET', `/api/bundles/${encodeURIComponent(id)}/preview`); }
   getBundle(id: string): Promise<BundlePayload> { return this.request('GET', `/api/bundles/${encodeURIComponent(id)}`); }
   createBundle(input: BundleInput): Promise<BundlePayload> { return this.request('POST', '/api/bundles', { body: input }); }
   updateBundle(id: string, input: Partial<BundleInput>): Promise<BundlePayload> { return this.request('PUT', `/api/bundles/${encodeURIComponent(id)}`, { body: input }); }

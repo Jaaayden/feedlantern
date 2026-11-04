@@ -92,14 +92,14 @@ export function renderRssPreview(feed: Feed, items: FeedItem[], feedUrl: string)
 }
 
 /** The same page for a bundle; each item names the member it came from. */
-export function renderBundlePreview(bundle: Bundle, members: BundleMember[], bundleUrl: string): PreviewPage {
+export function renderBundlePreview(bundle: Bundle, members: BundleMember[], bundleUrl: string, merged = mergeBundleItems(members, bundle)): PreviewPage {
   const updated = members.map(member => member.feed.lastSuccessAt).filter((value): value is string => !!value).sort().at(-1);
   const names = members.map(member => member.feed.name);
   const shown = names.length > 6 ? tl('preview.andMore', { names: formatList(currentLocale(), names.slice(0, 6), 'unit'), count: names.length }) : formatList(currentLocale(), names);
   const meta = `${escape(shown ? tl('preview.bundleOf', { count: members.length, names: shown }) : tl('preview.bundleCount', { count: members.length }))}${updated ? ` · ${tl('preview.updated', { time: `<time datetime="${escape(new Date(updated).toISOString())}">${escape(dateText(updated))}</time>` })}` : ''}`;
   return renderPreviewPage({
     name: bundle.name, kicker: tl('preview.kickerBundle'), meta, feedUrl: bundleUrl, rotateHint: tl('preview.rotateBundle'), empty: members.length ? tl('preview.emptyBundle') : tl('preview.noMembers'),
-    entries: mergeBundleItems(members, bundle.itemLimit).slice(0, 30), showSource: true,
+    entries: merged.slice(0, 30), showSource: true,
   });
 }
 

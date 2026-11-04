@@ -404,11 +404,61 @@ export interface ApiTokenCallPage { calls: ApiTokenCall[]; nextCursor: string | 
 // POST /api/bundles/:id/rotate-token {} -> BundlePayload; DELETE /api/bundles/:id
 // GET /bundles/:id/:token.xml -> RSS 2.0 merging the members' stored items (read-only, never fetches)
 
+// POST /api/bundles/preview {feedIds,itemLimit?,itemFilter?,dedupe?} -> BundlePreview (unsaved settings; changes nothing)
+// GET /api/bundles/:id/preview -> BundlePreview (saved settings)
+
+/**
+ * How a bundle recognises the same item twice. `link` is the original rule
+ * (same link after `normalizeLink`); `url` also ignores tracking parameters,
+ * `http`/`https`, `www.`, a trailing slash and the order of parameters;
+ * `title` adds identical normalised titles, optionally only between items
+ * published at most `windowDays` apart.
+ */
+export type BundleDedupeMode = 'off' | 'link' | 'url' | 'title';
+/** Which copy of a duplicate is kept: the one collected first, or the one from the member listed first. */
+export type BundleDedupePrefer = 'earliest' | 'order';
+export interface BundleDedupe { mode: BundleDedupeMode; windowDays: number | null; prefer: BundleDedupePrefer }
+export const BUNDLE_DEDUPE_MODES: readonly BundleDedupeMode[] = ['off', 'link', 'url', 'title'];
+export const BUNDLE_DEDUPE_PREFER: readonly BundleDedupePrefer[] = ['earliest', 'order'];
+export const BUNDLE_DEDUPE_WINDOW = { min: 1, max: 365 } as const;
+/** What every bundle did before deduplication became configurable. */
+export const BUNDLE_DEDUPE_DEFAULT: BundleDedupe = { mode: 'link', windowDays: null, prefer: 'earliest' };
+/** The member feed filter, plus whether the member's name is matched as well as the title and summary. */
+export interface BundleFilter extends ItemFilter { matchSource: boolean }
+
 /** A bundle merges several of one owner's feeds into a single RSS address. */
-export interface BundleInput { name: string; feedIds: string[]; itemLimit?: number }
-export interface Bundle { id: string; ownerId?: string; name: string; feedIds: string[]; itemLimit: number; createdAt: string; updatedAt: string }
+export interface BundleInput { name: string; feedIds: string[]; itemLimit?: number; dedupe?: Partial<BundleDedupe>; itemFilter?: Partial<BundleFilter> | null }
+export interface Bundle {
+  id: string; ownerId?: string; name: string; feedIds: string[]; itemLimit: number;
+  dedupe: BundleDedupe; itemFilter: BundleFilter | null; createdAt: string; updatedAt: string;
+}
 export interface BundlePayload { bundle: Bundle; bundleUrl: string }
 export const BUNDLE_ITEM_LIMIT = { min: 10, max: 500, default: 100 } as const;
+/** One item in a bundle preview. */
+export interface BundleItemRef { id: string; title: string; link: string; feedId: string; feedName: string; at: string }
+/** Why one duplicate was dropped in favour of the kept copy. `indirect`: it only matched another duplicate of the same group. */
+export type BundleMergeReason = 'link' | 'url' | 'title' | 'indirect';
+export interface BundleMergeGroup { kept: BundleItemRef; merged: Array<BundleItemRef & { reason: BundleMergeReason }> }
+export interface BundleFilteredItem extends BundleItemRef { status: 'excluded' | 'not-included'; pattern?: string }
+export interface BundlePreview {
+  members: number;
+  /** Items the members publish themselves (after their own translation, filter and output limit). */
+  candidates: number;
+  /** Dropped by the bundle's filter. */
+  filtered: number;
+  /** Dropped as duplicates. */
+  merged: number;
+  /** Cut by the bundle's item limit. */
+  overLimit: number;
+  output: number;
+  /** The first items of the output, newest first. */
+  items: BundleItemRef[];
+  filteredItems: BundleFilteredItem[];
+  groups: BundleMergeGroup[];
+  /** The lists above are cut to this many entries; the counts are exact. */
+  listLimit: number;
+  filterTimedOut?: boolean;
+}
 export const BUNDLE_MAX_FEEDS = 200;
 
 export interface ImportEntry {

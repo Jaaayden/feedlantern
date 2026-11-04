@@ -131,7 +131,7 @@ CLI 用令牌调用时不检查 Host，所以用内网地址（例如 Docker 网
 | `pubmed create [--query … \| 检索条件选项] [--name …] [--limit 10\|20\|50\|100]` | 创建 PubMed 检索订阅（首次抓取在后台进行） |
 | `pubmed convert <id> \| --all-verified [--query …] [--recheck] [--yes]` | 验证并把 PubMed RSS 订阅转换为检索订阅；默认只出报告 |
 | `pubmed checks [--job id] [--wait] [--cancel] [--retry] [--start]` | 查看或管理后台验证任务：进度、预计剩余时间和每个订阅的结果 |
-| `bundles list\|get\|create\|update\|delete` | 聚合订阅；`update` 用 `--feeds` 整体替换成员，`--add-feeds` 追加 |
+| `bundles list\|get\|create\|update\|delete\|preview` | 聚合订阅；`update` 用 `--feeds` 整体替换成员（顺序即优先级），`--add-feeds` 追加到最后；`--dedupe off\|link\|url\|title`、`--dedupe-window <1–365\|none>`、`--dedupe-prefer earliest\|order` 设置去重（只改给出的项），`--filter <JSON>\|none` 设置聚合过滤；`get` 能看到这些设置，`preview <id>` 给出合并详情 |
 | `bulk <action> <id>...` | 批量 `copy`、`pause`、`resume`、`refresh`、`delete`、`settings --settings <JSON>` |
 | `imports list\|create <url>...\|cancel <id>\|retry <id>` | 批量添加任务（后台自动识别并创建） |
 | `tokens logs [--status success\|denied\|error]` | 当前令牌自己的调用记录 |
@@ -144,6 +144,20 @@ CLI 用令牌调用时不检查 Host，所以用内网地址（例如 Docker 网
 
 - 改网址、规则、等待（`--wait-ms`、`--wait-for`）、翻页（`--pagination`）、凭据或来源类型时，与已保存的设置合并后整体替换，并立即重新抓取。规则只写要改的字段；把某个可选规则写成空字符串（例如 `--date ''`）表示删除它。
 - 只改名称、刷新间隔、输出条数（`--output-limit`）、保留条数（`--retention-limit`，`auto` 为自动）、条目过滤（`--filter <JSON>`，`none` 为删除）或翻译设置时，只修改设置，不重新抓取。
+
+### 聚合订阅的去重与过滤
+
+聚合输出的处理顺序是：成员自己的过滤和输出条数 → 聚合过滤（`itemFilter`）→ 去重（`dedupe`）→ 按时间倒序 → 条目上限（`itemLimit`），所以上限按过滤和去重之后的结果计。不设置时保持原来的行为：相同链接只出现一次，保留最先收集到的那份，没有聚合过滤。
+
+- `dedupe.mode`：`off`（不去重）、`link`（相同链接，默认）、`url`（忽略 `utm_*`、`fbclid`、`gclid`、`spm`、`ref` 等追踪参数，`http`/`https`、`www.`、末尾斜杠和参数顺序）、`title`（链接或标题相同）。`dedupe.windowDays`（1–365 或 `null`）只用于 `title`：只在发布时间相差不超过这些天的条目之间比较标题。`dedupe.prefer`：`earliest`（最先收集到的，默认）或 `order`（`feedIds` 里排在前面的成员优先，其次最早收集）。更新时只改给出的字段；换到 `title` 以外的方式时 `windowDays` 恢复为 `null`。
+- `itemFilter`：`{"include":[],"exclude":[],"regex":false,"matchSource":false}`，规则与订阅的条目过滤相同（排除优先、包含非空时必须命中其一、正则有安全检查），`matchSource` 为 `true` 时也在来源订阅名称上匹配。更新时整体替换，`null`（CLI：`--filter none`）删除过滤。过滤不删除成员里保存的条目。
+- `feedIds` 的顺序就是优先级；`--add-feeds` / `addFeedIds` 追加的成员排在最后。
+- 先预览再保存：`POST /api/bundles/preview`（body 为 `feedIds`、`itemLimit`、`dedupe`、`itemFilter`，不保存，需要 write 令牌）或 `GET /api/bundles/:id/preview`（已保存的设置，CLI `bundles preview <id>`、MCP `bundle_preview`）返回 `{members, candidates, filtered, merged, overLimit, output, items, filteredItems, groups, listLimit}`：`filteredItems` 里每条有 `status`（`excluded` 并给出命中的 `pattern`，或 `not-included`），`groups` 里每组有保留的 `kept` 和被合并的 `merged[]`（每条带判定原因 `reason`：`link`、`url`、`title`，或通过另一条重复条目关联的 `indirect`）；列表各最多 `listLimit`（50）条，数量是完整的。正则过滤在聚合的已保存条目上超时的设置会被拒绝（`validation`），和订阅一样。
+
+```sh
+feedlantern bundles update <id> --dedupe url --dedupe-prefer order --filter '{"exclude":["sponsored"]}'
+feedlantern bundles preview <id>
+```
 
 ## 给 Agent 的推荐工作流
 
@@ -206,8 +220,8 @@ feedlantern pubmed convert feed_123 --query '(Hu wanlong[Author]) AND (The Unive
 | `feed_create`、`feed_update`、`feed_pause`、`feed_resume`、`feed_refresh` | 创建和修改订阅 | write |
 | `feed_delete` | 删除订阅，需要 `confirm: true` | write |
 | `feeds_bulk` | 批量操作，`action: "delete"` 时需要 `confirm: true` | write |
-| `bundles_list`、`bundle_get` | 查询聚合订阅 | read |
-| `bundle_create`、`bundle_update` | 创建和修改聚合订阅 | write |
+| `bundles_list`、`bundle_get`、`bundle_preview` | 查询聚合订阅；`bundle_preview` 返回输出数量、被过滤的条目（含命中的规则）和被去重合并的条目（保留了谁、判定原因） | read |
+| `bundle_create`、`bundle_update` | 创建和修改聚合订阅，包括 `dedupe` 与 `itemFilter` | write |
 | `bundle_delete` | 删除聚合订阅，需要 `confirm: true` | write |
 | `imports_list` / `import_create` | 批量添加任务 | read / write |
 | `token_logs` | 当前令牌的调用记录 | read |
