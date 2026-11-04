@@ -100,3 +100,47 @@ test('RSS 批量导入读取一次、保留模式、失败重试，并与网页�
     assert.equal(calls, 3); assert.equal(wake, 2);
   } finally { jobs.stop(); store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('RSS 批量导入选“原文”：不翻译、不入队、不叫醒翻译，服务商为空，重复判断忽略目标语言', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fl-rss-original-')), store = new Store(dir);
+  let wake = 0;
+  const jobs = new ImportJobs(store, async fn => fn(), async () => { throw Error('不应打开浏览器'); }, async () => [], undefined, 2, async () => ({ title: 'Relayed', etag: 'one', items: [{ key: 'one', title: 'Hello', link: 'https://example.test/a', html: '<p>English</p>' }] }), () => wake++);
+  const base = { url: 'https://example.test/feed', credentialId: null, intervalMinutes: 30, sourceType: 'rss' as const };
+  try {
+    const first = jobs.create([{ ...base, translationMode: 'original', targetLanguage: 'ja', translationProvider: 'deepl' }]);
+    await until(() => jobs.get(first.id).entries.every(e => e.state === 'created'));
+    const feed = store.getFeed(jobs.get(first.id).entries[0].feedId!)!;
+    assert.equal(feed.translationMode, 'original'); assert.equal(feed.sourceType, 'rss'); assert.equal(feed.translationProvider ?? null, null);
+    assert.equal(wake, 0, 'nothing to translate');
+    assert.equal(store.translations.next(), undefined, 'the translation worker has nothing to pick up');
+    assert.equal(store.getItems(feed.id).length, 1);
+    // Same address, original again: the language is irrelevant, so it is the same feed.
+    assert.equal(jobs.create([{ ...base, translationMode: 'original', targetLanguage: 'en' }]).entries[0].state, 'existing');
+    // A translated output of the same address is a different feed.
+    const bilingual = jobs.create([{ ...base, translationMode: 'bilingual' }]);
+    await until(() => jobs.get(bilingual.id).entries.every(e => e.state === 'created'));
+    assert.notEqual(jobs.get(bilingual.id).entries[0].feedId, feed.id);
+    assert.equal(wake, 1);
+    assert.ok(store.translations.next(), 'the bilingual feed does queue translation');
+  } finally { jobs.stop(); store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('POST /api/import-jobs 接受翻译输出模式 original（不再返回 400），无效模式仍被拒绝', async () => {
+  const { createApp } = await import('../src/server/app.js');
+  const dir = mkdtempSync(join(tmpdir(), 'fl-jobs-api-')), store = new Store(dir);
+  store.createAdmin('admin', 'admin-password');
+  const app = await createApp({ store, dataDir: dir, startScheduler: false, browserService: { close: async () => {}, dispose: async () => {} } as never });
+  const session = store.createSession('admin', 60_000);
+  const headers = { host: '127.0.0.1:4321', cookie: `feedlantern_session=${session.id}`, 'x-feedlantern': '1', 'x-csrf-token': session.csrfToken };
+  try {
+    const post = (payload: object) => app.inject({ method: 'POST', url: '/api/import-jobs', headers, payload });
+    const entries = [{ url: 'http://127.0.0.1:9/feed.xml' }];
+    const original = await post({ entries, sourceType: 'rss', translationMode: 'original', targetLanguage: 'ja', translationProvider: 'deepl' });
+    assert.equal(original.statusCode, 200, original.body);
+    assert.deepEqual([original.json().entries[0].translationMode, original.json().entries[0].translationProvider], ['original', null]);
+    const invalid = await post({ entries, sourceType: 'rss', translationMode: 'literal' });
+    assert.equal(invalid.statusCode, 400);
+    assert.equal(invalid.json().messageKey, 'error.translationModeInvalid');
+    assert.equal((await post({ entries, sourceType: 'rss' })).json().entries[0].translationMode, 'bilingual', 'the default is unchanged');
+  } finally { await app.close(); store.close(); rmSync(dir, { recursive: true, force: true }); }
+});

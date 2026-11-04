@@ -141,6 +141,8 @@ test('--dry-run 只打印请求，不产生副作用，也不泄露令牌', asyn
     assert.equal(dry.code, 0, dry.stderr);
     const [request] = dry.json().requests;
     assert.equal(dry.json().dryRun, true);
+    const original = await t.cli(['imports', 'create', 'https://example.test/feed.xml', '--rss', '--translation', 'original', '--dry-run']);
+    assert.equal(original.json().requests[0].body.translationMode, 'original', 'batch RSS can relay the original text');
     assert.deepEqual([request.method, request.url, request.body.name, request.body.rules], ['POST', `${t.url}/api/feeds`, 'example.test', { item: 'article', title: 'h2', link: 'a' }]);
     assert.equal(request.headers.Authorization, 'Bearer fl_…');
     assert.ok(!dry.stdout.includes(t.write));

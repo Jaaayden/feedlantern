@@ -1162,11 +1162,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const body = asRecord(request.body);
     if (body.sourceType !== undefined && !['website', 'rss'].includes(String(body.sourceType))) throw new AppError(400, 'error.sourceTypeInvalid');
     const mode = parseTranslationMode(body.translationMode);
-    if (mode === 'original') throw new AppError(400, 'error.translationModeInvalid');
     const sourceType = body.sourceType === 'rss' ? 'rss' as const : 'website' as const;
     const translationMode = mode ?? 'bilingual';
     const targetLanguage = parseTargetLanguage(body.targetLanguage) ?? 'zh-CN';
-    const translationProvider = parseTranslationProvider(body.translationProvider) ?? null;
+    // Relaying the original text needs no translation service or language.
+    const translationProvider = translationMode === 'original' ? null : parseTranslationProvider(body.translationProvider) ?? null;
     if (!Array.isArray(body.entries) || !body.entries.length || body.entries.length > 100) throw new AppError(400, 'error.batchSize');
     const entries = body.entries.map(raw => {
       const entry = asRecord(raw);

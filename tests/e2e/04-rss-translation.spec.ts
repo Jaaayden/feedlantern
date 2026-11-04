@@ -72,6 +72,33 @@ test('批量添加 RSS 翻译，跳过重复地址并输出中文订阅', async 
   await expect.poll(async () => (await (await page.request.get(`/api/feeds/${added[0].id}`)).json()).feed.translation.success).toBe(1);
 });
 
+test('批量添加 RSS 时输出模式可以选“原文”：只转发，没有翻译进度', async ({ page }) => {
+  const auth = await loginAsAdmin(page.request);
+  await page.goto('/#/');
+  await page.getByRole('button', { name: '更多新建方式' }).click();
+  await page.getByRole('menuitem', { name: '批量添加' }).click();
+  await page.getByLabel('批量订阅类型').selectOption('rss');
+  await expect(page.getByLabel('目标语言')).toBeVisible();
+  await page.getByLabel('翻译输出模式').selectOption('original');
+  await expect(page.getByLabel('目标语言')).toHaveCount(0);
+  await expect(page.getByLabel('翻译服务')).toHaveCount(0);
+  const url = `${fixtureBaseUrl}/feed.xml?batch=original`;
+  await page.getByLabel('每行一个网址（最多 100 个）').fill(url);
+  await page.getByRole('button', { name: '开始批量添加翻译' }).click();
+  await expect(page.getByText('RSS 转发 · 已创建', { exact: false })).toBeVisible();
+  const feeds = await (await page.request.get('/api/feeds')).json();
+  const added = feeds.filter((feed: { url: string }) => feed.url === url);
+  expect(added).toHaveLength(1); expect(added[0].sourceType).toBe('rss'); expect(added[0].translationMode).toBe('original');
+  const detail = await (await page.request.get(`/api/feeds/${added[0].id}`)).json();
+  expect(detail.feed.translation).toBeUndefined();
+  expect(detail.items).toHaveLength(1);
+  expect(detail.items[0].translationStatus).toBeUndefined();
+  await page.goto('/#/');
+  await page.getByLabel('搜索订阅').fill(added[0].name);
+  await expect(page.locator('article').filter({ has: page.getByRole('button', { name: `查看订阅 ${added[0].name}`, exact: true }) }).getByText('原文', { exact: true })).toBeVisible();
+  await page.request.delete(`/api/feeds/${added[0].id}`, { headers: protocolHeaders(auth.csrfToken) });
+});
+
 test('网页订阅设置翻译、列表区分来源并筛选', async ({ page }) => {
   const auth = await loginAsAdmin(page.request);
   const created = await page.request.post('/api/feeds', { headers: protocolHeaders(auth.csrfToken), data: { name: 'Website translation settings', url: `${fixtureBaseUrl}/`, rules: { item: 'article', title: '.article-title', link: 'a' }, credentialId: null, intervalMinutes: 60, waitMs: 0 } });

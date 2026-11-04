@@ -234,7 +234,7 @@ const tools: ToolDef[] = [
     name: 'import_create', scope: 'write', annotations: write,
     input: {
       urls: z.array(z.string().url()).min(1).max(100).describe(d('importUrls')), sourceType: z.enum(['website', 'rss']).optional(),
-      intervalMinutes: z.number().int().min(5).max(1440).optional(), translationMode: z.enum(['translated', 'bilingual']).optional(), targetLanguage, translationProvider,
+      intervalMinutes: z.number().int().min(5).max(1440).optional(), translationMode: z.enum(['original', 'translated', 'bilingual']).optional(), targetLanguage, translationProvider,
       credentialId: page.credentialId, networkProfileId: page.networkProfileId, dryRun,
     },
     run(client, args) {

@@ -191,7 +191,7 @@ export const api = {
   },
   jobs: {
     list: () => request<ImportJob[]>('/api/import-jobs'),
-    create: (entries: Array<{ url: string; credentialId: string | null; networkProfileId?: string | null }>, intervalMinutes: number, sourceType: 'website' | 'rss' = 'website', translation: { translationMode?: Exclude<TranslationMode, 'original'>; targetLanguage?: TargetLanguage; translationProvider?: TranslationProviderId | null } = {}) => request<ImportJob>('/api/import-jobs', { method: 'POST', body: { entries, intervalMinutes, sourceType, translationMode: 'bilingual', ...translation } }),
+    create: (entries: Array<{ url: string; credentialId: string | null; networkProfileId?: string | null }>, intervalMinutes: number, sourceType: 'website' | 'rss' = 'website', translation: { translationMode?: TranslationMode; targetLanguage?: TargetLanguage; translationProvider?: TranslationProviderId | null } = {}) => request<ImportJob>('/api/import-jobs', { method: 'POST', body: { entries, intervalMinutes, sourceType, translationMode: 'bilingual', ...translation } }),
     action: (id: string, action: 'retry' | 'cancel', entryId?: string) => request<ImportJob>(`/api/import-jobs/${id}/${action}`, { method: 'POST', body: { entryId } }),
     confirm: (id: string, entryId: string, input: FeedInput) => request<{ feed: Feed; feedUrl: string }>(`/api/import-jobs/${id}/confirm`, { method: 'POST', body: { entryId, input } }),
   },

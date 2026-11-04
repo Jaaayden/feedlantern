@@ -42,7 +42,7 @@ export interface RssPreview { title: string; items: Array<{ title: string; link:
 export interface BrowserOpenInput { url: string; credentialId?: string | null; networkProfileId?: string | null; waitMs?: number; waitForSelector?: string }
 export interface ImportJobInput {
   entries: Array<{ url: string; credentialId?: string | null; networkProfileId?: string | null }>;
-  intervalMinutes?: number; sourceType?: 'website' | 'rss'; translationMode?: 'translated' | 'bilingual'; targetLanguage?: string; translationProvider?: string | null;
+  intervalMinutes?: number; sourceType?: 'website' | 'rss'; translationMode?: 'original' | 'translated' | 'bilingual'; targetLanguage?: string; translationProvider?: string | null;
 }
 
 /** A request the client did not send because it runs in dry-run mode. */

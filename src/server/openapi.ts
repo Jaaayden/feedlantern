@@ -356,7 +356,7 @@ const operations: Operation[] = [
   { method: 'GET', path: '/api/import-jobs', tag: 'import-jobs', summary: 'List batch imports', workspace: true, response: array(ref('ImportJob')) },
   { method: 'POST', path: '/api/import-jobs', tag: 'import-jobs', summary: 'Create a batch import', workspace: true, body: object({
     entries: array(object({ url: str({ format: 'uri' }), credentialId: nullable(str()), networkProfileId }, ['url']), { minItems: 1, maxItems: 100 }),
-    intervalMinutes: int({ minimum: 5, maximum: 1440, default: 60 }), sourceType: str({ enum: ['website', 'rss'] }), translationMode: str({ enum: ['translated', 'bilingual'], description: 'The old name chinese is still accepted' }), targetLanguage, translationProvider,
+    intervalMinutes: int({ minimum: 5, maximum: 1440, default: 60 }), sourceType: str({ enum: ['website', 'rss'] }), translationMode: str({ enum: ['original', 'translated', 'bilingual'], description: 'RSS only. original relays the text without translating (targetLanguage and translationProvider are ignored); the old name chinese is still accepted' }), targetLanguage, translationProvider,
   }, ['entries']), response: ref('ImportJob') },
   { method: 'POST', path: '/api/import-jobs/:id/:action', tag: 'import-jobs', summary: 'Cancel, retry or confirm a URL in a batch', description: 'confirm needs entryId and a full input and returns FeedPayload; cancel/retry return ImportJob.', workspace: true,
     params: { action: str({ enum: ['confirm', 'cancel', 'retry'] }) }, body: object({ entryId: str(), input: ref('FeedInput') }), response: { oneOf: [ref('ImportJob'), ref('FeedPayload')] } },

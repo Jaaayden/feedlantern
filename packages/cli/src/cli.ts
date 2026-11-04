@@ -375,7 +375,7 @@ const commands: Command[] = [
         entries: (ctx.args.urls as string[]).map(url => ({ url, credentialId, networkProfileId })),
         ...compact({
           sourceType: ctx.opts.rss ? 'rss' as const : undefined, intervalMinutes: int(ctx.opts, 'interval', 5, 1440),
-          translationMode: oneOf(ctx.opts, 'translation', ['translated', 'bilingual'] as const), targetLanguage: str(ctx.opts, 'target-language'), translationProvider: str(ctx.opts, 'translation-provider'),
+          translationMode: oneOf(ctx.opts, 'translation', ['original', 'translated', 'bilingual'] as const), targetLanguage: str(ctx.opts, 'target-language'), translationProvider: str(ctx.opts, 'translation-provider'),
         }),
       };
       return ops.createImport(await ctx.client(), input);
