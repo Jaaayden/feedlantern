@@ -1,5 +1,5 @@
 import { buildPubmedQuery, pubmedRssSource, pubmedDefaultName, pubmedSearchUrl, PUBMED_DEFAULT_LIMIT, type PubmedField, type PubmedFilters, type PubmedOperator } from '../../../src/shared/pubmed.js';
-import { feedFormatUrl, type PubmedCheckEntry, type PubmedCheckJob, type ApiTokenCallFilter, type BulkFeedSettingsInput, type ExtractedItem, type Feed, type FeedInput, type FeedSettingsInput, type FetchStatus, type ItemOutputStatus, type PaginationRules, type SelectionRules } from '../../../src/shared/types.js';
+import { feedFormatUrl, type BundleDedupe, type BundleFilter, type PubmedCheckEntry, type PubmedCheckJob, type ApiTokenCallFilter, type BulkFeedSettingsInput, type ExtractedItem, type Feed, type FeedInput, type FeedSettingsInput, type FetchStatus, type ItemOutputStatus, type PaginationRules, type SelectionRules } from '../../../src/shared/types.js';
 import type { BrowserOpenInput, BulkAction, FeedLanternClient, FeedPayload, HttpMethod, ImportJobInput } from './client.js';
 import { FeedLanternError, usageError } from './errors.js';
 import { t } from './messages.js';
@@ -357,11 +357,14 @@ export async function previewRules(client: FeedLanternClient, input: PageOptions
 
 export const listBundles = (client: FeedLanternClient) => client.listBundles();
 export const getBundle = (client: FeedLanternClient, id: string) => client.getBundle(id);
-export async function createBundle(client: FeedLanternClient, input: { name: string; feedIds: string[]; itemLimit?: number }) {
+export const previewBundle = (client: FeedLanternClient, id: string) => client.previewBundle(id);
+/** Duplicate detection and filter of a bundle; `dedupe` changes only the fields given and `itemFilter: null` removes the filter. */
+export interface BundleChanges { name?: string; feedIds?: string[]; itemLimit?: number; dedupe?: Partial<BundleDedupe>; itemFilter?: Partial<BundleFilter> | null }
+export async function createBundle(client: FeedLanternClient, input: BundleChanges & { name: string; feedIds: string[] }) {
   const created = await client.createBundle(input);
   return client.dryRun ? dryRunResult(client) : created;
 }
-export async function updateBundle(client: FeedLanternClient, id: string, changes: { name?: string; feedIds?: string[]; itemLimit?: number; addFeedIds?: string[] }) {
+export async function updateBundle(client: FeedLanternClient, id: string, changes: BundleChanges & { addFeedIds?: string[] }) {
   const { addFeedIds, ...rest } = changes;
   const replace = Object.fromEntries(Object.entries(rest).filter(([, value]) => value !== undefined));
   if (!Object.keys(replace).length && !addFeedIds?.length) throw usageError(t('usage.nothingToUpdate'));

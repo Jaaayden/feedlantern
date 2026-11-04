@@ -17,6 +17,7 @@ import { BatchView } from './BatchView';
 import { FeedCollection } from './FeedCollection';
 import { Dashboard } from './Dashboard';
 import { AddToBundle, BundleEditor, BundleSection } from './Bundles';
+import { draftFilter } from './filter-draft';
 import { FetchLogs } from './FetchLogs';
 import { PaginationPanel, paginationProblem } from './PaginationPanel';
 import { RuleHealthNotice, needsAttention } from './RuleHealth';
@@ -498,12 +499,6 @@ function FeedPanel({ id, tab, onTab, close, edit, changed, notify }: { id: strin
       {tab === 'settings' && <FeedSettingsTab feed={feed} busy={busy} setBusy={setBusy} setError={setError} dirty={dirty} reload={load} items={detail.items} saved={result => { setDetail(previous => previous && { ...previous, ...result }); void load().catch(e => setError(messageOf(e))); }} changed={changed} notify={notify} edit={() => guard(() => edit(feed))} removed={close} />}
     </>}
   </div></Modal>;
-}
-
-const filterLines = (value: string) => [...new Set(value.split('\n').map(line => line.trim()).filter(Boolean))];
-function draftFilter(include: string, exclude: string, regex: boolean): ItemFilter | null {
-  const draft = { include: filterLines(include), exclude: filterLines(exclude), regex };
-  return draft.include.length || draft.exclude.length ? draft : null;
 }
 
 function FeedSettingsTab({ feed, items, busy, setBusy, setError, dirty, reload, saved, changed, notify, edit, removed }: {

@@ -6,7 +6,7 @@ import { TRANSLATION_CACHE_LIMIT, type Tables } from './backups.js';
 import { FetchHistory } from './fetch-history.js';
 import { normalizeLink } from './links.js';
 import { RuleHealth } from './rule-health.js';
-import { BUNDLE_SCHEMA, BundleStore } from './bundle-store.js';
+import { BUNDLE_SCHEMA, BUNDLE_SETTINGS_COLUMNS, BundleStore } from './bundle-store.js';
 import { ApiTokens } from './api-tokens.js';
 import { ApiTokenLog, API_TOKEN_LOG_SCHEMA } from './api-token-log.js';
 import { ActivityStats, ACTIVITY_SCHEMA } from './activity-stats.js';
@@ -443,6 +443,14 @@ export class Store {
     if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='activity_totals'").get()) {
       const current = Number((this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
       this.db.exec(`BEGIN; ${ACTIVITY_SCHEMA} PRAGMA user_version=${Math.max(23, current)}; COMMIT;`);
+    }
+    // 24: bundle deduplication and filter. Like 13–23 it checks for its own columns.
+    const bundleColumns = new Set(this.db.prepare('PRAGMA table_info(bundles)').all().map(column => String(column.name)));
+    if (BUNDLE_SETTINGS_COLUMNS.some(column => !bundleColumns.has(column))) {
+      const current = Number((this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
+      this.db.exec(`BEGIN;
+        ${BUNDLE_SETTINGS_COLUMNS.filter(column => !bundleColumns.has(column)).map(column => `ALTER TABLE bundles ADD COLUMN ${column} TEXT;`).join('\n')}
+        PRAGMA user_version=${Math.max(24, current)}; COMMIT;`);
     }
     this.activity = new ActivityStats(this.db);
     this.migrateBark();
@@ -1006,7 +1014,12 @@ export class Store {
       tables[table] = rows.map(row => {
         if (table === 'user_notifications') return { ...row, value: decrypt(this.masterKey, String(row.value)) };
         if (table === 'credentials' || table === 'network_profiles') return { ...row, encrypted_value: decrypt(this.masterKey, String(row.encrypted_value)) };
-        if (table === 'feeds' || table === 'bundles') return { ...row, token_ciphertext: decrypt(this.masterKey, String(row.token_ciphertext)) };
+        if (table === 'bundles') {
+          // A bundle that keeps the original behaviour is written exactly as before the settings existed, so older versions can still restore it.
+          const { dedupe_json: dedupe, item_filter_json: filter, ...bundle } = row;
+          return { ...bundle, ...(dedupe === null ? {} : { dedupe_json: dedupe }), ...(filter === null ? {} : { item_filter_json: filter }), token_ciphertext: decrypt(this.masterKey, String(row.token_ciphertext)) };
+        }
+        if (table === 'feeds') return { ...row, token_ciphertext: decrypt(this.masterKey, String(row.token_ciphertext)) };
         if (table === 'settings' && row.key === 'application') return { ...row, value: decrypt(this.masterKey, String(row.value)) };
         // The browser's language is a hint for this instance, not part of the account.
         if (table === 'users') { const { detected_locale: _detected, ...user } = row; return user; }

@@ -93,7 +93,7 @@ export class ImportJobs {
       return this.complete(job, entry, input, items, startedAt, performance.now() - started);
     }, [siteKey(input.url)]);
   }
-  private existing(url: string, entry: Pick<ImportEntry, 'sourceType' | 'translationMode' | 'targetLanguage'>, ownerId = 'admin'): Feed | undefined { return this.store.listFeeds(ownerId).find(f => normalizeSource(f.url) === url && (f.sourceType ?? 'website') === (entry.sourceType ?? 'website') && (entry.sourceType !== 'rss' || (f.translationMode ?? 'bilingual') === translationMode(entry) && (f.targetLanguage ?? 'zh-CN') === (entry.targetLanguage ?? 'zh-CN'))); }
+  private existing(url: string, entry: Pick<ImportEntry, 'sourceType' | 'translationMode' | 'targetLanguage'>, ownerId = 'admin'): Feed | undefined { return this.store.listFeeds(ownerId).find(f => normalizeSource(f.url) === url && (f.sourceType ?? 'website') === (entry.sourceType ?? 'website') && (entry.sourceType !== 'rss' || (f.translationMode ?? 'bilingual') === translationMode(entry) && (translationMode(entry) === 'original' || (f.targetLanguage ?? 'zh-CN') === (entry.targetLanguage ?? 'zh-CN')))); }
   private complete(job: ImportJob, entry: ImportEntry, input: FeedInput, items: import('../shared/types.js').ExtractedItem[], startedAt: string, durationMs: number, rss?: SourceResult) {
     return this.store.transaction(() => {
       const existing = this.existing(entry.url, entry, job.ownerId);
@@ -170,8 +170,8 @@ export class ImportJobs {
               const rss = await this.loadRss(entry, this.signal(job));
               if (!stillActive()) { this.requeue(job.id, entry.id); return; }
               entry.title = rss.title;
-              this.complete(current, entry, { sourceType: 'rss', translationMode: translationMode(entry), targetLanguage: entry.targetLanguage ?? 'zh-CN', translationProvider: entry.translationProvider ?? null, name: (rss.title.trim() || new URL(entry.url).host).slice(0, 200), url: entry.url, credentialId: null, networkProfileId: entry.networkProfileId ?? null, intervalMinutes: entry.intervalMinutes, waitMs: 0, rules: { item: '', title: '', link: '' } }, [], startedAt, performance.now() - started, rss);
-              this.wakeTranslation?.();
+              this.complete(current, entry, { sourceType: 'rss', translationMode: translationMode(entry), targetLanguage: entry.targetLanguage ?? 'zh-CN', translationProvider: translationMode(entry) === 'original' ? null : entry.translationProvider ?? null, name: (rss.title.trim() || new URL(entry.url).host).slice(0, 200), url: entry.url, credentialId: null, networkProfileId: entry.networkProfileId ?? null, intervalMinutes: entry.intervalMinutes, waitMs: 0, rules: { item: '', title: '', link: '' } }, [], startedAt, performance.now() - started, rss);
+              if (translationMode(entry) !== 'original') this.wakeTranslation?.();
               return;
             }
             const { title, detection } = await this.discover(entry, this.signal(job));

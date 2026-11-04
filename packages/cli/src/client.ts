@@ -8,6 +8,7 @@ import {
   type BulkFeedSettingsInput,
   type BundleInput,
   type BundlePayload,
+  type BundlePreview,
   type DetectionResult,
   type ExtractedItem,
   type PubmedPreview,
@@ -41,7 +42,7 @@ export interface RssPreview { title: string; items: Array<{ title: string; link:
 export interface BrowserOpenInput { url: string; credentialId?: string | null; networkProfileId?: string | null; waitMs?: number; waitForSelector?: string }
 export interface ImportJobInput {
   entries: Array<{ url: string; credentialId?: string | null; networkProfileId?: string | null }>;
-  intervalMinutes?: number; sourceType?: 'website' | 'rss'; translationMode?: 'translated' | 'bilingual'; targetLanguage?: string; translationProvider?: string | null;
+  intervalMinutes?: number; sourceType?: 'website' | 'rss'; translationMode?: 'original' | 'translated' | 'bilingual'; targetLanguage?: string; translationProvider?: string | null;
 }
 
 /** A request the client did not send because it runs in dry-run mode. */
@@ -189,6 +190,7 @@ export class FeedLanternClient {
 
   // Bundles
   listBundles(): Promise<BundlePayload[]> { return this.request('GET', '/api/bundles'); }
+  previewBundle(id: string): Promise<BundlePreview> { return this.request('GET', `/api/bundles/${encodeURIComponent(id)}/preview`); }
   getBundle(id: string): Promise<BundlePayload> { return this.request('GET', `/api/bundles/${encodeURIComponent(id)}`); }
   createBundle(input: BundleInput): Promise<BundlePayload> { return this.request('POST', '/api/bundles', { body: input }); }
   updateBundle(id: string, input: Partial<BundleInput>): Promise<BundlePayload> { return this.request('PUT', `/api/bundles/${encodeURIComponent(id)}`, { body: input }); }

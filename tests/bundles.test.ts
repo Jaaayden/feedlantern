@@ -8,7 +8,7 @@ import { XMLParser } from 'fast-xml-parser';
 import { createApp, Store, type BrowserServiceLike } from '../src/server/app.js';
 import { openBackup, sealBackup, snapshotSchema } from '../src/server/backups.js';
 import { mergeBundleItems, renderBundleRss } from '../src/server/bundles.js';
-import type { Bundle, Feed, FeedInput, FeedItem } from '../src/shared/types.js';
+import { BUNDLE_DEDUPE_DEFAULT, type Bundle, type Feed, type FeedInput, type FeedItem } from '../src/shared/types.js';
 
 const base: Feed = {
   id: 'feed_a', name: 'Alpha', url: 'https://a.test/', rules: { item: 'article', title: 'h2', link: 'a' }, credentialId: null,
@@ -16,7 +16,7 @@ const base: Feed = {
   lastSuccessAt: '2026-01-05T00:00:00.000Z', nextFetchAt: '2026-01-06T00:00:00.000Z', lastError: null, itemCount: 0,
 };
 const item = (id: string, link: string, firstSeenAt: string, publishedAt?: string, extra: Partial<FeedItem> = {}): FeedItem => ({ id, title: id, link, firstSeenAt, publishedAt, ...extra });
-const bundle: Bundle = { id: 'bundle_x', name: '晨读 & 周末', feedIds: ['feed_a', 'feed_b'], itemLimit: 100, createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' };
+const bundle: Bundle = { id: 'bundle_x', name: '晨读 & 周末', feedIds: ['feed_a', 'feed_b'], itemLimit: 100, dedupe: BUNDLE_DEDUPE_DEFAULT, itemFilter: null, createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' };
 const input = (name: string, url: string): FeedInput => ({ name, url, rules: { item: 'article', title: 'h2', link: 'a' }, credentialId: null, intervalMinutes: 60, waitMs: 0 });
 const browserService = { close: async () => {}, dispose: async () => {} } as unknown as BrowserServiceLike;
 const browserNavigation = { 'sec-fetch-dest': 'document', 'sec-fetch-mode': 'navigate', accept: 'text/html' };
@@ -158,7 +158,7 @@ test('完整备份包含聚合订阅与密钥，旧备份没有聚合表也能�
   } finally { a.close(); b.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('v8 数据库升级到 14 后可以创建聚合订阅', () => {
+test('v8 数据库升级到 24 后可以创建聚合订阅', () => {
   const dir = mkdtempSync(join(tmpdir(), 'fl-bundle-migrate-'));
   try {
     new Store(dir).close();
@@ -167,7 +167,7 @@ test('v8 数据库升级到 14 后可以创建聚合订阅', () => {
     const store = new Store(dir);
     try {
       const raw = new DatabaseSync(join(dir, 'app.db'));
-      assert.equal((raw.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 14); raw.close();
+      assert.equal((raw.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 24); raw.close();
       store.createAdmin('admin', 'admin-password');
       assert.equal(store.bundles.create({ name: 'x', feedIds: [] }, 'admin').bundle.name, 'x');
     } finally { store.close(); }

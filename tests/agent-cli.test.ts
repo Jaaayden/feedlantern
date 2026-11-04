@@ -141,6 +141,8 @@ test('--dry-run 只打印请求，不产生副作用，也不泄露令牌', asyn
     assert.equal(dry.code, 0, dry.stderr);
     const [request] = dry.json().requests;
     assert.equal(dry.json().dryRun, true);
+    const original = await t.cli(['imports', 'create', 'https://example.test/feed.xml', '--rss', '--translation', 'original', '--dry-run']);
+    assert.equal(original.json().requests[0].body.translationMode, 'original', 'batch RSS can relay the original text');
     assert.deepEqual([request.method, request.url, request.body.name, request.body.rules], ['POST', `${t.url}/api/feeds`, 'example.test', { item: 'article', title: 'h2', link: 'a' }]);
     assert.equal(request.headers.Authorization, 'Bearer fl_…');
     assert.ok(!dry.stdout.includes(t.write));
@@ -237,6 +239,24 @@ test('聚合订阅、批量操作与部分失败的退出码', async () => {
     assert.deepEqual((await t.cli(['bundles', 'update', bundleId, '--add-feeds', b.id, '--item-limit', '20'])).json().bundle.feedIds, [a.id, b.id]);
     assert.equal((await t.cli(['bundles', 'get', bundleId])).json().bundle.itemLimit, 20);
     assert.equal((await t.cli(['bundles', 'list'])).json().length, 1);
+    // Deduplication and filter: only the flags given change; `bundles get` and `bundles preview` show the result.
+    assert.deepEqual((await t.cli(['bundles', 'get', bundleId])).json().bundle.dedupe, { mode: 'link', windowDays: null, prefer: 'earliest' });
+    const tuned = await t.cli(['bundles', 'update', bundleId, '--dedupe', 'title', '--dedupe-window', '7', '--dedupe-prefer', 'order', '--filter', '{"exclude":["ad"],"matchSource":true}']);
+    assert.equal(tuned.code, 0, tuned.stderr);
+    assert.deepEqual(tuned.json().bundle.dedupe, { mode: 'title', windowDays: 7, prefer: 'order' });
+    assert.deepEqual(tuned.json().bundle.itemFilter, { include: [], exclude: ['ad'], regex: false, matchSource: true });
+    assert.deepEqual((await t.cli(['bundles', 'update', bundleId, '--dedupe', 'url'])).json().bundle.dedupe, { mode: 'url', windowDays: null, prefer: 'order' });
+    const preview = (await t.cli(['bundles', 'preview', bundleId])).json();
+    assert.deepEqual([preview.members, typeof preview.merged, typeof preview.filtered, Array.isArray(preview.groups)], [2, 'number', 'number', true]);
+    assert.equal((await t.cli(['bundles', 'update', bundleId, '--dedupe', 'fuzzy'])).code, 2, 'unknown choice is a usage error');
+    assert.equal((await t.cli(['bundles', 'update', bundleId, '--dedupe-window', '0'])).code, 2);
+    assert.equal((await t.cli(['bundles', 'update', bundleId, '--filter', '{"include":["("],"regex":true}'])).code !== 0, true, 'an invalid filter is refused by the server');
+    assert.equal((await t.cli(['bundles', 'update', bundleId, '--filter', 'none', '--dry-run'])).json().dryRun, true);
+    assert.notEqual(t.store.bundles.get(bundleId)?.itemFilter, null, 'dry run changed nothing');
+    assert.equal((await t.cli(['bundles', 'update', bundleId, '--filter', 'none'])).json().bundle.itemFilter, null);
+    const withSettings = await t.cli(['bundles', 'create', '--name', '带设置', '--feeds', `${b.id},${a.id}`, '--dedupe', 'url', '--dedupe-prefer', 'order']);
+    assert.deepEqual([withSettings.json().bundle.dedupe.mode, withSettings.json().bundle.feedIds], ['url', [b.id, a.id]]);
+    assert.equal((await t.cli(['bundles', 'delete', withSettings.json().bundle.id, '-y'])).code, 0);
     assert.equal((await t.cli(['bundles', 'delete', bundleId])).code, 2);
     assert.equal((await t.cli(['bundles', 'delete', bundleId, '-y'])).code, 0);
 
@@ -319,6 +339,18 @@ test('MCP 工具：写工具在只读令牌下返回清晰错误，危险操作�
     assert.equal((await writer.call('preview_rules', { feedId: id, rules: { title: 'h3' } })).body.rules.title, 'h3');
     assert.equal((await writer.call('feed_update', { id, changes: { intervalMinutes: 30 } })).body.feed.intervalMinutes, 30);
     assert.equal((await writer.call('feed_items', { id, limit: 1 })).body.items.length, 1);
+
+    // Bundles: deduplication and filter through the tools, and the merge details for the saved settings.
+    const bundle = await writer.call('bundle_create', { name: '合集', feedIds: [id], dedupe: { mode: 'url', prefer: 'order' }, itemFilter: { exclude: ['ad'], matchSource: true } });
+    assert.equal(bundle.isError, false, JSON.stringify(bundle.body));
+    assert.deepEqual(bundle.body.bundle.dedupe, { mode: 'url', windowDays: null, prefer: 'order' });
+    assert.deepEqual(bundle.body.bundle.itemFilter, { include: [], exclude: ['ad'], regex: false, matchSource: true });
+    const bundleId = bundle.body.bundle.id as string;
+    assert.equal((await writer.call('bundle_update', { id: bundleId, dedupe: { mode: 'title', windowDays: 3 } })).body.bundle.dedupe.windowDays, 3);
+    assert.equal((await writer.call('bundle_update', { id: bundleId, itemFilter: null })).body.bundle.itemFilter, null);
+    assert.equal((await reader.call('bundle_get', { id: bundleId })).body.bundle.dedupe.mode, 'title');
+    const merged = await reader.call('bundle_preview', { id: bundleId });
+    assert.deepEqual([merged.isError, merged.body.members, typeof merged.body.output], [false, 1, 'number']);
 
     const denied = await reader.call('feed_refresh', { id });
     assert.equal(denied.isError, true);

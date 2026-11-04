@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
 import { isPubmedDate, PUBMED_ARTICLE_TYPES, PUBMED_DAYS_MAX, PUBMED_LIMITS, type PubmedField, type PubmedFilters } from '../../../src/shared/pubmed.js';
-import type { ApiTokenCallFilter, BulkFeedSettingsInput, FeedInput, FetchStatus, ItemFilter, ItemOutputStatus, PaginationRules, SelectionRules } from '../../../src/shared/types.js';
+import { BUNDLE_DEDUPE_MODES, BUNDLE_DEDUPE_PREFER, BUNDLE_DEDUPE_WINDOW, type ApiTokenCallFilter, type BulkFeedSettingsInput, type BundleFilter, type FeedInput, type FetchStatus, type ItemFilter, type ItemOutputStatus, type PaginationRules, type SelectionRules } from '../../../src/shared/types.js';
 import { FeedLanternClient, type BulkAction, type HttpMethod, type ImportJobInput } from './client.js';
 import { maskToken, readConfig, resolveConnection, writeConfig, type Connection, type Env } from './config.js';
 import { asFeedLanternError, EXIT, FeedLanternError, usageError } from './errors.js';
@@ -169,6 +169,19 @@ async function feedChanges(ctx: Context): Promise<ops.FeedChanges> {
   };
 }
 
+const bundleSettingOptions = { dedupe: { type: 'string' }, 'dedupe-window': { type: 'string' }, 'dedupe-prefer': { type: 'string' }, filter: { type: 'string' } } as const;
+
+/** Deduplication and filter of a bundle; only what was given is sent, so the rest keeps its value. */
+async function bundleSettings(ctx: Context): Promise<Pick<ops.BundleChanges, 'dedupe' | 'itemFilter'>> {
+  const window = str(ctx.opts, 'dedupe-window');
+  const dedupe = compact({
+    mode: oneOf(ctx.opts, 'dedupe', BUNDLE_DEDUPE_MODES), prefer: oneOf(ctx.opts, 'dedupe-prefer', BUNDLE_DEDUPE_PREFER),
+    windowDays: window === 'none' ? null : int(ctx.opts, 'dedupe-window', BUNDLE_DEDUPE_WINDOW.min, BUNDLE_DEDUPE_WINDOW.max),
+  });
+  const filter = str(ctx.opts, 'filter');
+  return compact({ dedupe: Object.keys(dedupe).length ? dedupe : undefined, itemFilter: filter === 'none' ? null : await json<BundleFilter>(ctx, 'filter') });
+}
+
 const enabledArg = (ctx: Context) => String(ctx.args.id);
 
 const pubmedLimit = (ctx: Context) => { const value = oneOf(ctx.opts, 'limit', PUBMED_LIMITS.map(String)); return value === undefined ? undefined : Number(value); };
@@ -326,17 +339,18 @@ const commands: Command[] = [
   { name: 'bundles list', table: { rows: '', columns: ['bundle.id', 'bundle.name', 'bundle.feedIds.length', 'bundle.itemLimit', 'bundleUrl'] }, run: async ctx => ops.listBundles(await ctx.client()) },
   { name: 'bundles get', args: ['id'], run: async ctx => ops.getBundle(await ctx.client(), String(ctx.args.id)) },
   {
-    name: 'bundles create', options: { name: { type: 'string' }, feeds: { type: 'string' }, 'item-limit': { type: 'string' } }, write: true,
+    name: 'bundles create', options: { name: { type: 'string' }, feeds: { type: 'string' }, 'item-limit': { type: 'string' }, ...bundleSettingOptions }, write: true,
     async run(ctx) {
       const name = str(ctx.opts, 'name');
       if (!name) throw usageError(t('usage.missingOption', { name: '--name' }));
-      return ops.createBundle(await ctx.client(), { name, feedIds: list(str(ctx.opts, 'feeds')) ?? [], ...compact({ itemLimit: int(ctx.opts, 'item-limit', 10, 500) }) });
+      return ops.createBundle(await ctx.client(), { name, feedIds: list(str(ctx.opts, 'feeds')) ?? [], ...compact({ itemLimit: int(ctx.opts, 'item-limit', 10, 500) }), ...await bundleSettings(ctx) });
     },
   },
   {
-    name: 'bundles update', args: ['id'], options: { name: { type: 'string' }, feeds: { type: 'string' }, 'add-feeds': { type: 'string' }, 'item-limit': { type: 'string' } }, write: true,
-    run: async ctx => ops.updateBundle(await ctx.client(), String(ctx.args.id), compact({ name: str(ctx.opts, 'name'), feedIds: list(str(ctx.opts, 'feeds')), addFeedIds: list(str(ctx.opts, 'add-feeds')), itemLimit: int(ctx.opts, 'item-limit', 10, 500) })),
+    name: 'bundles update', args: ['id'], options: { name: { type: 'string' }, feeds: { type: 'string' }, 'add-feeds': { type: 'string' }, 'item-limit': { type: 'string' }, ...bundleSettingOptions }, write: true,
+    run: async ctx => ops.updateBundle(await ctx.client(), String(ctx.args.id), compact({ name: str(ctx.opts, 'name'), feedIds: list(str(ctx.opts, 'feeds')), addFeedIds: list(str(ctx.opts, 'add-feeds')), itemLimit: int(ctx.opts, 'item-limit', 10, 500), ...await bundleSettings(ctx) })),
   },
+  { name: 'bundles preview', args: ['id'], run: async ctx => ops.previewBundle(await ctx.client(), String(ctx.args.id)) },
   { name: 'bundles delete', args: ['id'], write: true, confirm: () => true, run: async ctx => ops.deleteBundle(await ctx.client(), String(ctx.args.id)) },
 
   {
@@ -361,7 +375,7 @@ const commands: Command[] = [
         entries: (ctx.args.urls as string[]).map(url => ({ url, credentialId, networkProfileId })),
         ...compact({
           sourceType: ctx.opts.rss ? 'rss' as const : undefined, intervalMinutes: int(ctx.opts, 'interval', 5, 1440),
-          translationMode: oneOf(ctx.opts, 'translation', ['translated', 'bilingual'] as const), targetLanguage: str(ctx.opts, 'target-language'), translationProvider: str(ctx.opts, 'translation-provider'),
+          translationMode: oneOf(ctx.opts, 'translation', ['original', 'translated', 'bilingual'] as const), targetLanguage: str(ctx.opts, 'target-language'), translationProvider: str(ctx.opts, 'translation-provider'),
         }),
       };
       return ops.createImport(await ctx.client(), input);
