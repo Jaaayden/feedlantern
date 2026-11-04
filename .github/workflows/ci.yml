@@ -38,8 +38,8 @@ jobs:
           path: |
             ~/.cache/ms-playwright
             ~/.cache/ci-apt-debs
-          key: chromium-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
-          restore-keys: chromium-${{ runner.os }}-
+          key: chromium-v2-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: chromium-v2-${{ runner.os }}-
       - name: Install Chromium
         run: bash scripts/ci-install-chromium.sh
       - name: Check and build
@@ -75,8 +75,8 @@ jobs:
           path: |
             ~/.cache/ms-playwright
             ~/.cache/ci-apt-debs
-          key: chromium-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
-          restore-keys: chromium-${{ runner.os }}-
+          key: chromium-v2-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: chromium-v2-${{ runner.os }}-
       - name: Install Chromium
         run: bash scripts/ci-install-chromium.sh
       - name: Browser acceptance tests (shard ${{ matrix.shard }}/5)
