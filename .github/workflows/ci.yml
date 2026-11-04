@@ -33,7 +33,7 @@ jobs:
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
       - name: Install Chromium
-        run: pnpm exec playwright install --with-deps chromium
+        run: bash scripts/ci-install-chromium.sh
       - name: Check and build
         run: pnpm build
       - name: Unit and integration tests
@@ -62,7 +62,7 @@ jobs:
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
       - name: Install Chromium
-        run: pnpm exec playwright install --with-deps chromium
+        run: bash scripts/ci-install-chromium.sh
       - name: Browser acceptance tests (shard ${{ matrix.shard }}/5)
         run: pnpm test:e2e --shard=${{ matrix.shard }}/5
       - name: Preserve browser test diagnostics
