@@ -31,3 +31,6 @@ pnpm exec playwright install --with-deps chromium
 # 3. Keep what was downloaded for the next run. On a cache hit nothing new was
 #    downloaded, so this adds nothing and the cache is not saved again.
 cp -n /var/cache/apt/archives/*.deb "$debs"/ 2> /dev/null || true
+echo "apt archives: $(ls /var/cache/apt/archives/*.deb 2> /dev/null | wc -l) packages; package cache: $(ls "$debs"/*.deb 2> /dev/null | wc -l) packages"
+apt-config dump | grep -i -E 'Keep-Downloaded|Dir::Cache::archives|Clean-Installed|Post-Invoke' || true
+ls -la /etc/apt/apt.conf.d/ || true
