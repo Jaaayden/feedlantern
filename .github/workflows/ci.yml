@@ -32,8 +32,16 @@ jobs:
         run: npm install --global pnpm@11.25.0
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
+      - name: Cache Chromium and its font packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/ms-playwright
+            ~/.cache/ci-apt-debs
+          key: chromium-v2-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: chromium-v2-${{ runner.os }}-
       - name: Install Chromium
-        run: pnpm exec playwright install --with-deps chromium
+        run: bash scripts/ci-install-chromium.sh
       - name: Check and build
         run: pnpm build
       - name: Unit and integration tests
@@ -61,8 +69,16 @@ jobs:
         run: npm install --global pnpm@11.25.0
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
+      - name: Cache Chromium and its font packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/ms-playwright
+            ~/.cache/ci-apt-debs
+          key: chromium-v2-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: chromium-v2-${{ runner.os }}-
       - name: Install Chromium
-        run: pnpm exec playwright install --with-deps chromium
+        run: bash scripts/ci-install-chromium.sh
       - name: Browser acceptance tests (shard ${{ matrix.shard }}/5)
         run: pnpm test:e2e --shard=${{ matrix.shard }}/5
       - name: Preserve browser test diagnostics
