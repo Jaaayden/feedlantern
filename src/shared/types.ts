@@ -433,7 +433,7 @@ export interface Bundle {
   dedupe: BundleDedupe; itemFilter: BundleFilter | null; createdAt: string; updatedAt: string;
 }
 export interface BundlePayload { bundle: Bundle; bundleUrl: string }
-export const BUNDLE_ITEM_LIMIT = { min: 10, max: 500, default: 100 } as const;
+export const BUNDLE_ITEM_LIMIT = { min: 10, max: 2000, default: 100 } as const;
 /** One item in a bundle preview. */
 export interface BundleItemRef { id: string; title: string; link: string; feedId: string; feedName: string; at: string }
 /** Why one duplicate was dropped in favour of the kept copy. `indirect`: it only matched another duplicate of the same group. */

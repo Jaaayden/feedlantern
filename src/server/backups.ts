@@ -5,6 +5,7 @@ import { storedNotificationSchema } from './notify.js';
 import { BUNDLE_ITEM_LIMIT, BUNDLE_MAX_FEEDS, OUTPUT_LIMIT, RETENTION_LIMIT } from '../shared/types.js';
 import { forbiddenHeaderReason, NETWORK_LIMITS } from '../shared/network-rules.js';
 import { isLocale } from '../shared/i18n.js';
+import { BUNDLE_SEEN_BACKUP_ROWS } from './bundle-guids.js';
 /** The translation cache is disposable; both pruning and backups keep only this many newest entries. */
 export const TRANSLATION_CACHE_LIMIT = 20_000;
 const text = z.string().max(1_000_000);
@@ -46,6 +47,8 @@ export const backupTables = {
   // Optional so that backups made before feed bundles still restore.
   bundles: z.array(z.object({ id: short, owner_id: short, name: z.string().min(1).max(200), item_limit: z.number().int().min(BUNDLE_ITEM_LIMIT.min).max(BUNDLE_ITEM_LIMIT.max), dedupe_json: nullable.default(null), item_filter_json: nullable.default(null), created_at: date, updated_at: date, token_ciphertext: z.string().regex(/^[A-Za-z0-9_-]{43}$/), token_hash: z.string().regex(/^[a-f0-9]{64}$/) }).strict()).max(10000).default([]),
   bundle_feeds: z.array(z.object({ bundle_id: short, feed_id: short, position: z.number().int().min(0).max(BUNDLE_MAX_FEEDS) }).strict()).max(200_000).default([]),
+  // Optional: only written when a bundle has remembered something, so other backups stay what older versions wrote.
+  bundle_seen: z.array(z.object({ bundle_id: short, kind: z.enum(['link', 'url', 'title']), key_hash: z.string().regex(/^[a-f0-9]{32}$/), guid: short, item_time: z.number().int().min(0), first_seen_at: date, last_seen_at: date }).strict()).max(BUNDLE_SEEN_BACKUP_ROWS).default([]),
   settings: z.array(z.union([
     z.object({ key: z.literal('feedView'), value: z.enum(['list', 'cards']) }).strict(),
     z.object({ key: z.literal('application'), value: text.refine(isApplicationSettingsJson, 'Invalid application settings') }).strict(),
@@ -83,7 +86,7 @@ export const snapshotSchema = z.preprocess(value => {
   }
   return snapshot;
 }, currentSnapshotSchema).superRefine((snapshot, context) => {
-  const { users, feeds, credentials, user_notifications, bundles, bundle_feeds, network_profiles } = snapshot.tables;
+  const { users, feeds, credentials, user_notifications, bundles, bundle_feeds, bundle_seen, network_profiles } = snapshot.tables;
   const owners = new Set(users.map(u => u.id)), creds = new Map(credentials.map(c => [c.id, c.owner_id]));
   const { activity_totals, activity_daily } = snapshot.tables;
   const totalsOwners = new Set(activity_totals.map(row => row.owner_id));
@@ -104,6 +107,9 @@ export const snapshotSchema = z.preprocess(value => {
   if (bundleOwners.size !== bundles.length || bundles.some(b => !owners.has(b.owner_id)) || new Set(bundle_feeds.map(m => `${m.bundle_id}\n${m.feed_id}`)).size !== bundle_feeds.length
     || bundle_feeds.some(m => !bundleOwners.has(m.bundle_id) || feedOwners.get(m.feed_id) !== bundleOwners.get(m.bundle_id))) {
     context.addIssue({ code: 'custom', message: 'Invalid bundles in the backup' });
+  }
+  if (bundle_seen.some(row => !bundleOwners.has(row.bundle_id)) || new Set(bundle_seen.map(row => `${row.bundle_id}\n${row.kind}\n${row.key_hash}`)).size !== bundle_seen.length) {
+    context.addIssue({ code: 'custom', message: 'Invalid remembered bundle items in the backup' });
   }
 });
 export type Snapshot = z.infer<typeof snapshotSchema>;

@@ -4,6 +4,7 @@ import { BUNDLE_DEDUPE_DEFAULT, BUNDLE_ITEM_LIMIT, BUNDLE_MAX_FEEDS, type Bundle
 import { AppError } from './auth.js';
 import { msg } from './i18n.js';
 import { storedBundleDedupe, storedBundleFilter } from './bundle-settings.js';
+import { BundleSeen } from './bundle-guids.js';
 
 /** Bundles and their members. Members are feeds of the same owner; deleting a feed removes it from every bundle (ON DELETE CASCADE). */
 export const BUNDLE_SCHEMA = `
@@ -41,12 +42,14 @@ const dedupeColumn = (dedupe: BundleDedupe | undefined): string | null =>
 const filterColumn = (filter: BundleFilter | null | undefined): string | null => filter ? JSON.stringify(filter) : null;
 
 export class BundleStore {
+  /** The ids a bundle has published for its items, see `bundle-guids.ts`. */
+  readonly seen: BundleSeen;
   constructor(
     private readonly db: DatabaseSync,
     private readonly seal: (value: string) => string,
     private readonly unseal: (value: string) => string,
     private readonly isUserActive: (id: string) => boolean,
-  ) {}
+  ) { this.seen = new BundleSeen(db); }
 
   private members(id: string): string[] {
     return (this.db.prepare('SELECT feed_id FROM bundle_feeds WHERE bundle_id=? ORDER BY position, rowid').all(id) as Array<{ feed_id: string }>).map(row => String(row.feed_id));

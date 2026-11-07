@@ -13,18 +13,35 @@ const TITLE_LIMIT = 500;
 const DAY_MS = 86_400_000;
 
 /**
+ * The thread id of a Discuz! forum thread address. One thread is written
+ * `thread-123-1-1.html` on a board page and `forum.php?mod=viewthread&tid=123`
+ * in the site's RSS, so the same thread would never share a link.
+ */
+function discuzThread(url: URL): string | null {
+  const rewritten = /^(.*)\/thread-(\d+)-\d+-\d+\.html$/.exec(url.pathname);
+  if (rewritten) return `${rewritten[1]}/thread/${rewritten[2]}`;
+  const tid = url.searchParams.get('tid');
+  const script = /^(.*)\/(forum|viewthread)\.php$/.exec(url.pathname);
+  if (tid && /^\d{1,12}$/.test(tid) && script && (script[2] === 'viewthread' || url.searchParams.get('mod') === 'viewthread')) return `${script[1]}/thread/${tid}`;
+  return null;
+}
+
+/**
  * The link without what does not change the page: tracking parameters, the
- * scheme (`http` = `https`), a `www.` prefix, trailing slashes, the fragment
- * and the order of the remaining parameters.
+ * scheme (`http` = `https`), a `www.` prefix, trailing slashes, the fragment,
+ * the order of the remaining parameters and the spelling of a Discuz! thread.
  */
 export function dedupeUrlKey(link: string): string {
   try {
     const url = new URL(link.trim());
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return normalizeLink(link);
+    const host = `${url.hostname.toLowerCase().replace(/^www\./, '')}${url.port ? `:${url.port}` : ''}`;
+    const thread = discuzThread(url);
+    if (thread) return `${host}${thread}`;
     const parameters = [...url.searchParams].filter(([name]) => !TRACKING_PARAMETER.test(name))
       .sort(([a, x], [b, y]) => (a < b ? -1 : a > b ? 1 : x < y ? -1 : x > y ? 1 : 0));
     const query = new URLSearchParams(parameters).toString();
-    return `${url.hostname.toLowerCase().replace(/^www\./, '')}${url.port ? `:${url.port}` : ''}${url.pathname.replace(/\/+$/, '')}${query ? `?${query}` : ''}`;
+    return `${host}${url.pathname.replace(/\/+$/, '')}${query ? `?${query}` : ''}`;
   } catch {
     return normalizeLink(link);
   }
