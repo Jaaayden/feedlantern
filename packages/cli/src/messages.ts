@@ -175,7 +175,7 @@ const zhCN: Dictionary = {
   'opt.feed': '在这个已保存订阅的网页上预览（规则与已保存规则合并）',
   'opt.feeds': '成员订阅 ID，逗号分隔（update 时整体替换）',
   'opt.add-feeds': '追加的成员订阅 ID，逗号分隔',
-  'opt.item-limit': '聚合输出条数（10–500，按过滤和去重后的结果计）',
+  'opt.item-limit': '聚合输出条数（10–2000，按过滤和去重后的结果计）',
   'opt.dedupe': '去重方式：off | link（默认，相同链接）| url（忽略追踪参数）| title（链接或标题相同）',
   'opt.dedupe-window': '标题去重只比较发布时间相差不超过这个天数（1–365）的条目；none 为不限制（仅 --dedupe title）',
   'opt.dedupe-prefer': '重复时保留哪一份：earliest（最先收集到的，默认）| order（排在前面的成员的）',

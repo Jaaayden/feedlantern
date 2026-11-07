@@ -9,7 +9,7 @@ export interface BundleMember { feed: Feed; items: FeedItem[] }
 export interface BundleEntry { feed: Feed; item: FeedItem }
 
 /** Publication time when known, otherwise when FeedLantern first saw the item. */
-function itemTime(item: FeedItem): number {
+export function itemTime(item: FeedItem): number {
   for (const value of [item.publishedAt, item.firstSeenAt]) {
     const time = value ? Date.parse(value) : Number.NaN;
     if (!Number.isNaN(time)) return time;

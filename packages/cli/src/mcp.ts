@@ -217,14 +217,14 @@ const tools: ToolDef[] = [
   { name: 'bundle_preview', scope: 'read', annotations: read, input: { id: z.string().min(1).describe(d('bundleId')) }, run: (client, args) => ops.previewBundle(client, s(args.id)) },
   {
     name: 'bundle_create', scope: 'write', annotations: write,
-    input: { name: z.string().min(1).max(200), feedIds: z.array(z.string()).max(200).describe(d('bundleFeedsOrdered')), itemLimit: z.number().int().min(10).max(500).optional(), dedupe: bundleDedupe, itemFilter: bundleFilter, dryRun },
+    input: { name: z.string().min(1).max(200), feedIds: z.array(z.string()).max(200).describe(d('bundleFeedsOrdered')), itemLimit: z.number().int().min(10).max(2000).optional(), dedupe: bundleDedupe, itemFilter: bundleFilter, dryRun },
     run: (client, args) => { const { dryRun: _dryRun, ...input } = args; return ops.createBundle(client, input as never); },
   },
   {
     name: 'bundle_update', scope: 'write', annotations: write,
     input: {
       id: z.string().min(1).describe(d('bundleId')), name: z.string().min(1).max(200).optional(), feedIds: z.array(z.string()).max(200).optional().describe(d('bundleFeeds')),
-      addFeedIds: z.array(z.string()).max(200).optional().describe(d('bundleAddFeeds')), itemLimit: z.number().int().min(10).max(500).optional(), dedupe: bundleDedupe, itemFilter: bundleFilter, dryRun,
+      addFeedIds: z.array(z.string()).max(200).optional().describe(d('bundleAddFeeds')), itemLimit: z.number().int().min(10).max(2000).optional(), dedupe: bundleDedupe, itemFilter: bundleFilter, dryRun,
     },
     run: (client, args) => { const { id: bundleId, dryRun: _dryRun, ...changes } = args; return ops.updateBundle(client, s(bundleId), changes as never); },
   },

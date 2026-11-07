@@ -111,7 +111,7 @@ PubMed 检索订阅的来源类型是 `sourceType: 'pubmed'`。`src/shared/pubme
 | `/feeds/:id/:token.atom`、`.json` | 同一密钥授权的 Atom 1.0、JSON Feed 1.1 |
 | `PATCH /api/feeds/:id` | 名称、间隔、翻译模式，以及 `itemFilter`（`null` 清除）和 `outputLimit` |
 | `POST /api/feeds/:id/output-preview` | `{itemFilter?,outputLimit?}` 预览未保存设置下每个条目的输出状态 |
-| `GET/POST /api/bundles` | 列出／以 `{name, feedIds, itemLimit?, dedupe?, itemFilter?}` 创建聚合订阅，返回 `{bundle, bundleUrl}`；成员必须属于同一账号，最多 200 个，`itemLimit` 为 10–500（默认 100） |
+| `GET/POST /api/bundles` | 列出／以 `{name, feedIds, itemLimit?, dedupe?, itemFilter?}` 创建聚合订阅，返回 `{bundle, bundleUrl}`；成员必须属于同一账号，最多 200 个，`itemLimit` 为 10–2000（默认 100） |
 | `GET/PUT/DELETE /api/bundles/:id` | 读取／局部修改 `{name?, feedIds?, itemLimit?, dedupe?, itemFilter?}`（`feedIds` 整体替换成员并决定优先级，`dedupe` 只改给出的字段，`itemFilter` 整体替换、`null` 删除）／删除聚合，不影响成员订阅 |
 | `POST /api/bundles/preview`、`GET /api/bundles/:id/preview` | 未保存的设置（`{feedIds, itemLimit?, dedupe?, itemFilter?}`，POST 需要 write 令牌，不保存）或已保存聚合的合并详情：输出、被过滤和被合并的数量与明细、判定原因 |
 | `POST /api/bundles/:id/feeds` | `{feedIds}` 追加成员，已有成员保持原位 |

@@ -17,7 +17,7 @@ pnpm install --frozen-lockfile && pnpm build
 ```
 
 ```bash
-npm install --global ./packages/cli/feedlantern-cli-0.12.0.tgz
+npm install --global ./packages/cli/feedlantern-cli-0.12.1.tgz
 ```
 
 `npm pack` 生成的 `.tgz` 可以复制到其他机器上用同样的命令安装，安装时会从 npm 下载依赖（MCP SDK 和 zod）。不想全局安装时，在仓库里直接运行打包好的文件：
@@ -146,6 +146,8 @@ CLI 用令牌调用时不检查 Host，所以用内网地址（例如 Docker 网
 - 只改名称、刷新间隔、输出条数（`--output-limit`）、保留条数（`--retention-limit`，`auto` 为自动）、条目过滤（`--filter <JSON>`，`none` 为删除）或翻译设置时，只修改设置，不重新抓取。
 
 ### 聚合订阅的去重与过滤
+
+聚合输出里每个条目的 `id`（RSS 的 `guid`、Atom 的 `id`、JSON Feed 的 `id`）是聚合第一次发布它时用的那个，之后保留的副本换成别的成员、或成员清掉后又重新出现，`id` 都不变，所以阅读器不会把同一条内容当作新内容。该记录按链接（`url`、`title` 档再加规范化地址、标题）建立，`dedupe.mode` 为 `off` 时不记录；它不是配置，`GET /api/bundles/:id` 里看不到。
 
 聚合输出的处理顺序是：成员自己的过滤和输出条数 → 聚合过滤（`itemFilter`）→ 去重（`dedupe`）→ 按时间倒序 → 条目上限（`itemLimit`），所以上限按过滤和去重之后的结果计。不设置时保持原来的行为：相同链接只出现一次，保留最先收集到的那份，没有聚合过滤。
 

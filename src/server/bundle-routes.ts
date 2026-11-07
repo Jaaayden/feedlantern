@@ -109,7 +109,8 @@ export function registerBundleRoutes(app: FastifyInstance, store: Store, origin:
     const bundle = store.bundles.get(params.id)!;
     const members = bundleMembers(store, bundle);
     // Merged once: the tag, the browser page and the feed all describe the same items.
-    const entries = mergeBundleItems(members, bundle);
+    // Items keep the id they were first published under, whichever member's copy the merge kept this time.
+    const entries = store.bundles.seen.stabilize(bundle, mergeBundleItems(members, bundle));
     const publicUrl = `${origin()}/bundles/${encodeURIComponent(bundle.id)}/${encodeURIComponent(token)}${extension}`;
     const siteUrl = `${origin()}/`;
     const query = request.query as Record<string, unknown> | undefined;

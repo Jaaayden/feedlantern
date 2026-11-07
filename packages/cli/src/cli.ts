@@ -343,12 +343,12 @@ const commands: Command[] = [
     async run(ctx) {
       const name = str(ctx.opts, 'name');
       if (!name) throw usageError(t('usage.missingOption', { name: '--name' }));
-      return ops.createBundle(await ctx.client(), { name, feedIds: list(str(ctx.opts, 'feeds')) ?? [], ...compact({ itemLimit: int(ctx.opts, 'item-limit', 10, 500) }), ...await bundleSettings(ctx) });
+      return ops.createBundle(await ctx.client(), { name, feedIds: list(str(ctx.opts, 'feeds')) ?? [], ...compact({ itemLimit: int(ctx.opts, 'item-limit', 10, 2000) }), ...await bundleSettings(ctx) });
     },
   },
   {
     name: 'bundles update', args: ['id'], options: { name: { type: 'string' }, feeds: { type: 'string' }, 'add-feeds': { type: 'string' }, 'item-limit': { type: 'string' }, ...bundleSettingOptions }, write: true,
-    run: async ctx => ops.updateBundle(await ctx.client(), String(ctx.args.id), compact({ name: str(ctx.opts, 'name'), feedIds: list(str(ctx.opts, 'feeds')), addFeedIds: list(str(ctx.opts, 'add-feeds')), itemLimit: int(ctx.opts, 'item-limit', 10, 500), ...await bundleSettings(ctx) })),
+    run: async ctx => ops.updateBundle(await ctx.client(), String(ctx.args.id), compact({ name: str(ctx.opts, 'name'), feedIds: list(str(ctx.opts, 'feeds')), addFeedIds: list(str(ctx.opts, 'add-feeds')), itemLimit: int(ctx.opts, 'item-limit', 10, 2000), ...await bundleSettings(ctx) })),
   },
   { name: 'bundles preview', args: ['id'], run: async ctx => ops.previewBundle(await ctx.client(), String(ctx.args.id)) },
   { name: 'bundles delete', args: ['id'], write: true, confirm: () => true, run: async ctx => ops.deleteBundle(await ctx.client(), String(ctx.args.id)) },

@@ -7,6 +7,7 @@ import { FetchHistory } from './fetch-history.js';
 import { normalizeLink } from './links.js';
 import { RuleHealth } from './rule-health.js';
 import { BUNDLE_SCHEMA, BUNDLE_SETTINGS_COLUMNS, BundleStore } from './bundle-store.js';
+import { BUNDLE_SEEN_BACKUP_ROWS, BUNDLE_SEEN_SCHEMA } from './bundle-guids.js';
 import { ApiTokens } from './api-tokens.js';
 import { ApiTokenLog, API_TOKEN_LOG_SCHEMA } from './api-token-log.js';
 import { ActivityStats, ACTIVITY_SCHEMA } from './activity-stats.js';
@@ -451,6 +452,11 @@ export class Store {
       this.db.exec(`BEGIN;
         ${BUNDLE_SETTINGS_COLUMNS.filter(column => !bundleColumns.has(column)).map(column => `ALTER TABLE bundles ADD COLUMN ${column} TEXT;`).join('\n')}
         PRAGMA user_version=${Math.max(24, current)}; COMMIT;`);
+    }
+    // 25: the ids a bundle has published for its items (stable ids across duplicate copies).
+    if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='bundle_seen'").get()) {
+      const current = Number((this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
+      this.db.exec(`BEGIN; ${BUNDLE_SEEN_SCHEMA} PRAGMA user_version=${Math.max(25, current)}; COMMIT;`);
     }
     this.activity = new ActivityStats(this.db);
     this.migrateBark();
@@ -1006,11 +1012,15 @@ export class Store {
   exportTables(): Tables {
     this.activity.prune();
     const tables: Record<string, unknown> = {};
-    for (const table of ['users', 'user_notifications', 'credentials', 'network_profiles', 'feeds', 'feed_items', 'settings', 'rss_sources', 'translations', 'translation_cache', 'bundles', 'bundle_feeds', 'activity_totals', 'activity_daily']) {
+    for (const table of ['users', 'user_notifications', 'credentials', 'network_profiles', 'feeds', 'feed_items', 'settings', 'rss_sources', 'translations', 'translation_cache', 'bundles', 'bundle_feeds', 'bundle_seen', 'activity_totals', 'activity_daily']) {
       // The cache is pruned hourly, so it can briefly exceed the limit the backup format allows.
       const rows = table === 'translation_cache'
         ? this.db.prepare('SELECT * FROM translation_cache ORDER BY touched_at DESC LIMIT ?').all(TRANSLATION_CACHE_LIMIT)
-        : this.db.prepare(`SELECT * FROM ${table}`).all();
+        : table === 'bundle_seen'
+          ? this.db.prepare('SELECT * FROM bundle_seen ORDER BY last_seen_at DESC LIMIT ?').all(BUNDLE_SEEN_BACKUP_ROWS)
+          : this.db.prepare(`SELECT * FROM ${table}`).all();
+      // Written only when there is something to remember, so other backups stay what older versions wrote.
+      if (table === 'bundle_seen' && !rows.length) continue;
       tables[table] = rows.map(row => {
         if (table === 'user_notifications') return { ...row, value: decrypt(this.masterKey, String(row.value)) };
         if (table === 'credentials' || table === 'network_profiles') return { ...row, encrypted_value: decrypt(this.masterKey, String(row.encrypted_value)) };
@@ -1041,8 +1051,8 @@ export class Store {
     this.userControllers.clear();
     this.transaction(() => {
       // Like sessions, access tokens are not part of a backup; a restore revokes them all.
-      for (const table of ['pubmed_check_jobs', 'pubmed_checks', 'ncbi_key_tests', 'sessions', 'api_token_logs', 'api_tokens', 'import_jobs', 'bundle_feeds', 'bundles', 'translations', 'rss_sources', 'translation_cache', 'feed_items', 'feeds', 'credentials', 'network_profiles', 'user_notifications', 'users', 'settings']) this.db.exec(`DELETE FROM ${table}`);
-      for (const table of ['users', 'user_notifications', 'credentials', 'network_profiles', 'feeds', 'feed_items', 'settings', 'rss_sources', 'translations', 'translation_cache', 'bundles', 'bundle_feeds'] as const) {
+      for (const table of ['pubmed_check_jobs', 'pubmed_checks', 'ncbi_key_tests', 'sessions', 'api_token_logs', 'api_tokens', 'import_jobs', 'bundle_seen', 'bundle_feeds', 'bundles', 'translations', 'rss_sources', 'translation_cache', 'feed_items', 'feeds', 'credentials', 'network_profiles', 'user_notifications', 'users', 'settings']) this.db.exec(`DELETE FROM ${table}`);
+      for (const table of ['users', 'user_notifications', 'credentials', 'network_profiles', 'feeds', 'feed_items', 'settings', 'rss_sources', 'translations', 'translation_cache', 'bundles', 'bundle_feeds', 'bundle_seen'] as const) {
         for (const value of tables[table] ?? []) {
           const row: Record<string, string | number | null> = { ...value };
           if (table === 'user_notifications') row.value = encrypt(this.masterKey, String(row.value));
