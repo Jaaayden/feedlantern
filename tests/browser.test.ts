@@ -226,3 +226,30 @@ test('超长网页分段截图：元素序号保持不变，按顺序加载到�
     await new Promise<void>(resolve => server.close(() => resolve()));
   }
 });
+
+test('手动点选条目：忽略序号类名，并避开共用类名的页脚隐藏链接', async () => {
+  const rows = Array.from({ length: 6 }, (_, n) => `<li class="list_item i${n + 1}"><span class="Article_Title"><a href="/n/${n}">新闻 ${n}</a></span><span class="Article_PublishDate">2026-08-0${n + 1}</span></li>`).join('');
+  const foot = Array.from({ length: 4 }, (_, n) => `<li class="list_item i${n + 1}"><a href="/f/${n}">友情链接 ${n}</a></li>`).join('');
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    response.end(`<!doctype html><style>body{margin:0}li{height:40px;list-style:none}</style><title>list</title>
+      <div id="wp_news_w1205"><ul class="wp_article_list">${rows}</ul></div>
+      <div id="footer" style="display:none"><div class="links"><ul class="wp_article_list">${foot}</ul></div></div>`);
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const host = `127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const browser = new BrowserService({ allowedHosts: [host] });
+  try {
+    const frame = await browser.open({ url: `http://${host}`, waitMs: 0 });
+    const map = frame.map!;
+    const third = map.labels.map((label, i) => ({ label, i })).filter(entry => entry.label.startsWith('li')).map(entry => entry.i)[2];
+    assert.ok(third >= 0);
+    const item = await browser.pick(frame.sessionId, { node: third, target: 'item', rules: {} });
+    assert.equal(item.count, 6, item.selector);
+    assert.doesNotMatch(item.selector, /\.i\d/);
+    assert.match(item.selector, /list_item/);
+  } finally {
+    await browser.dispose(); server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
