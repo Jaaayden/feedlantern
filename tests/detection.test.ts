@@ -280,3 +280,127 @@ test('论坛卡片优先正文标题和直属日期，排除侧栏推荐', async
     assert.ok(result.candidates.every(c=>c.items.every(item=>!item.link.includes('/tool/'))));
   } finally {await page.close();}
 });
+
+test('条目类名带序号（list_item i1、i2…）时仍识别为同一个列表', async t => {
+  const page = await newPage(t); if (!page) return;
+  try {
+    // Mirrors a campus CMS list: every <li> carries a counter class, so
+    // grouping on raw class names would put each row in a group of its own.
+    const rows = Array.from({ length: 12 }, (_, i) => `
+      <li class="list_item i${i + 1}">
+        <div class="fields pr_fields"><span class="Article_Index">${i + 1}</span><span class="Article_Title"><a href="/news/${i}/page.htm" title="新闻 ${i}">新闻 ${i}</a></span></div>
+        <div class="fields ex_fields"><span class="Article_PublishDate">2026-08-${String(i + 1).padStart(2, '0')}</span></div>
+      </li>`).join('');
+    await setFixture(page, `<div class="col-news-con"><ul class="wp_article_list">${rows}</ul></div>`, 'https://example.test/list.htm');
+    const result = await detectPage(page);
+    const candidate = result.candidates.find(c => c.id === result.recommendedId);
+    assert.ok(candidate, JSON.stringify(result.candidates.map(c => ({ rules: c.rules, count: c.count }))));
+    assert.match(candidate.rules.item, /li\.list_item$/);
+    assert.doesNotMatch(candidate.rules.item, /\.i\d/);
+    assert.equal(candidate.items.length, 12);
+    assert.equal(candidate.items[0].title, '新闻 0');
+    assert.equal(candidate.items[0].publishedAt, '2026-08-01T00:00:00.000Z');
+    assert.ok(candidate.items.every(item => item.link.startsWith('https://example.test/news/')));
+  } finally { await page.close(); }
+});
+
+test('序号类名在其他写法下同样被忽略，共享的数字类名则保留', async t => {
+  const page = await newPage(t); if (!page) return;
+  try {
+    const cards = Array.from({ length: 6 }, (_, i) => `<div class="story row-${i + 1} col-6"><h3><a href="/s/${i}">故事 ${i}</a></h3><p>摘要内容足够长，足以作为描述文字 ${i}。</p></div>`).join('');
+    await setFixture(page, `<main><section class="stories">${cards}</section></main>`, 'https://example.test/stories');
+    const result = await detectPage(page);
+    const candidate = result.candidates.find(c => c.id === result.recommendedId) ?? result.candidates[0];
+    assert.ok(candidate, JSON.stringify(result));
+    assert.equal(candidate.count, 6);
+    assert.doesNotMatch(candidate.rules.item, /row-\d/);
+    assert.match(candidate.rules.item, /col-6|story/);
+  } finally { await page.close(); }
+});
+
+const dateText = (i: number) => `2026-09-${String(i + 1).padStart(2, '0')}`;
+
+async function detectRecommended(page: Page, html: string) {
+  await setFixture(page, html, 'https://example.test/list');
+  const result = await detectPage(page);
+  const candidate = result.candidates.find(c => c.id === result.recommendedId);
+  assert.ok(candidate, JSON.stringify(result.candidates.map(c => ({ rules: c.rules, count: c.count, confidence: c.confidence }))));
+  return candidate;
+}
+
+test('奇偶行（odd/even）的表格识别为一个列表', async t => {
+  const page = await newPage(t); if (!page) return;
+  try {
+    const rows = Array.from({ length: 10 }, (_, i) => `<tr class="${i % 2 ? 'even' : 'odd'}"><td class="t"><a href="/a/${i}">公告标题第 ${i} 条内容</a></td><td class="d">${dateText(i)}</td></tr>`).join('');
+    const candidate = await detectRecommended(page, `<main><table><tbody>${rows}</tbody></table></main>`);
+    assert.equal(candidate.items.length, 10);
+    assert.match(candidate.rules.item, /tr$/);
+    assert.ok(candidate.rules.date);
+  } finally { await page.close(); }
+});
+
+test('条目带不同分类类名（cat-news、cat-tech）时仍是同一个列表', async t => {
+  const page = await newPage(t); if (!page) return;
+  try {
+    const rows = Array.from({ length: 10 }, (_, i) => `<li class="item cat-${['news', 'tech', 'notice'][i % 3]}"><a href="/a/${i}">公告标题第 ${i} 条内容</a><span class="date">${dateText(i)}</span></li>`).join('');
+    const candidate = await detectRecommended(page, `<main><ul class="news">${rows}</ul></main>`);
+    assert.equal(candidate.items.length, 10);
+    assert.doesNotMatch(candidate.rules.item, /cat-/);
+  } finally { await page.close(); }
+});
+
+test('个别条目带 first / last / hot 标记类时不拆列表', async t => {
+  const page = await newPage(t); if (!page) return;
+  try {
+    const rows = Array.from({ length: 10 }, (_, i) => `<li class="item${i === 0 ? ' first top' : ''}${i === 9 ? ' last' : ''}${i === 3 ? ' hot' : ''}"><a href="/a/${i}">公告标题第 ${i} 条内容</a><span class="date">${dateText(i)}</span></li>`).join('');
+    const candidate = await detectRecommended(page, `<main><ul class="news">${rows}</ul></main>`);
+    assert.equal(candidate.items.length, 10);
+    assert.ok(candidate.rules.date);
+  } finally { await page.close(); }
+});
+
+test('序号夹在类名中间（item-3-row）或在子元素上（a.link3）也被忽略', async t => {
+  const page = await newPage(t); if (!page) return;
+  try {
+    const middle = Array.from({ length: 10 }, (_, i) => `<li class="item-${i + 1}-row"><a href="/a/${i}">公告标题第 ${i} 条内容</a><span class="date">${dateText(i)}</span></li>`).join('');
+    const first = await detectRecommended(page, `<main><ul class="news">${middle}</ul></main>`);
+    assert.equal(first.items.length, 10);
+    assert.doesNotMatch(first.rules.item, /\d/);
+
+    const child = Array.from({ length: 10 }, (_, i) => `<li class="item"><a class="link link${i + 1}" href="/a/${i}">公告标题第 ${i} 条内容</a><span class="date d${i + 1}">${dateText(i)}</span></li>`).join('');
+    const second = await detectRecommended(page, `<main><ul class="news">${child}</ul></main>`);
+    assert.equal(second.items.length, 10, JSON.stringify(second.rules));
+    assert.doesNotMatch(`${second.rules.title}${second.rules.link}${second.rules.date ?? ''}`, /\d/);
+    assert.ok(second.rules.date);
+  } finally { await page.close(); }
+});
+
+test('每张卡片外各包一层、序号类在卡片上时识别卡片本身', async t => {
+  const page = await newPage(t); if (!page) return;
+  try {
+    const cards = Array.from({ length: 10 }, (_, i) => `<div class="col"><div class="card card${i + 1}"><h3><a href="/a/${i}">公告标题第 ${i} 条内容</a></h3><p>这里是一段足够长的摘要文字内容 ${i}。</p></div></div>`).join('');
+    const candidate = await detectRecommended(page, `<main><div class="grid">${cards}</div></main>`);
+    assert.equal(candidate.items.length, 10);
+    assert.ok(candidate.rules.description, JSON.stringify(candidate.rules));
+  } finally { await page.close(); }
+});
+
+test('用 div 画的导航菜单、页脚链接和栏目侧栏不抢正文列表', async t => {
+  const page = await newPage(t); if (!page) return;
+  try {
+    const menu = Array.from({ length: 8 }, (_, i) => `<li class="menu-item"><a class="menu-link" href="/m/${i}">栏目菜单 ${i}</a></li>`).join('');
+    const side = Array.from({ length: 5 }, (_, i) => `<li class="wp_column"><a class="col_item_link" href="/c/${i}">侧栏栏目 ${i}</a></li>`).join('');
+    const foot = Array.from({ length: 4 }, (_, i) => `<li class="list_item"><a href="/f/${i}">友情链接 ${i}</a></li>`).join('');
+    const rows = Array.from({ length: 3 }, (_, i) => `<li class="list_item i${i + 1}"><span class="Article_Title"><a href="/n/${i}">招聘公告第 ${i} 条</a></span><span class="Article_PublishDate">${dateText(i)}</span></li>`).join('');
+    await setFixture(page, `<div id="header"><div class="nav-box"><ul class="wp-menu">${menu}</ul></div></div>
+      <div class="col-menu-con col_menu_con"><ul class="wp_listcolumn">${side}</ul></div>
+      <div class="col-news-con"><ul class="wp_article_list">${rows}</ul></div>
+      <div id="footer"><ul class="wp_article_list">${foot}</ul></div>`, 'https://example.test/zpsw/list.htm');
+    const result = await detectPage(page);
+    const candidate = result.candidates.find(c => c.id === result.recommendedId);
+    assert.ok(candidate, JSON.stringify(result.candidates.map(c => ({ rules: c.rules, count: c.count }))));
+    assert.deepEqual(candidate.items.map(item => item.title), ['招聘公告第 0 条', '招聘公告第 1 条', '招聘公告第 2 条']);
+    assert.ok(candidate.rules.date);
+    assert.ok(result.candidates.every(c => c.items.every(item => !/栏目|菜单|友情/.test(item.title))));
+  } finally { await page.close(); }
+});

@@ -64,8 +64,11 @@ export async function detectPage(page: Page): Promise<DetectionResult> {
       const tokenPattern = /^[a-zA-Z_][a-zA-Z0-9_-]{0,42}$/;
       const dynamicTokenPattern = /(?:^|[-_])(?:[a-f0-9]{6,}|\d{3,})(?:$|[-_])/i;
       const semanticWords = /(?:title|headline|subject|name|story|article|post|entry|card|item|result|row|thing|content|summary|excerpt|description|abstract|date|time|published|created|author)/i;
-      const blockedWords = /(?:^|[-_\s])(?:ad|ads|advert|advertisement|sponsor|promoted|share|social|breadcrumb|path|pos|position|pagination|pager|cookie|consent|newsletter|related|sidebar)(?:$|[-_\s])/i;
+      const blockedWords = /(?:^|[-_\s])(?:ad|ads|advert|advertisement|sponsor|promoted|share|social|breadcrumb|path|pos|position|pagination|pager|cookie|consent|newsletter|related|sidebar|nav|navbar|navigation|menu|footer|header|topbar)(?:$|[-_\s])/i;
       const datePattern = /(?:刚刚|\bjust\s+now\b|\d+\s*(?:秒钟?|分钟?|小时|天|周)\s*前|\b\d+\s*(?:seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|weeks?)\s+ago\b|\b(?:19|20)\d{2}[./-]\d{1,2}(?:[./-]\d{1,2})?\b|\b\d{1,2}[./-]\d{1,2}[./-](?:19|20)?\d{2}\b|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b|\b\d{1,2}\s+(?:小时|天|周|月|年前|minutes?|hours?|days?|weeks?|months?)\b|\b\d{4}年\d{1,2}月)/i;
+
+      const positionalCache = new WeakMap<Element, Set<string>>();
+      const state = { groupPositional: new Set<string>() };
 
       const helpers = {
         clamp(value: number, min = 0, max = 1): number {
@@ -77,9 +80,74 @@ export async function detectPage(page: Page): Promise<DetectionResult> {
         lower(value: string | null | undefined): string {
           return text(value).toLowerCase();
         },
+        /**
+         * Class names that count siblings (`i1`, `i2`, `i3` … or `row-1-a`,
+         * `row-2-a` …) differ on every item of a list, so they must not take
+         * part in grouping or selectors. A token is positional when at least
+         * three siblings each carry a different token that only differs in
+         * its digits, and this token is not shared with another sibling
+         * (shared tokens such as `col-6` are real styling classes).
+         * The result is cached per parent, so each sibling set is scanned once.
+         */
+        positionalClassNames(element: Element): Set<string> {
+          const parent = element.parentElement;
+          if (!parent) return new Set();
+          let positional = positionalCache.get(parent);
+          if (!positional) {
+            positional = new Set();
+            const byPattern = new Map<string, Map<string, number>>();
+            for (const sibling of Array.from(parent.children).slice(0, limits.maxNodes)) {
+              for (const name of sibling.classList) {
+                if (!/\d/.test(name) || !tokenPattern.test(name)) continue;
+                const pattern = name.replace(/\d+/g, '#');
+                const tokens = byPattern.get(pattern) ?? new Map<string, number>();
+                tokens.set(name, (tokens.get(name) ?? 0) + 1);
+                byPattern.set(pattern, tokens);
+              }
+            }
+            for (const tokens of byPattern.values()) {
+              if (tokens.size < 3) continue;
+              for (const [name, count] of tokens) if (count === 1) positional.add(name);
+            }
+            positionalCache.set(parent, positional);
+          }
+          return positional;
+        },
+
+        /**
+         * Counter classes below the items (`a.link1`, `span.d2` …): each item
+         * owns a different token, so the sibling scan above cannot see them.
+         * A digit pattern with at least three distinct tokens, each used by
+         * at most two items, is a counter.
+         */
+        groupPositionalClassNames(group: Element[]): Set<string> {
+          const byPattern = new Map<string, Map<string, number>>();
+          for (const item of group) {
+            const seen = new Set<string>();
+            for (const element of [item, ...Array.from(item.querySelectorAll('*')).slice(0, 119)]) {
+              for (const name of element.classList) {
+                if (seen.has(name) || !/\d/.test(name) || !tokenPattern.test(name)) continue;
+                seen.add(name);
+                const pattern = name.replace(/\d+/g, '#');
+                const tokens = byPattern.get(pattern) ?? new Map<string, number>();
+                tokens.set(name, (tokens.get(name) ?? 0) + 1);
+                byPattern.set(pattern, tokens);
+              }
+            }
+          }
+          const positional = new Set<string>();
+          for (const tokens of byPattern.values()) {
+            if (tokens.size < 3) continue;
+            for (const [name, count] of tokens) if (count <= 2) positional.add(name);
+          }
+          return positional;
+        },
+
         stableClassNames(element: Element): string[] {
+          const positional = positionalClassNames(element);
           return Array.from(element.classList)
             .filter((name) => tokenPattern.test(name) && !dynamicTokenPattern.test(name))
+            .filter((name) => !positional.has(name) && !state.groupPositional.has(name))
             .filter((name) => !/^(?:n|item|row|post|news)[-_]?\d+$/i.test(name))
             .filter((name) => !/^(?:animated|animate__animated|aos-animate)$/.test(name))
             .filter((name) => name.length <= 42)
@@ -400,6 +468,8 @@ export async function detectPage(page: Page): Promise<DetectionResult> {
         clamp,
         text,
         lower,
+        positionalClassNames,
+        groupPositionalClassNames,
         stableClassNames,
         escaped,
         simpleSelector,
@@ -425,6 +495,7 @@ export async function detectPage(page: Page): Promise<DetectionResult> {
       const elements = Array.from(document.querySelectorAll('*')).slice(0, limits.maxNodes);
       const eligible = elements.filter(candidateLike);
       const groups = new Map<string, Element[]>();
+      const looseGroups = new Map<string, { elements: Element[]; keys: Set<string> }>();
       for (const element of eligible) {
         const tag = element.tagName.toLowerCase();
         const classes = stableClassNames(element);
@@ -434,10 +505,23 @@ export async function detectPage(page: Page): Promise<DetectionResult> {
           : '';
         const parentShape = parent ? `${parent.tagName.toLowerCase()}|${stableClassNames(parent).slice(0, 3).join('.')}|${parentId}` : 'root';
         const shape = classes.length > 0 ? classes.slice(0, 4).join('.') : directShape(element);
-        const key = `${tag}|${shape}|${parentShape}|${regionShape(element)}`;
+        const region = regionShape(element);
+        const key = `${tag}|${shape}|${parentShape}|${region}`;
         const group = groups.get(key);
         if (group) group.push(element);
         else groups.set(key, [element]);
+
+        // Rows of one list often differ in a state or category class
+        // (`odd`/`even`, `first`, `cat-news`, a counter on a wrapper …), which
+        // splits them above. Collect them again by structure alone and keep
+        // the merged set as one more candidate if it spans several groups.
+        const looseKey = `${tag}|${parentShape}|${region}|${directShape(element)}`;
+        const loose = looseGroups.get(looseKey);
+        if (loose) { loose.elements.push(element); loose.keys.add(key); }
+        else looseGroups.set(looseKey, { elements: [element], keys: new Set([key]) });
+      }
+      for (const [looseKey, loose] of looseGroups) {
+        if (loose.keys.size > 1 && loose.elements.length >= 3) groups.set(`~${looseKey}`, loose.elements);
       }
 
       const rawCandidates: Array<LocalCandidate & { elements: Element[] }> = [];
@@ -448,11 +532,13 @@ export async function detectPage(page: Page): Promise<DetectionResult> {
         const matched = built.matches.slice(0, limits.maxItems);
         if (matched.length < 3) continue;
 
+        state.groupPositional = groupPositionalClassNames(matched);
         const title = inferField(matched, 'title');
         const link = inferField(matched, 'link');
         const description = inferField(matched, 'description');
         const image = inferField(matched, 'image');
         const date = inferField(matched, 'date');
+        state.groupPositional = new Set();
         const titleSelector = title.selector || ':scope h1, :scope h2, :scope h3, :scope h4, :scope h5, :scope h6, :scope a';
         const linkSelector = link.selector || ':scope a[href]';
         const rules: LocalRules = {

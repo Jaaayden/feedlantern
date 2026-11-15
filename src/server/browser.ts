@@ -147,6 +147,32 @@ const PICK_SCRIPT = String.raw`(request, mapKey) => {
     if (rect.width <= 0 || rect.height <= 0 || y + rect.height <= 0 || x + rect.width <= 0 || x >= innerWidth || y >= limitHeight) return null;
     return { x: x, y: y, width: rect.width, height: rect.height };
   }
+  // Counter classes (i1, i2, i3 ...) belong to one item only, so a selector
+  // built from them would match a single row. Same rule as list detection.
+  const positionalCache = new Map();
+  function positionalOf(element) {
+    const parent = element.parentElement;
+    if (!parent) return null;
+    let found = positionalCache.get(parent);
+    if (found) return found;
+    found = new Set();
+    const byPattern = new Map();
+    for (const child of Array.from(parent.children).slice(0, 2000)) {
+      for (const name of child.classList) {
+        if (!/\d/.test(name)) continue;
+        const pattern = name.replace(/\d+/g, '#');
+        let tokens = byPattern.get(pattern);
+        if (!tokens) { tokens = new Map(); byPattern.set(pattern, tokens); }
+        tokens.set(name, (tokens.get(name) || 0) + 1);
+      }
+    }
+    for (const tokens of byPattern.values()) {
+      if (tokens.size < 3) continue;
+      for (const entry of tokens) if (entry[1] === 1) found.add(entry[0]);
+    }
+    positionalCache.set(parent, found);
+    return found;
+  }
   function segment(element) {
     const tag = element.tagName.toLowerCase();
     for (const attr of ['data-testid', 'data-test', 'data-cy', 'name', 'aria-label', 'role']) {
@@ -155,7 +181,8 @@ const PICK_SCRIPT = String.raw`(request, mapKey) => {
     }
     const id = element.id || '';
     if (stable(id)) return '#' + escaped(id);
-    const classes = Array.from(element.classList).filter(stable).filter(function(value) { return !/^(?:animated|animate__animated|aos-animate)$/.test(value); }).slice(0, 2).map(function(value) { return '.' + escaped(value); }).join('');
+    const positional = positionalOf(element);
+    const classes = Array.from(element.classList).filter(stable).filter(function(value) { return !positional || !positional.has(value); }).filter(function(value) { return !/^(?:animated|animate__animated|aos-animate)$/.test(value); }).slice(0, 2).map(function(value) { return '.' + escaped(value); }).join('');
     return tag + classes;
   }
   function pathSelector(element, stop) {
@@ -184,18 +211,40 @@ const PICK_SCRIPT = String.raw`(request, mapKey) => {
     if (queryAll(document, simple).length === 1) return simple;
     return pathSelector(element);
   }
-  function repeatedSelector(element) {
-    const simple = segment(element);
-    const simpleMatches = queryAll(document, simple);
-    if (simpleMatches.length >= 2 && simpleMatches.length <= 500) return simple;
-    const parent = element.parentElement;
-    if (parent) {
-      const parentSimple = segment(parent);
-      const scoped = parentSimple + ' > ' + simple;
-      const scopedMatches = queryAll(document, scoped);
-      if (scopedMatches.length >= 2 && scopedMatches.length <= 500) return scoped;
+  function showing(element) {
+    const style = getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden') return false;
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+  // The plain selector first, then the same selector scoped by up to five
+  // ancestors, each step a direct-child chain that still contains the element.
+  function scopedSelectors(element, simple) {
+    const selectors = [simple];
+    const parts = [];
+    let current = element.parentElement;
+    let depth = 0;
+    while (current && current !== document.documentElement && depth < 5) {
+      parts.unshift(segment(current));
+      selectors.push(parts.join(' > ') + ' > ' + simple);
+      if (current === document.body) break;
+      current = current.parentElement;
+      depth += 1;
     }
-    return globalSelector(element);
+    return selectors;
+  }
+  function repeatedSelector(element) {
+    // Prefer the first selector whose matches are all on screen: a footer or
+    // hidden panel that shares the item's classes would otherwise be saved
+    // into the rule and extracted as items.
+    let fallback = null;
+    for (const selector of scopedSelectors(element, segment(element))) {
+      const matches = queryAll(document, selector);
+      if (matches.length < 2 || matches.length > 500 || matches.indexOf(element) < 0) continue;
+      if (fallback === null) fallback = selector;
+      if (matches.every(showing)) return selector;
+    }
+    return fallback !== null ? fallback : globalSelector(element);
   }
   function repeatedItem(element) {
     const ancestors = [];
